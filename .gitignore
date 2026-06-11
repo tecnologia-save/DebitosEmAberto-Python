@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+.env
+
+# PyInstaller
+build/
+dist/
+*.spec.bak
+
+# Logs de execução
+logs/
+
+# Certificados digitais (NUNCA commitar)
+Certificados/
+ecac_login/Certificados/
+*.pfx
+*.p12
+*.cer
+*.crt
+senhas.json
+
+# Debug do captcha
+captcha_uipath/debug_screenshots/
+debug_screenshots/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Dados sensíveis
+*.env
+.env.*
+!.env.example

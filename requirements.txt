@@ -1,0 +1,6 @@
+patchright
+pandas
+openpyxl
+python-dotenv
+google-genai
+Pillow
