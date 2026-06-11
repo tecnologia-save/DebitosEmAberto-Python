@@ -1,4 +1,4 @@
-"""Ponto de entrada — Automação Débitos em Aberto.
+﻿"""Ponto de entrada — Automação Débitos em Aberto.
 
 Fluxo:
     1. Abre janela para seleção da planilha (ui_upload)
@@ -34,24 +34,18 @@ from pathlib import Path
 import pandas as pd
 from dotenv import load_dotenv
 
-# LoginEcac / captcha_uipath: suporta layout do repo (pacotes na mesma pasta)
-# e layout de desenvolvimento legado (pastas irmãs LoginEcac / CaptchaSolver)
+# servicos_rf_login / captcha_uipath: pacotes na mesma pasta (repo)
+# ou em pastas irmãs para layout de desenvolvimento legado
 if getattr(sys, 'frozen', False):
     LOGIN_ECAC_DIR = Path(sys.executable).parent
 else:
-    _ecac_here    = Path(__file__).parent / "ecac_login"
-    _ecac_sibling = Path(__file__).parent.parent / "LoginEcac"
-    _cap_here     = Path(__file__).parent / "captcha_uipath"
-    _cap_sibling  = Path(__file__).parent.parent / "CaptchaSolver"
-    if not _ecac_here.exists() and _ecac_sibling.exists():
-        sys.path.insert(0, str(_ecac_sibling))
-        LOGIN_ECAC_DIR = _ecac_sibling
-    else:
-        LOGIN_ECAC_DIR = Path(__file__).parent
+    LOGIN_ECAC_DIR = Path(__file__).parent
+    _cap_here    = Path(__file__).parent / "captcha_uipath"
+    _cap_sibling = Path(__file__).parent.parent / "CaptchaSolver"
     if not _cap_here.exists() and _cap_sibling.exists():
         sys.path.insert(0, str(_cap_sibling))
 
-from ecac_login import abrir_browser_com_certificado  # noqa: E402
+from servicos_rf_login import fazer_login                                  # noqa: E402
 from captcha_uipath import solve_hcaptcha                                  # noqa: E402
 from ui_upload import main as selecionar_planilha                         # noqa: E402
 
@@ -834,313 +828,6 @@ def _fechar_navegador(p, context, page=None) -> None:
     print("    [✓] Navegador fechado.")
 
 
-def ir_para_servicos_rf_e_entrar(page) -> None:
-    """Navega para servicos.receitafederal.gov.br, fecha popups e clica em
-    'Entrar com gov.br'. Resolve hCaptcha se aparecer.
-
-    Se aparecer 'Erro na validação do HCaptcha', volta para a página inicial do
-    portal e repete o fluxo (até 3 tentativas no total).
-    """
-    MAX_TENTATIVAS_GOVBR = 3
-    _fazer_go_back = False  # True quando o erro de captcha já acionou go_back()
-
-    for tentativa_govbr in range(1, MAX_TENTATIVAS_GOVBR + 1):
-        if tentativa_govbr > 1:
-            print(f"    → Reiniciando fluxo 'Entrar com gov.br' "
-                  f"(tentativa {tentativa_govbr}/{MAX_TENTATIVAS_GOVBR})...")
-
-        if _fazer_go_back:
-            _fazer_go_back = False
-            # Já voltamos via go_back() — apenas aguarda a página estabilizar
-            page.wait_for_load_state("domcontentloaded", timeout=15_000)
-        else:
-            print("    → Navegando para servicos.receitafederal.gov.br...")
-            page.goto(URL_SERVICOS_RF, wait_until="domcontentloaded", timeout=30_000)
-
-        # ── Popup 1: tourModal ────────────────────────────────────────────────
-        try:
-            popup1 = page.locator('xpath=//*[@id="tourModal"]/div[3]/a').first
-            popup1.wait_for(state="visible", timeout=2_000)
-            popup1.click()
-            print("    [✓] Popup tourModal fechado.")
-        except Exception:
-            pass
-
-        # ── Popup 2: card0 ───────────────────────────────────────────────────
-        try:
-            popup2 = page.locator('xpath=//*[@id="card0"]/div/div[2]/button[2]').first
-            popup2.wait_for(state="visible", timeout=2_000)
-            popup2.click()
-            print("    [✓] Popup card0 fechado.")
-        except Exception:
-            pass
-
-        # Clica "Entrar com gov.br" assim que o botão estiver visível.
-        print("    → Aguardando botão 'Entrar com gov.br'...")
-        _entrar_ok = False
-        for _sel_entrar in [
-            'xpath=//*[@id="home-heading"]/div[1]/div/button',
-            BTN_ENTRAR_GOV,
-        ]:
-            try:
-                _btn = page.locator(_sel_entrar).first
-                _btn.wait_for(state="visible", timeout=20_000 if "xpath" in _sel_entrar else 3_000)
-                _btn.click()
-                print(f"    → Clicou 'Entrar com gov.br' ({_sel_entrar}).")
-                _entrar_ok = True
-                break
-            except Exception:
-                continue
-        if not _entrar_ok:
-            raise Exception("Botão 'Entrar com gov.br' não encontrado na página.")
-
-        # ── Aguarda sso.acesso.gov.br e clica "Seu certificado digital" ──────
-        # Após redirecionar para o gov.br (sso.acesso.gov.br), o botão
-        # #login-certificate deve aparecer. Captcha pode preceder o botão.
-        print("    → Aguardando 'Seu certificado digital' (sso.acesso.gov.br)...")
-        _cert_deadline = time.time() + 40
-        _cert_clicado  = False
-        while time.time() < _cert_deadline and not _cert_clicado:
-            # Tenta clicar no botão "Seu certificado digital"
-            for _sel_cert in [
-                'xpath=//*[@id="login-certificate"]',
-                '#login-certificate',
-                "a:has-text('Seu certificado digital')",
-                "button:has-text('Seu certificado digital')",
-            ]:
-                try:
-                    _loc = page.locator(_sel_cert).first
-                    if _loc.is_visible(timeout=400):
-                        _loc.click()
-                        print(f"    → Clicou 'Seu certificado digital' ({_sel_cert}).")
-                        _cert_clicado = True
-                        break
-                except Exception:
-                    pass
-            if _cert_clicado:
-                # Aguarda até 10s por qualquer sinal de progresso após clicar cert:
-                #   1. avatar apareceu  → já autenticado
-                #   2. URL mudou        → redirecionamento em andamento
-                #   3. iframe hcaptcha (checkbox OU challenge) visível → captcha ativo
-                # Se nenhum dos três ocorrer em 10s, a página travou → recarrega.
-                _url_antes_cert = page.url
-                _cert_progrediu = False
-                for _ in range(20):   # 20 × 500 ms = 10 s
-                    page.wait_for_timeout(500)
-                    try:
-                        if page.locator('xpath=//*[@id="avatar-dropdown-trigger"]').is_visible():
-                            _cert_progrediu = True
-                            break
-                    except Exception:
-                        pass
-                    if page.url != _url_antes_cert:
-                        _cert_progrediu = True
-                        break
-                    try:
-                        _hc_visivel = (
-                            page.locator(
-                                "iframe[src*='hcaptcha.com'][src*='frame=checkbox']"
-                            ).is_visible()
-                            or page.locator(
-                                "iframe[src*='hcaptcha.com'][src*='frame=challenge']"
-                            ).is_visible()
-                        )
-                        if _hc_visivel:
-                            _cert_progrediu = True
-                            break
-                    except Exception:
-                        pass
-                if _cert_progrediu:
-                    break  # prossegue para o poll de avatar
-                print("    → Página travou após cert. Recarregando e retentando...")
-                try:
-                    page.reload(wait_until="domcontentloaded", timeout=15_000)
-                except Exception:
-                    pass
-                _cert_clicado = False  # continua o while para tentar clicar novamente
-
-            # Se avatar já apareceu, autenticação foi concluída sem precisar clicar cert
-            try:
-                if page.locator('xpath=//*[@id="avatar-dropdown-trigger"]').is_visible():
-                    print("    → Avatar detectado antes do cert — já autenticado.")
-                    _cert_clicado = True
-                    break
-            except Exception:
-                pass
-
-            # Resolve captcha se aparecer enquanto aguarda o botão cert
-            _hc_frames_cert = [
-                f for f in page.frames
-                if "hcaptcha.com" in (f.url or "") and "frame=challenge" in (f.url or "")
-            ]
-            _captcha_cert = False
-            for _hf in _hc_frames_cert:
-                try:
-                    _txt = _hf.evaluate("""() => {
-                        const c = document.querySelector('.challenge-container');
-                        if (!c) return null;
-                        const r = c.getBoundingClientRect();
-                        if (r.width < 100 || r.height < 100) return null;
-                        const p = document.querySelector('.prompt-text');
-                        if (!p || !p.textContent.trim()) return null;
-                        const b = document.querySelector('.button-submit');
-                        if (!b || b.getAttribute('aria-disabled') === 'true') return null;
-                        return p.textContent.trim();
-                    }""")
-                    if _txt:
-                        _captcha_cert = True
-                        print(f"    → Captcha detectado antes do cert: '{_txt}'. Resolvendo...")
-                        break
-                except Exception:
-                    pass
-            if not _captcha_cert:
-                try:
-                    _captcha_cert = page.locator(
-                        "iframe[src*='hcaptcha.com'][src*='frame=checkbox']"
-                    ).is_visible()
-                    if _captcha_cert:
-                        print("    → Checkbox hCaptcha antes do cert. Resolvendo...")
-                except Exception:
-                    pass
-            if _captcha_cert:
-                _pre_cert_ok = False
-                for _t in range(1, 3):   # máx. 2 tentativas
-                    try:
-                        if solve_hcaptcha(page):
-                            print(f"    [✓] Captcha (pré-cert) resolvido ({_t}/2).")
-                            _pre_cert_ok = True
-                            break
-                    except Exception as _e:
-                        print(f"    → Captcha pré-cert tentativa {_t}/2: {type(_e).__name__}")
-                    if _t < 2:
-                        page.wait_for_timeout(2_000)
-                if not _pre_cert_ok:
-                    print("    → Captcha pré-cert não resolvido em 2 tentativas. "
-                          "Recarregando e refazendo 'Seu certificado digital'...")
-                    try:
-                        page.reload(wait_until="domcontentloaded", timeout=15_000)
-                    except Exception:
-                        pass
-                    _cert_clicado = False
-
-            page.wait_for_timeout(400)
-
-        if not _cert_clicado:
-            print("    [!] 'Seu certificado digital' não encontrado em 40s. Continuando mesmo assim...")
-
-        page.wait_for_timeout(800)
-
-        # Aguarda o avatar aparecer — indica que o OAuth completou.
-        # Usa polling porque captcha pode aparecer DURANTE o fluxo OAuth,
-        # impedindo o avatar de aparecer dentro de um wait_for simples.
-        print("    → Aguardando autenticação no portal...")
-        _avatar = page.locator('xpath=//*[@id="avatar-dropdown-trigger"]').first
-        _autenticado = False
-        _erro_validacao_captcha = False
-        _deadline_auth = time.time() + 90  # 90s: OAuth + possível captcha
-
-        while time.time() < _deadline_auth:
-            # Avatar apareceu → autenticação concluída
-            if _avatar.is_visible():
-                _autenticado = True
-                break
-
-            # Verifica se o portal rejeitou o captcha durante o OAuth
-            try:
-                _err_govbr = page.get_by_text("Erro na validação do HCaptcha", exact=False).first
-                if _err_govbr.is_visible(timeout=300):
-                    print("    [!] 'Erro na validação do HCaptcha' durante autenticação. "
-                          "Voltando à página anterior e tentando novamente...")
-                    try:
-                        page.go_back(wait_until="domcontentloaded", timeout=15_000)
-                    except Exception:
-                        pass
-                    _erro_validacao_captcha = True
-                    _fazer_go_back = True
-                    break
-            except Exception:
-                pass
-
-            # Verifica captcha challenge ativo durante o OAuth
-            _hc_auth_frames = [
-                f for f in page.frames
-                if "hcaptcha.com" in (f.url or "")
-                and "frame=challenge" in (f.url or "")
-            ]
-            _captcha_ativo_auth = False
-            for _hf in _hc_auth_frames:
-                try:
-                    _txt = _hf.evaluate("""() => {
-                        const c = document.querySelector('.challenge-container');
-                        if (!c) return null;
-                        const r = c.getBoundingClientRect();
-                        if (r.width < 100 || r.height < 100) return null;
-                        const p = document.querySelector('.prompt-text');
-                        if (!p || !p.textContent.trim()) return null;
-                        const b = document.querySelector('.button-submit');
-                        if (!b || b.getAttribute('aria-disabled') === 'true') return null;
-                        return p.textContent.trim();
-                    }""")
-                    if _txt:
-                        _captcha_ativo_auth = True
-                        print(f"    → Captcha durante autenticação: '{_txt}'. Resolvendo...")
-                        break
-                except Exception:
-                    pass
-
-            # Verifica também o checkbox (pode preceder o challenge)
-            if not _captcha_ativo_auth:
-                try:
-                    _captcha_ativo_auth = page.locator(
-                        "iframe[src*='hcaptcha.com'][src*='frame=checkbox']"
-                    ).is_visible()
-                    if _captcha_ativo_auth:
-                        print("    → Checkbox hCaptcha detectado durante autenticação. Resolvendo...")
-                except Exception:
-                    pass
-
-            if _captcha_ativo_auth:
-                _oauth_captcha_ok = False
-                for _t in range(1, 3):   # máx. 2 tentativas
-                    try:
-                        if solve_hcaptcha(page):
-                            print(f"    [✓] Captcha resolvido (tentativa {_t}/2).")
-                            _oauth_captcha_ok = True
-                            break
-                        print(f"    → Captcha tentativa {_t}/2: solver retornou False.")
-                    except Exception as _e:
-                        print(f"    → Captcha tentativa {_t}/2: {type(_e).__name__}: {_e}")
-                    if _t < 2:
-                        page.wait_for_timeout(2_000)
-                if not _oauth_captcha_ok:
-                    print("    → Captcha OAuth não resolvido em 2 tentativas. "
-                          "Voltando e refazendo 'Entrar com gov.br'...")
-                    try:
-                        page.go_back(wait_until="domcontentloaded", timeout=15_000)
-                    except Exception:
-                        pass
-                    _fazer_go_back = True
-                    break  # sai do loop de avatar → outer loop reinicia do gov.br
-
-            page.wait_for_timeout(500)
-
-        if _erro_validacao_captcha:
-            continue  # volta para o topo do for: navega de novo para URL_SERVICOS_RF
-
-        if not _autenticado:
-            raise Exception(
-                "Timeout aguardando autenticação no portal: "
-                "avatar não apareceu em 90s após clicar 'Entrar com gov.br'."
-            )
-        print("    [✓] Autenticado no portal.")
-        # Captcha já foi tratado no polling acima (durante o OAuth).
-        # Não deve ser solicitado após o avatar aparecer.
-        break
-    else:
-        print(f"    [!] Limite de {MAX_TENTATIVAS_GOVBR} tentativas atingido "
-              "para 'Entrar com gov.br'.")
-
-
 def trocar_perfil_procurador(page, cnpj: str) -> None:
     """Aguarda o intervalo de 30s, depois representa o CNPJ como Procurador
     no portal e navega para a página de pendências.
@@ -1602,7 +1289,7 @@ def verificar_pendencias(page, cnpj: str, caminho_planilha: str,
 # ── Processamento por CNPJ ────────────────────────────────────────────────────
 
 def processar_cnpj(page, cnpj: str, row: pd.Series,
-                   caminho_planilha: str, primeiro_do_grupo: bool) -> str:
+                   caminho_planilha: str) -> str:
     """Executa o fluxo completo para um CNPJ no portal de Serviços RF.
 
     Antes de qualquer navegação, lê as colunas D e E da planilha para
@@ -1613,8 +1300,8 @@ def processar_cnpj(page, cnpj: str, row: pd.Series,
         E preenchida, D vazia       → faz apenas Débitos DCTFWeb   (skip_processo).
         Ambas vazias                → executa fluxo completo.
 
-    `primeiro_do_grupo` indica se ainda precisamos navegar para o portal
-    (True = primeiro CNPJ do grupo de certificado, faz `ir_para_servicos_rf_e_entrar`).
+    O login e navegação iniciais são feitos por `fazer_login()` antes desta
+    função ser chamada.
     """
     print(f"    → Processando CNPJ {cnpj}...")
 
@@ -1634,9 +1321,7 @@ def processar_cnpj(page, cnpj: str, row: pd.Series,
         print(f"    → Coluna E já preenchida ('{val_e}'). Fará apenas Débitos DCTFWeb.")
 
     # ── Navegação e processamento ─────────────────────────────────────────────
-    if primeiro_do_grupo:
-        ir_para_servicos_rf_e_entrar(page)
-
+    # fazer_login() já autenticou no portal; ir direto para representação
     trocar_perfil_procurador(page, cnpj)
 
     status = verificar_pendencias(page, cnpj, caminho_planilha,
@@ -1663,9 +1348,8 @@ def processar(df: pd.DataFrame, certs: dict[str, tuple[Path, str]],
     col_cnpj = df.columns[0]   # Coluna A = CNPJ
     col_cert = df.columns[2]   # Coluna C = CERTIFICADO
 
-    cert_atual        = None
-    browser_aberto    = None   # (p, context, page) | None
-    primeiro_do_grupo = True
+    cert_atual     = None
+    browser_aberto = None   # (p, context, page) | None
     _MAX_RETENT_CNPJ    = 2                          # tentativas por CNPJ (inclui a 1ª)
     _retentativas_cnpj: dict[str, int] = {}          # contador por CNPJ
 
@@ -1705,8 +1389,7 @@ def processar(df: pd.DataFrame, certs: dict[str, tuple[Path, str]],
 
             pfx_path, passphrase = certs[chave]
             atualizar_env_certificado(pfx_path, passphrase)
-            cert_atual        = certificado
-            primeiro_do_grupo = True
+            cert_atual = certificado
 
         chave = _buscar_certificado(cert_atual, certs)
         if chave is None:
@@ -1715,15 +1398,21 @@ def processar(df: pd.DataFrame, certs: dict[str, tuple[Path, str]],
 
         print(f"\n  [{idx + 1}/{total}] CNPJ: {cnpj}")
 
-        # ── Abre browser com certificado (apenas para o primeiro CNPJ do grupo) ─
+        # ── Login no portal (apenas quando não há sessão aberta) ─────────────────
         if browser_aberto is None:
             try:
-                p, context, page = abrir_browser_com_certificado(project_dir=LOGIN_ECAC_DIR)
-                browser_aberto    = (p, context, page)
-                primeiro_do_grupo = True
-                print("    [✓] Browser aberto com certificado digital.")
+                _res = fazer_login(
+                    cert_pfx_path=str(pfx_path),
+                    cert_pfx_passphrase=passphrase,
+                    project_dir=LOGIN_ECAC_DIR,
+                )
+                if _res is None:
+                    raise Exception("fazer_login() retornou None — login falhou.")
+                p, context, page = _res
+                browser_aberto = (p, context, page)
+                print("    [✓] Login no portal concluído.")
             except Exception as e:
-                print(f"    [!] Erro ao abrir browser ({type(e).__name__}: {e}). Pulando CNPJ {cnpj}.")
+                print(f"    [!] Erro ao fazer login ({type(e).__name__}: {e}). Pulando CNPJ {cnpj}.")
                 i += 1
                 continue
 
@@ -1733,19 +1422,13 @@ def processar(df: pd.DataFrame, certs: dict[str, tuple[Path, str]],
         # ── Processa pendências deste CNPJ ────────────────────────────────────
         _avancar = True
         try:
-            status_cnpj = processar_cnpj(page, cnpj, row, caminho_planilha, primeiro_do_grupo)
-            # Só marca como "já entrou no portal" se realmente navegou;
-            # se a linha foi pulada (ja_processado), o próximo CNPJ ainda
-            # precisará fazer ir_para_servicos_rf_e_entrar.
-            if status_cnpj != "ja_processado":
-                primeiro_do_grupo = False
+            processar_cnpj(page, cnpj, row, caminho_planilha)
 
         except FalhaPermanente as e:
             # Procuração expirada/inválida ou CNPJ não autorizado — não retentar.
             print(f"    [!] Falha permanente — CNPJ {cnpj} ignorado: {e}")
             _fechar_navegador(p, context, page)
-            browser_aberto    = None
-            primeiro_do_grupo = True
+            browser_aberto = None
 
         except Exception as e:
             _retentativas_cnpj[cnpj] = _retentativas_cnpj.get(cnpj, 0) + 1
@@ -1755,8 +1438,7 @@ def processar(df: pd.DataFrame, certs: dict[str, tuple[Path, str]],
                 f"(tentativa {_n}/{_MAX_RETENT_CNPJ}): {e}"
             )
             _fechar_navegador(p, context, page)
-            browser_aberto    = None
-            primeiro_do_grupo = True
+            browser_aberto = None
             if _n < _MAX_RETENT_CNPJ:
                 print(f"    → Reabrindo sessão e retentando CNPJ {cnpj}...")
                 _avancar = False   # não incrementa i; próxima iteração refaz login

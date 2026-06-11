@@ -34,6 +34,9 @@ senhas.json
 captcha_uipath/debug_screenshots/
 debug_screenshots/
 
+# Perfil Chrome persistente (gerado em runtime)
+chrome_debug_profile/
+
 # IDE / OS
 .vscode/
 .idea/
