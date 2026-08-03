@@ -68,6 +68,13 @@ CERT_ORIGINS = [
     "https://www.receita.fazenda.gov.br",
 ]
 
+# Popups que podem aparecer ao abrir o portal (tutorial e aviso de cookies).
+# Ambos são opcionais — se não aparecerem, o fluxo segue normalmente.
+POPUP_SELECTORS = [
+    ("Pular Tutorial", "a.skip-tutorial-modal, a[aria-label='Pular Tutorial']"),
+    ("Aceitar", "button[aria-label='Aceitar'], button.br-button:has-text('Aceitar')"),
+]
+
 # Seletores tentados em ordem para o botão "Seu certificado digital"
 CERT_SELECTORS = [
     "#login-certificate",
@@ -268,6 +275,54 @@ def _build_client_certificates(cert_path: str, cert_pass: str) -> list[dict]:
         {"origin": origin, "pfxPath": cert_path, "passphrase": cert_pass}
         for origin in CERT_ORIGINS
     ]
+
+
+def _clicar_popup(page, nome: str, seletor: str, timeout: int) -> bool:
+    """Clica em um popup caso ele fique visível dentro do timeout.
+
+    Se o clique normal for interceptado (outro popup por cima), tenta via JS.
+
+    Returns:
+        True se o popup apareceu e foi clicado.
+    """
+    try:
+        loc = page.locator(seletor).first
+        loc.wait_for(state="visible", timeout=timeout)
+    except Exception:
+        return False
+
+    try:
+        loc.click(timeout=5_000)
+    except Exception:
+        try:
+            loc.evaluate("el => el.click()")
+        except Exception as e:
+            print(f"[popup] Falha ao clicar em '{nome}': {type(e).__name__}: {e}")
+            return False
+
+    print(f"[popup] '{nome}' clicado.")
+    page.wait_for_timeout(500)
+    return True
+
+
+def _fechar_popups_iniciais(page, timeout: int = 5_000) -> None:
+    """Fecha os popups iniciais do portal (tutorial e aviso de cookies), se aparecerem.
+
+    Os dois são opcionais e podem surgir em qualquer ordem, por isso são feitas duas
+    rodadas: na segunda, o popup que estava por baixo já fica acessível.
+    """
+    print("[popup] Verificando popups iniciais...")
+    pendentes = list(POPUP_SELECTORS)
+    for rodada in (1, 2):
+        pendentes = [
+            (nome, sel)
+            for nome, sel in pendentes
+            if not _clicar_popup(page, nome, sel, timeout if rodada == 1 else 1_500)
+        ]
+        if not pendentes:
+            return
+    for nome, _ in pendentes:
+        print(f"[popup] '{nome}' não apareceu.")
 
 
 def _clicar_certificado(page) -> bool:
@@ -500,8 +555,17 @@ def main(
     except Exception as e:
         print(f"  -> erro no goto: {type(e).__name__}: {e}")
         registrar_erro(f"Login: erro ao abrir URL (1ª navegação). {type(e).__name__}: {e}")
-        input("ENTER para encerrar...")
+        try:
+            p.stop()
+        except Exception:
+            pass
         return None
+
+    # --- Primeira ação no portal: dispensar tutorial e aviso de cookies ---
+    try:
+        _fechar_popups_iniciais(page)
+    except Exception as e:
+        print(f"[popup] Erro ao tratar popups iniciais (ignorado): {type(e).__name__}: {e}")
 
     if _ja_logado(page):
         print("  -> Redirecionado automaticamente. Login concluído.")
@@ -522,7 +586,10 @@ def main(
             print(f"     screenshot: {shot}")
         except Exception:
             pass
-        input("ENTER para encerrar...")
+        try:
+            p.stop()
+        except Exception:
+            pass
         return None
 
     try:
@@ -541,12 +608,20 @@ def main(
         else:
             registrar_erro("Login: captcha não resolvido após 'Entrar com gov.br'.")
             print("[captcha] 3 tentativas falharam. Abortando.")
+            try:
+                p.stop()
+            except Exception:
+                pass
             return None
 
     # Verifica bloqueio logo após resolver captcha do govbr
     if not _ja_logado(page) and _acesso_bloqueado(page):
         if not _recuperar_acesso_bloqueado(page):
             registrar_erro("Login: acesso bloqueado após 'Entrar com gov.br' — recuperação falhou.")
+            try:
+                p.stop()
+            except Exception:
+                pass
             return None
 
     if _ja_logado(page):
@@ -569,6 +644,10 @@ def main(
                     shot = str(project_dir / "_debug_cert_button.png")
                     page.screenshot(path=shot, full_page=True)
                     print(f"     screenshot: {shot}")
+                except Exception:
+                    pass
+                try:
+                    p.stop()
                 except Exception:
                     pass
                 return None
@@ -601,6 +680,10 @@ def main(
             if not _recuperar_acesso_bloqueado(page):
                 if tentativa == MAX_TENTATIVAS_CERT:
                     registrar_erro("Login: acesso bloqueado após certificado — recuperação esgotada.")
+                    try:
+                        p.stop()
+                    except Exception:
+                        pass
                     return None
             continue
 
@@ -623,6 +706,10 @@ def main(
                     shot = str(project_dir / "_debug_pos_cert.png")
                     page.screenshot(path=shot, full_page=True)
                     print(f"     screenshot: {shot}")
+                except Exception:
+                    pass
+                try:
+                    p.stop()
                 except Exception:
                     pass
                 return None
