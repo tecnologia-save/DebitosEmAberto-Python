@@ -36,7 +36,12 @@ except ImportError:
 # Constantes
 # ──────────────────────────────────────────────────────────────────────────────
 
-GEMINI_MODEL      = "gemini-2.5-flash"
+# Modelo principal + fila de fallback. A troca é automática quando a API responde
+# 404/NOT_FOUND: foi assim que o gemini-2.5-flash parou de funcionar — segue
+# aparecendo em ListModels, mas o generateContent o recusa para chaves novas.
+# O gemini-2.0-flash está no mesmo estado, por isso não serve de fallback.
+GEMINI_MODEL      = "gemini-3.6-flash"
+GEMINI_FALLBACKS  = ["gemini-flash-latest", "gemini-3.1-flash-lite"]
 GRID_COLS         = 20
 GRID_ROWS         = 20
 MAX_GEMINI_TRIES  = 5
@@ -363,6 +368,32 @@ def _get_client(api_key: str):
             )
         _client_cache = _genai_lib.Client(api_key=api_key)
     return _client_cache
+
+
+_modelos_disponiveis: list = [GEMINI_MODEL, *GEMINI_FALLBACKS]
+
+
+def _modelo_atual() -> str:
+    """Modelo em uso: o primeiro da fila que ainda não foi recusado pela API."""
+    return _modelos_disponiveis[0]
+
+
+def _descartar_modelo_indisponivel(erro: Exception) -> bool:
+    """Descarta o modelo atual quando a API diz que ele não existe/não está liberado.
+
+    Returns:
+        True se houve troca — o chamador deve repetir de imediato, sem backoff,
+        já que o erro não foi transitório.
+    """
+    texto = str(erro)
+    if "404" not in texto and "NOT_FOUND" not in texto:
+        return False
+    if len(_modelos_disponiveis) <= 1:
+        return False
+    descartado = _modelos_disponiveis.pop(0)
+    print(f"    [captcha] Modelo '{descartado}' indisponivel para esta chave. "
+          f"Trocando para '{_modelos_disponiveis[0]}'.")
+    return True
 
 
 def _make_config(schema: dict):
@@ -914,14 +945,15 @@ def _gemini_grade(png: bytes, ref_img: Optional[bytes], api_key: str) -> dict:
     for attempt in range(1, MAX_GEMINI_TRIES + 1):
         try:
             resp = client.models.generate_content(
-                model=GEMINI_MODEL,
+                model=_modelo_atual(),
                 contents=contents,
                 config=_make_config(_SCHEMA_GRADE),
             )
             return json.loads(resp.text)
         except Exception as e:
             print(f"    [captcha/grade] Gemini tentativa {attempt}/{MAX_GEMINI_TRIES}: {e}")
-            if attempt < MAX_GEMINI_TRIES:
+            trocou = _descartar_modelo_indisponivel(e)
+            if attempt < MAX_GEMINI_TRIES and not trocou:
                 time.sleep(min(2 ** attempt, 30))
     raise RuntimeError("Gemini grade: todas as tentativas falharam.")
 
@@ -990,14 +1022,15 @@ def _gemini_grade_fused(iframe_png: bytes, tiles_png: bytes, api_key: str) -> di
     for attempt in range(1, MAX_GEMINI_TRIES + 1):
         try:
             resp = client.models.generate_content(
-                model=GEMINI_MODEL,
+                model=_modelo_atual(),
                 contents=contents,
                 config=_make_config(_SCHEMA_GRADE),
             )
             return json.loads(resp.text)
         except Exception as e:
             print(f"    [captcha/grade_fused] Gemini tentativa {attempt}/{MAX_GEMINI_TRIES}: {e}")
-            if attempt < MAX_GEMINI_TRIES:
+            trocou = _descartar_modelo_indisponivel(e)
+            if attempt < MAX_GEMINI_TRIES and not trocou:
                 time.sleep(min(2 ** attempt, 30))
     raise RuntimeError("Gemini grade_fused: todas as tentativas falharam.")
 
@@ -1019,14 +1052,15 @@ def _gemini_grid(png: bytes, instrucao: str, api_key: str) -> dict:
     for attempt in range(1, MAX_GEMINI_TRIES + 1):
         try:
             resp = client.models.generate_content(
-                model=GEMINI_MODEL,
+                model=_modelo_atual(),
                 contents=contents,
                 config=_make_config(_SCHEMA_GRID),
             )
             return json.loads(resp.text)
         except Exception as e:
             print(f"    [captcha/grid] Gemini tentativa {attempt}/{MAX_GEMINI_TRIES}: {e}")
-            if attempt < MAX_GEMINI_TRIES:
+            trocou = _descartar_modelo_indisponivel(e)
+            if attempt < MAX_GEMINI_TRIES and not trocou:
                 time.sleep(min(2 ** attempt, 30))
     raise RuntimeError("Gemini grid: todas as tentativas falharam.")
 
@@ -1405,7 +1439,7 @@ def _gemini_cartao_animal(frames: list, api_key: str) -> int:
     for attempt in range(1, MAX_GEMINI_TRIES + 1):
         try:
             resp = client.models.generate_content(
-                model=GEMINI_MODEL,
+                model=_modelo_atual(),
                 contents=contents,
                 config=_make_config(_SCHEMA_CARTAO_ANIMAL),
             )
@@ -1435,7 +1469,8 @@ def _gemini_cartao_animal(frames: list, api_key: str) -> int:
 
         except Exception as e:
             print(f"    [captcha/cartao] Gemini erro tentativa {attempt}: {e}")
-            if attempt < MAX_GEMINI_TRIES:
+            trocou = _descartar_modelo_indisponivel(e)
+            if attempt < MAX_GEMINI_TRIES and not trocou:
                 time.sleep(min(2 ** attempt, 10))
 
     return -1
