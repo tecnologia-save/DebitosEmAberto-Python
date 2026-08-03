@@ -70,6 +70,10 @@ CERT_ORIGINS = [
 
 # Popups que podem aparecer ao abrir o portal (tutorial e aviso de cookies).
 # Ambos são opcionais — se não aparecerem, o fluxo segue normalmente.
+# A janela é curta de propósito: eles surgem junto com a página, então esperar
+# mais que isso só atrasaria todas as execuções em que não aparecem.
+POPUP_TIMEOUT_MS = 2_000
+
 POPUP_SELECTORS = [
     ("Pular Tutorial", "a.skip-tutorial-modal, a[aria-label='Pular Tutorial']"),
     ("Aceitar", "button[aria-label='Aceitar'], button.br-button:has-text('Aceitar')"),
@@ -277,22 +281,22 @@ def _build_client_certificates(cert_path: str, cert_pass: str) -> list[dict]:
     ]
 
 
-def _clicar_popup(page, nome: str, seletor: str, timeout: int) -> bool:
-    """Clica em um popup caso ele fique visível dentro do timeout.
+def _clicar_popup(page, nome: str, seletor: str) -> bool:
+    """Clica no popup se ele já estiver visível neste instante — não espera.
 
-    Se o clique normal for interceptado (outro popup por cima), tenta via JS.
-
-    Returns:
-        True se o popup apareceu e foi clicado.
+    A espera fica a cargo de _fechar_popups_iniciais, que divide uma janela única
+    entre os dois seletores. Se o clique normal for interceptado (outro popup por
+    cima), tenta via JS.
     """
     try:
         loc = page.locator(seletor).first
-        loc.wait_for(state="visible", timeout=timeout)
+        if not loc.is_visible():
+            return False
     except Exception:
         return False
 
     try:
-        loc.click(timeout=5_000)
+        loc.click(timeout=1_000)
     except Exception:
         try:
             loc.evaluate("el => el.click()")
@@ -301,26 +305,29 @@ def _clicar_popup(page, nome: str, seletor: str, timeout: int) -> bool:
             return False
 
     print(f"[popup] '{nome}' clicado.")
-    page.wait_for_timeout(500)
     return True
 
 
-def _fechar_popups_iniciais(page, timeout: int = 5_000) -> None:
-    """Fecha os popups iniciais do portal (tutorial e aviso de cookies), se aparecerem.
+def _fechar_popups_iniciais(page, timeout_ms: int = POPUP_TIMEOUT_MS) -> None:
+    """Fecha o modal de tutorial e o aviso de cookies dentro de uma janela curta.
 
-    Os dois são opcionais e podem surgir em qualquer ordem, por isso são feitas duas
-    rodadas: na segunda, o popup que estava por baixo já fica acessível.
+    Os dois aparecem junto com a página; se não estiverem lá em `timeout_ms`, não
+    vão aparecer. Os seletores são checados em alternância dentro da MESMA janela,
+    e não com um timeout cada — em sequência, o caso comum (nenhum popup) custava
+    mais de 10s. A alternância também resolve a ordem variável: o popup que está
+    por baixo fica clicável assim que o de cima sai.
     """
-    print("[popup] Verificando popups iniciais...")
+    print(f"[popup] Verificando popups iniciais ({timeout_ms / 1000:.0f}s)...")
+    fim = time.monotonic() + timeout_ms / 1000
     pendentes = list(POPUP_SELECTORS)
-    for rodada in (1, 2):
-        pendentes = [
-            (nome, sel)
-            for nome, sel in pendentes
-            if not _clicar_popup(page, nome, sel, timeout if rodada == 1 else 1_500)
-        ]
-        if not pendentes:
-            return
+
+    while pendentes and time.monotonic() < fim:
+        for item in list(pendentes):
+            if _clicar_popup(page, item[0], item[1]):
+                pendentes.remove(item)
+        if pendentes:
+            page.wait_for_timeout(100)
+
     for nome, _ in pendentes:
         print(f"[popup] '{nome}' não apareceu.")
 
