@@ -360,11 +360,64 @@ def ler_status_cnpj(caminho_planilha: str, cnpj: str) -> tuple[str, str]:
     return "", ""
 
 
+def _linha_vazia(ws, idx: int) -> bool:
+    """True se a linha não tem nenhum valor.
+
+    Só o conteúdo conta. Formatação remanescente, bordas e preenchimento de
+    linhas que um dia tiveram dados e foram apagadas são ignorados — é por isso
+    que não se pode usar ws.max_row / ws.append() aqui: eles enxergam essas
+    linhas fantasma como ocupadas e empurram a gravação para muito abaixo.
+    """
+    if idx > ws.max_row:
+        return True
+    return all(
+        celula.value is None or str(celula.value).strip() == ""
+        for celula in ws[idx]
+    )
+
+
+def _proximas_linhas_vazias(ws, quantidade: int) -> list[int]:
+    """Índices das próximas `quantidade` linhas vazias, varrendo de cima para baixo.
+
+    Começa na linha 2 (linha 1 é o cabeçalho) e devolve toda linha sem conteúdo,
+    tenha ela sido usada antes ou não. Linhas ocupadas são puladas, nunca
+    sobrescritas — então se a lacuna do topo for menor que o volume de dados, o
+    restante continua depois da última linha ocupada.
+    """
+    livres: list[int] = []
+    idx = 2
+    while len(livres) < quantidade:
+        if _linha_vazia(ws, idx):
+            livres.append(idx)
+        idx += 1
+    return livres
+
+
+def _anexar_linhas(ws, linhas: list[list]) -> list[int]:
+    """Escreve cada linha na próxima linha vazia. Retorna os índices usados."""
+    destinos = _proximas_linhas_vazias(ws, len(linhas))
+    for destino, valores in zip(destinos, linhas):
+        for col, valor in enumerate(valores, start=1):
+            ws.cell(row=destino, column=col, value=valor)
+    return destinos
+
+
+def _descrever_destinos(destinos: list[int]) -> str:
+    """Resumo legível das linhas usadas, sinalizando quando não são contíguas."""
+    if not destinos:
+        return "nenhuma linha"
+    if len(destinos) == 1:
+        return f"L{destinos[0]}"
+    contiguo = destinos == list(range(destinos[0], destinos[0] + len(destinos)))
+    faixa = f"L{destinos[0]}-L{destinos[-1]}"
+    return faixa if contiguo else f"{faixa} (com saltos)"
+
+
 def escrever_aba_debitos(caminho_planilha: str, dados: list[dict]) -> None:
     """Adiciona os dados extraídos da tabela DCTFWeb na aba 'Débitos' da planilha.
 
     Se a aba ainda não existir, ela é criada com cabeçalho.
-    Os dados são sempre acrescentados ao fim da aba (append).
+    Os dados são sempre acrescentados após a última linha preenchida.
     """
     wb = openpyxl.load_workbook(caminho_planilha)
 
@@ -378,8 +431,8 @@ def escrever_aba_debitos(caminho_planilha: str, dados: list[dict]) -> None:
     else:
         ws = wb["Débitos"]
 
-    for d in dados:
-        ws.append([
+    destinos = _anexar_linhas(ws, [
+        [
             d.get("cnpj", ""),
             d.get("tipo", ""),
             d.get("tributo", ""),
@@ -388,10 +441,13 @@ def escrever_aba_debitos(caminho_planilha: str, dados: list[dict]) -> None:
             d.get("dt_vcto", ""),
             d.get("valor_original", ""),
             d.get("saldo", ""),
-        ])
+        ]
+        for d in dados
+    ])
 
     wb.save(caminho_planilha)
-    print(f"    [✓] Aba 'Débitos': {len(dados)} linha(s) gravada(s).")
+    print(f"    [✓] Aba 'Débitos': {len(dados)} linha(s) gravada(s) em "
+          f"{_descrever_destinos(destinos)}.")
 
 
 # ── DCTFWeb: extração da tabela ────────────────────────────────────────────────
@@ -575,8 +631,8 @@ def escrever_aba_processos_fiscais(caminho_planilha: str, dados: list[dict]) -> 
     else:
         ws = wb["Processos Fiscais"]
 
-    for d in dados:
-        ws.append([
+    destinos = _anexar_linhas(ws, [
+        [
             d.get("cnpj", ""),
             d.get("tipo", ""),
             d.get("receita", ""),
@@ -585,10 +641,13 @@ def escrever_aba_processos_fiscais(caminho_planilha: str, dados: list[dict]) -> 
             d.get("valor_original", ""),
             d.get("saldo", ""),
             d.get("processo_credito", ""),
-        ])
+        ]
+        for d in dados
+    ])
 
     wb.save(caminho_planilha)
-    print(f"    [✓] Aba 'Processos Fiscais': {len(dados)} linha(s) gravada(s).")
+    print(f"    [✓] Aba 'Processos Fiscais': {len(dados)} linha(s) gravada(s) em "
+          f"{_descrever_destinos(destinos)}.")
 
 
 def _extrair_dados_pagina_processo(page, cnpj: str,
