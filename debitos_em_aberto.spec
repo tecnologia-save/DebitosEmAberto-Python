@@ -3,7 +3,9 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 from pathlib import Path
 import patchright as _pw
 
-DEBITOS_DIR      = Path(__file__).parent
+# SPECPATH é injetado pelo PyInstaller no namespace do .spec (já é o diretório).
+# __file__ não existe nesse namespace a partir do PyInstaller 6.x.
+DEBITOS_DIR      = Path(SPECPATH)
 PATCHRIGHT_HOOKS = str(Path(_pw.__file__).parent / '_impl' / '__pyinstaller')
 
 a = Analysis(
