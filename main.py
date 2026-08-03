@@ -55,6 +55,50 @@ SENHAS_JSON      = CERTIFICADOS_DIR / "senhas.json"
 # Chave Gemini — configure via .env (GEMINI_API_KEY=sua_chave) ou variável de ambiente
 _GEMINI_API_KEY_PADRAO = os.environ.get("GEMINI_API_KEY", "")
 
+# Nome do arquivo com a chave embutida no exe pelo debitos_em_aberto.spec
+_CHAVE_EMBUTIDA = "chave_gemini.env"
+
+
+def _ler_chave_de(caminho: Path) -> str:
+    """Lê GEMINI_API_KEY de um arquivo no formato .env. '' se não achar."""
+    try:
+        for linha in caminho.read_text(encoding="utf-8").splitlines():
+            if linha.strip().startswith("GEMINI_API_KEY="):
+                return linha.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _resolver_gemini_key() -> tuple[str, str]:
+    """Resolve a chave do Gemini. Retorna (chave, origem) para o log.
+
+    Ordem de precedência:
+        1. Variável de ambiente já definida — permite trocar a chave numa máquina
+           específica sem rebuild.
+        2. .env ao lado do executável (ou do script, em desenvolvimento).
+        3. Cópia embutida no binário durante o build.
+
+    A chave nunca está no repositório: o .env é gitignored e a cópia embutida é
+    gerada pelo .spec a partir dele no momento do build.
+    """
+    valor = os.environ.get("GEMINI_API_KEY", "").strip()
+    if valor:
+        return valor, "variável de ambiente"
+
+    env_local = LOGIN_ECAC_DIR / ".env"
+    valor = _ler_chave_de(env_local)
+    if valor:
+        return valor, f"{env_local.name} ao lado do executável"
+
+    base_embutida = getattr(sys, "_MEIPASS", None)
+    if base_embutida:
+        valor = _ler_chave_de(Path(base_embutida) / _CHAVE_EMBUTIDA)
+        if valor:
+            return valor, "chave embutida no executável"
+
+    return "", "nenhuma"
+
 URL_SERVICOS_RF        = "https://servicos.receitafederal.gov.br/"
 URL_PENDENCIAS         = "https://servicos.receitafederal.gov.br/servico/pendencias/"
 URL_ANALISE_PENDENCIAS = "https://servicos.receitafederal.gov.br/servico/pendencias/#/analise-pendencias"
@@ -1570,13 +1614,18 @@ def main() -> None:
     CERTIFICADOS_DIR = _resolver_dir_certificados()
     SENHAS_JSON      = CERTIFICADOS_DIR / "senhas.json"
 
-    # Carrega .env do LoginEcac para que GEMINI_API_KEY esteja em os.environ
-    # antes de qualquer chamada ao captcha solver
+    # Carrega o .env local (traz CERT_PFX_*) e resolve a GEMINI_API_KEY antes de
+    # qualquer chamada ao captcha solver
     _env_path = LOGIN_ECAC_DIR / ".env"
     if _env_path.exists():
         load_dotenv(dotenv_path=_env_path, override=True)
-    if not os.environ.get("GEMINI_API_KEY"):
-        os.environ["GEMINI_API_KEY"] = _GEMINI_API_KEY_PADRAO
+
+    _chave, _origem = _resolver_gemini_key()
+    os.environ["GEMINI_API_KEY"] = _chave
+    if _chave:
+        print(f"Chave Gemini:  {_chave[:6]}...{_chave[-4:]}  (origem: {_origem})")
+    else:
+        print("  [!] GEMINI_API_KEY não encontrada — o captcha não será resolvido.")
 
     # Passo 3 (era 2): carrega mapeamento de certificados
     certs = carregar_certificados()
