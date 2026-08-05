@@ -34,19 +34,19 @@ from pathlib import Path
 import pandas as pd
 from dotenv import load_dotenv
 
-# servicos_rf_login / captcha_uipath: pacotes na mesma pasta (repo)
+# servicos_rf_login / resolvedor_captcha: pacotes na mesma pasta (repo)
 # ou em pastas irmãs para layout de desenvolvimento legado
 if getattr(sys, 'frozen', False):
     LOGIN_ECAC_DIR = Path(sys.executable).parent
 else:
     LOGIN_ECAC_DIR = Path(__file__).parent
-    _cap_here    = Path(__file__).parent / "captcha_uipath"
-    _cap_sibling = Path(__file__).parent.parent / "CaptchaSolver"
+    _cap_here    = Path(__file__).parent / "resolvedor_captcha"
+    _cap_sibling = Path(__file__).parent.parent / "ResolvedorCaptcha"
     if not _cap_here.exists() and _cap_sibling.exists():
         sys.path.insert(0, str(_cap_sibling))
 
 from servicos_rf_login import fazer_login                                  # noqa: E402
-from captcha_uipath import solve_hcaptcha                                  # noqa: E402
+from resolvedor_captcha import solve_hcaptcha                                  # noqa: E402
 from ui_upload import main as selecionar_planilha                         # noqa: E402
 
 CERTIFICADOS_DIR = Path(r"C:\Certificados")   # pode ser sobrescrito em main()

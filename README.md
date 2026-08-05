@@ -140,7 +140,7 @@ DebitosEmAberto/
 │   ├── login.py               # Fluxo de autenticação gov.br + certificado
 │   └── log_manager.py         # Registro de erros em arquivo
 │
-├── captcha_uipath/            # Módulo de resolução de hCaptcha
+├── resolvedor_captcha/            # Módulo de resolução de hCaptcha
 │   ├── __init__.py
 │   ├── solver.py              # Lógica de detecção e resolução
 │   └── prompt.md              # Prompt base para o Gemini
@@ -172,7 +172,7 @@ DebitosEmAberto/
 
 ## Resolução de hCaptcha
 
-O módulo `captcha_uipath` detecta automaticamente o tipo de desafio e usa o **Google Gemini** para resolvê-lo:
+O módulo `resolvedor_captcha` detecta automaticamente o tipo de desafio e usa o **Google Gemini** para resolvê-lo:
 
 | Tipo | Descrição | Estratégia |
 |------|-----------|------------|
@@ -214,7 +214,7 @@ Para rodar em modo de desenvolvimento com os pacotes em pastas separadas (layout
 Automações Python/
 ├── DebitosEmAberto/    ← este repositório
 ├── LoginEcac/          ← opcional (legado)
-└── CaptchaSolver/      ← opcional (legado)
+└── ResolvedorCaptcha/      ← opcional (legado)
 ```
 
 O `main.py` detecta automaticamente qual layout está sendo usado e configura o `sys.path` adequadamente.

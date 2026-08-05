@@ -19,7 +19,7 @@ load_dotenv()
 
 from patchright.sync_api import sync_playwright
 
-from captcha_uipath import solve_hcaptcha
+from resolvedor_captcha import solve_hcaptcha
 from .log_manager import registrar_erro
 
 ECAC_URL = "http://cav.receita.fazenda.gov.br/ecac/Default.aspx"
