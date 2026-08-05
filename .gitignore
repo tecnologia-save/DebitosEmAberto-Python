@@ -31,7 +31,7 @@ ecac_login/Certificados/
 senhas.json
 
 # Debug do captcha
-captcha_uipath/debug_screenshots/
+resolvedor_captcha/debug_screenshots/
 debug_screenshots/
 
 # Screenshots de debug do login (gerados em runtime quando um seletor falha)
