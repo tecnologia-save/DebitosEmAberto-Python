@@ -102,5 +102,5 @@ exe = EXE(
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,
-    icon=str(DEBITOS_DIR / 'debito.ico'),
+    icon=str(DEBITOS_DIR / 'icone.ico'),
 )
