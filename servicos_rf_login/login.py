@@ -79,6 +79,15 @@ POPUP_SELECTORS = [
     ("Aceitar", "button[aria-label='Aceitar'], button.br-button:has-text('Aceitar')"),
 ]
 
+# Tutorial que o portal exibe já autenticado, antes da representação do CNPJ.
+# É um elemento diferente do popup de abertura: classe 'skip-tutorial', sem o
+# sufixo '-modal'. O seletor abaixo cobre as duas classes sem casar uma na outra.
+TUTORIAL_POS_LOGIN_SEL = (
+    "a.skip-tutorial:not(.skip-tutorial-modal), "
+    "a[aria-label='Pular Tutorial']:not(.skip-tutorial-modal)"
+)
+TUTORIAL_POS_LOGIN_TIMEOUT_MS = 2_000
+
 # Seletores tentados em ordem para o botão "Seu certificado digital"
 CERT_SELECTORS = [
     "#login-certificate",
@@ -332,6 +341,34 @@ def _fechar_popups_iniciais(page, timeout_ms: int = POPUP_TIMEOUT_MS) -> None:
         print(f"[popup] '{nome}' não apareceu.")
 
 
+def fechar_tutorial_pos_login(page, timeout_ms: int = TUTORIAL_POS_LOGIN_TIMEOUT_MS) -> bool:
+    """Fecha o tutorial que o portal mostra já autenticado, se ele aparecer.
+
+    Chamado antes de abrir o menu do avatar para representar o CNPJ: enquanto o
+    tutorial está aberto ele cobre a tela e intercepta os cliques. Opcional — se
+    não aparecer dentro da janela, segue em frente sem erro.
+
+    Returns:
+        True se o tutorial apareceu e foi fechado.
+    """
+    fim = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < fim:
+        try:
+            loc = page.locator(TUTORIAL_POS_LOGIN_SEL).first
+            if loc.is_visible():
+                try:
+                    loc.click(timeout=1_000)
+                except Exception:
+                    loc.evaluate("el => el.click()")
+                print("[popup] 'Pular Tutorial' (pós-login) clicado.")
+                page.wait_for_timeout(300)
+                return True
+        except Exception:
+            pass
+        page.wait_for_timeout(100)
+    return False
+
+
 def _clicar_certificado(page) -> bool:
     """Tenta clicar no botão 'Seu certificado digital' usando múltiplos seletores."""
     print("Procurando botão 'Seu certificado digital'...")
@@ -438,6 +475,9 @@ def _representar_cnpj_procurador(page, cnpj: str) -> bool:
             time.sleep(1)
 
         try:
+            # 0. Tutorial pós-login cobre a tela e intercepta o clique no avatar
+            fechar_tutorial_pos_login(page)
+
             # 1. Abre menu do avatar
             print("[cnpj] Clicando no avatar...")
             avatar = page.locator('#avatar-dropdown-trigger').first
