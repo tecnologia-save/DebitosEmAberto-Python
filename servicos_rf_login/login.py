@@ -352,7 +352,7 @@ def fechar_tutorial_pos_login(page, timeout_ms: int = TUTORIAL_POS_LOGIN_TIMEOUT
         True se o tutorial apareceu e foi fechado.
     """
     fim = time.monotonic() + timeout_ms / 1000
-    while time.monotonic() < fim:
+    while True:
         try:
             loc = page.locator(TUTORIAL_POS_LOGIN_SEL).first
             if loc.is_visible():
@@ -365,8 +365,11 @@ def fechar_tutorial_pos_login(page, timeout_ms: int = TUTORIAL_POS_LOGIN_TIMEOUT
                 return True
         except Exception:
             pass
+        # Sempre checa ao menos uma vez, mesmo com timeout_ms=0 — é assim que os
+        # chamadores por CNPJ verificam sem pagar espera nenhuma
+        if time.monotonic() >= fim:
+            return False
         page.wait_for_timeout(100)
-    return False
 
 
 def _clicar_certificado(page) -> bool:
@@ -475,8 +478,9 @@ def _representar_cnpj_procurador(page, cnpj: str) -> bool:
             time.sleep(1)
 
         try:
-            # 0. Tutorial pós-login cobre a tela e intercepta o clique no avatar
-            fechar_tutorial_pos_login(page)
+            # 0. Rede de segurança: o tutorial cobre a tela e intercepta o clique
+            #    no avatar. Timeout 0 — quem espera por ele é o pós-login.
+            fechar_tutorial_pos_login(page, timeout_ms=0)
 
             # 1. Abre menu do avatar
             print("[cnpj] Clicando no avatar...")
@@ -764,6 +768,12 @@ def main(
         break
 
     print(f"Login nos Serviços RF concluído. URL final: {page.url}")
+
+    # --- Tutorial pós-login ---
+    # Aparece já autenticado, depois do captcha do certificado ser resolvido —
+    # ou logo após entrar, quando não há captcha. Aqui é o único ponto que paga
+    # espera; os chamadores por CNPJ checam com timeout 0.
+    fechar_tutorial_pos_login(page)
 
     # --- Representar CNPJ como Procurador (se informado) ---
     if cnpj:
