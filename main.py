@@ -46,6 +46,7 @@ else:
         sys.path.insert(0, str(_cap_sibling))
 
 from servicos_rf_login import fazer_login                                  # noqa: E402
+from servicos_rf_login.login import fechar_tutorial_pos_login              # noqa: E402
 from resolvedor_captcha import solve_hcaptcha                                  # noqa: E402
 from ui_upload import main as selecionar_planilha                         # noqa: E402
 
@@ -344,57 +345,94 @@ def ler_e_ordenar(caminho: str) -> pd.DataFrame:
     return df
 
 
-def escrever_coluna_d(caminho_planilha: str, cnpj: str, valor: str) -> None:
-    """Abre a planilha com openpyxl e escreve `valor` na coluna D da linha
-    cuja coluna A corresponde ao CNPJ informado (comparação normalizada)."""
-    wb = openpyxl.load_workbook(caminho_planilha)
-    ws = wb["Empresas"]
+# ── Sessão de planilha ────────────────────────────────────────────────────────
+# Antes, cada leitura recarregava o arquivo inteiro do disco e cada escrita o
+# regravava inteiro. Medido numa planilha de 1031 empresas e 20 mil linhas de
+# resultado: 1,2s só para ler duas células e 2,9s por gravação, com até quatro
+# gravações por CNPJ. Só a verificação de "já concluído" custava 21 minutos.
+#
+# Agora o arquivo é carregado uma vez e mantido em memória; as escritas apenas
+# marcam a sessão como suja e o disco é tocado uma vez por CNPJ. Se o processo
+# morrer no meio de um CNPJ, esse CNPJ perde o que não foi salvo — mas ele
+# também não foi marcado como concluído, então a próxima execução o refaz.
+_sessao_planilha: dict = {"caminho": None, "wb": None, "sujo": False}
+
+
+def _wb_sessao(caminho_planilha: str):
+    """Workbook da sessão, carregado do disco só na primeira chamada."""
+    if _sessao_planilha["wb"] is None or _sessao_planilha["caminho"] != caminho_planilha:
+        fechar_planilha()
+        _sessao_planilha["caminho"] = caminho_planilha
+        _sessao_planilha["wb"] = openpyxl.load_workbook(caminho_planilha)
+        _sessao_planilha["sujo"] = False
+    return _sessao_planilha["wb"]
+
+
+def salvar_planilha() -> bool:
+    """Grava no disco se houver alteração pendente. Retorna True se gravou.
+
+    Uma falha (arquivo aberto no Excel, por exemplo) mantém a sessão suja para
+    que a próxima chamada tente de novo, em vez de descartar os dados.
+    """
+    if _sessao_planilha["wb"] is None or not _sessao_planilha["sujo"]:
+        return False
+    try:
+        _sessao_planilha["wb"].save(_sessao_planilha["caminho"])
+    except Exception as e:
+        print(f"    [!] Falha ao salvar a planilha: {type(e).__name__}: {e}")
+        registrar_erro(f"Planilha: falha ao salvar. {type(e).__name__}: {e}")
+        return False
+    _sessao_planilha["sujo"] = False
+    return True
+
+
+def fechar_planilha() -> None:
+    """Salva o que estiver pendente e descarta o workbook da memória."""
+    salvar_planilha()
+    if _sessao_planilha["wb"] is not None:
+        try:
+            _sessao_planilha["wb"].close()
+        except Exception:
+            pass
+    _sessao_planilha.update({"caminho": None, "wb": None, "sujo": False})
+
+
+def _escrever_status(caminho_planilha: str, cnpj: str, valor: str,
+                     coluna: int, rotulo: str) -> None:
+    """Escreve `valor` na coluna indicada da linha do CNPJ na aba 'Empresas'."""
+    ws = _wb_sessao(caminho_planilha)["Empresas"]
 
     for linha in ws.iter_rows(min_row=2):
         celula_cnpj = linha[0]   # Coluna A
         if celula_cnpj.value and _normalizar_cnpj(celula_cnpj.value) == cnpj:
-            celula_d = linha[3]   # Coluna D
-            celula_d.value = valor
-            celula_d.alignment = Alignment(horizontal="center", vertical="center")
-            break
-    else:
-        print(f"    [!] CNPJ {cnpj} não encontrado na planilha para escrita.")
+            celula = linha[coluna]
+            celula.value = valor
+            celula.alignment = Alignment(horizontal="center", vertical="center")
+            _sessao_planilha["sujo"] = True
+            print(f"    [✓] Coluna {rotulo} → '{valor}'  (CNPJ {cnpj})")
+            return
 
-    wb.save(caminho_planilha)
-    print(f"    [✓] Coluna D → '{valor}'  (CNPJ {cnpj})")
+    print(f"    [!] CNPJ {cnpj} não encontrado na planilha para escrita em {rotulo}.")
+
+
+def escrever_coluna_d(caminho_planilha: str, cnpj: str, valor: str) -> None:
+    """Escreve o status do DCTFWeb na coluna D da aba 'Empresas'."""
+    _escrever_status(caminho_planilha, cnpj, valor, coluna=3, rotulo="D")
 
 
 def escrever_coluna_e(caminho_planilha: str, cnpj: str, valor: str) -> None:
-    """Abre a planilha com openpyxl e escreve `valor` na coluna E da linha
-    cuja coluna A corresponde ao CNPJ informado (comparação normalizada).
-
-    Coluna E da aba 'Empresas' registra o status dos Processos Fiscais.
-    """
-    wb = openpyxl.load_workbook(caminho_planilha)
-    ws = wb["Empresas"]
-
-    for linha in ws.iter_rows(min_row=2):
-        celula_cnpj = linha[0]   # Coluna A
-        if celula_cnpj.value and _normalizar_cnpj(celula_cnpj.value) == cnpj:
-            celula_e = linha[4]   # Coluna E
-            celula_e.value = valor
-            celula_e.alignment = Alignment(horizontal="center", vertical="center")
-            break
-    else:
-        print(f"    [!] CNPJ {cnpj} não encontrado na planilha para escrita em E.")
-
-    wb.save(caminho_planilha)
-    print(f"    [✓] Coluna E → '{valor}'  (CNPJ {cnpj})")
+    """Escreve o status dos Processos Fiscais na coluna E da aba 'Empresas'."""
+    _escrever_status(caminho_planilha, cnpj, valor, coluna=4, rotulo="E")
 
 
 def ler_status_cnpj(caminho_planilha: str, cnpj: str) -> tuple[str, str]:
     """Lê os valores das colunas D e E da aba 'Empresas' para o CNPJ dado.
 
     Retorna (val_d, val_e) — strings vazias quando as células estiverem em branco.
-    Usado para verificar se o CNPJ já foi (parcialmente) processado.
+    Usado para verificar se o CNPJ já foi (parcialmente) processado. Lê da sessão
+    em memória, então enxerga o que foi escrito nesta execução sem ir ao disco.
     """
-    wb = openpyxl.load_workbook(caminho_planilha)
-    ws = wb["Empresas"]
+    ws = _wb_sessao(caminho_planilha)["Empresas"]
     for linha in ws.iter_rows(min_row=2):
         celula_cnpj = linha[0]   # Coluna A
         if celula_cnpj.value and _normalizar_cnpj(celula_cnpj.value) == cnpj:
@@ -463,7 +501,7 @@ def escrever_aba_debitos(caminho_planilha: str, dados: list[dict]) -> None:
     Se a aba ainda não existir, ela é criada com cabeçalho.
     Os dados são sempre acrescentados após a última linha preenchida.
     """
-    wb = openpyxl.load_workbook(caminho_planilha)
+    wb = _wb_sessao(caminho_planilha)
 
     if "Débitos" not in wb.sheetnames:
         ws = wb.create_sheet("Débitos")
@@ -489,7 +527,7 @@ def escrever_aba_debitos(caminho_planilha: str, dados: list[dict]) -> None:
         for d in dados
     ])
 
-    wb.save(caminho_planilha)
+    _sessao_planilha["sujo"] = True
     print(f"    [✓] Aba 'Débitos': {len(dados)} linha(s) gravada(s) em "
           f"{_descrever_destinos(destinos)}.")
 
@@ -664,7 +702,7 @@ def extrair_debitos_dctfweb(page, cnpj: str, caminho_planilha: str) -> None:
 
 def escrever_aba_processos_fiscais(caminho_planilha: str, dados: list[dict]) -> None:
     """Adiciona linhas na aba 'Processos Fiscais' (cria se não existir)."""
-    wb = openpyxl.load_workbook(caminho_planilha)
+    wb = _wb_sessao(caminho_planilha)
 
     if "Processos Fiscais" not in wb.sheetnames:
         ws = wb.create_sheet("Processos Fiscais")
@@ -689,7 +727,7 @@ def escrever_aba_processos_fiscais(caminho_planilha: str, dados: list[dict]) -> 
         for d in dados
     ])
 
-    wb.save(caminho_planilha)
+    _sessao_planilha["sujo"] = True
     print(f"    [✓] Aba 'Processos Fiscais': {len(dados)} linha(s) gravada(s) em "
           f"{_descrever_destinos(destinos)}.")
 
@@ -959,6 +997,10 @@ def trocar_perfil_procurador(page, cnpj: str) -> None:
             except Exception:
                 pass
             page.wait_for_timeout(2_000)
+
+        # ── Tutorial pós-login ────────────────────────────────────────────────
+        # Se estiver aberto, cobre a tela e intercepta o clique no avatar
+        fechar_tutorial_pos_login(page)
 
         # ── Abre menu do avatar ───────────────────────────────────────────────
         print(f"    → Abrindo menu do certificado...")
@@ -1425,11 +1467,16 @@ def processar_cnpj(page, cnpj: str, row: pd.Series,
 
     # ── Navegação e processamento ─────────────────────────────────────────────
     # fazer_login() já autenticou no portal; ir direto para representação
-    trocar_perfil_procurador(page, cnpj)
+    try:
+        trocar_perfil_procurador(page, cnpj)
 
-    status = verificar_pendencias(page, cnpj, caminho_planilha,
-                                   skip_dctfweb=skip_dctfweb,
-                                   skip_processo=skip_processo)
+        status = verificar_pendencias(page, cnpj, caminho_planilha,
+                                       skip_dctfweb=skip_dctfweb,
+                                       skip_processo=skip_processo)
+    finally:
+        # Único toque no disco por CNPJ. No finally para que uma falha no meio
+        # do fluxo não descarte o que já foi extraído.
+        salvar_planilha()
 
     return status
 
@@ -1644,7 +1691,12 @@ def main() -> None:
         print(f"  {status}  {cert}  ({qtd} CNPJ{'s' if qtd > 1 else ''})")
 
     # Passo 4: fluxo completo para cada CNPJ
-    processar(df, certs, planilha)
+    try:
+        processar(df, certs, planilha)
+    finally:
+        # Garante que qualquer alteração pendente vá para o disco mesmo se o
+        # processamento for interrompido
+        fechar_planilha()
 
     print("\nProcessamento concluído.")
 
