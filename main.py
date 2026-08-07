@@ -292,14 +292,58 @@ def carregar_certificados() -> dict[str, tuple[Path, str]]:
     }
 
 
+def _palavras_cert(texto: str) -> set[str]:
+    """Palavras normalizadas de um nome de certificado, sem acento nem pontuação."""
+    return {p for p in re.split(r"[^a-z0-9]+", _remover_acentos(str(texto).lower())) if p}
+
+
 def _buscar_certificado(nome: str, certs: dict) -> str | None:
-    """Retorna a chave normalizada de `certs` que corresponde ao nome do certificado."""
+    """Resolve o nome escrito na planilha para uma chave de `certs`.
+
+    Ordem de tentativa:
+        1. Igualdade exata do nome normalizado.
+        2. Palavras inteiras — todas as palavras do nome aparecem no certificado.
+           É o caso comum: a planilha traz "Cristiano" e o arquivo é
+           "Cristiano Vasconcelos.pfx". difflib sozinho não resolvia isso, porque
+           compara as strings inteiras e a razão fica em 0,60, abaixo do cutoff.
+        3. Substring bidirecional ("save tec" → "save tecnologia").
+        4. Aproximação por difflib.
+
+    Nos passos 2 a 4, empate NÃO é resolvido por chute: com "Save Inteligência" e
+    "Save Tecnologia" na pasta, o nome "Save" descreve os dois, e usar o errado
+    significa autenticar na conta de outra empresa. A ambiguidade é reportada e a
+    linha fica sem certificado.
+    """
     chave = _remover_acentos(Path(nome).stem.lower())
     if chave in certs:
         return chave
-    matches = difflib.get_close_matches(chave, certs.keys(), n=1, cutoff=0.75)
+
+    def _decidir(candidatos: list[str], criterio: str) -> str | None:
+        if len(candidatos) == 1:
+            print(f"    → Certificado '{nome}' resolvido para "
+                  f"'{candidatos[0]}' ({criterio}).")
+            return candidatos[0]
+        print(f"    [!] Nome de certificado ambíguo: '{nome}' ({criterio}) "
+              f"corresponde a {len(candidatos)}: {', '.join(sorted(candidatos))}.")
+        print(f"         Escreva na planilha um nome que identifique só um deles.")
+        return None
+
+    # 2. Todas as palavras do nome aparecem como palavras inteiras no certificado
+    palavras = _palavras_cert(chave)
+    por_palavra = [k for k in certs if palavras and palavras <= _palavras_cert(k)]
+    if por_palavra:
+        return _decidir(por_palavra, "palavras inteiras")
+
+    # 3. Substring bidirecional
+    por_substring = [k for k in certs if chave in k or k in chave]
+    if por_substring:
+        return _decidir(por_substring, "correspondência parcial")
+
+    # 4. Aproximação
+    matches = difflib.get_close_matches(chave, list(certs.keys()), n=1, cutoff=0.75)
     if matches:
-        print(f"    → Certificado '{nome}' resolvido para '{matches[0]}' (correspondência aproximada).")
+        print(f"    → Certificado '{nome}' resolvido para '{matches[0]}' "
+              f"(correspondência aproximada).")
         return matches[0]
     return None
 
