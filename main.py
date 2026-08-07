@@ -355,7 +355,7 @@ def ler_e_ordenar(caminho: str) -> pd.DataFrame:
 # marcam a sessão como suja e o disco é tocado uma vez por CNPJ. Se o processo
 # morrer no meio de um CNPJ, esse CNPJ perde o que não foi salvo — mas ele
 # também não foi marcado como concluído, então a próxima execução o refaz.
-_sessao_planilha: dict = {"caminho": None, "wb": None, "sujo": False}
+_sessao_planilha: dict = {"caminho": None, "wb": None, "sujo": False, "status": None}
 
 
 def _wb_sessao(caminho_planilha: str):
@@ -394,7 +394,27 @@ def fechar_planilha() -> None:
             _sessao_planilha["wb"].close()
         except Exception:
             pass
-    _sessao_planilha.update({"caminho": None, "wb": None, "sujo": False})
+    _sessao_planilha.update({"caminho": None, "wb": None, "sujo": False, "status": None})
+
+
+def mapa_status(caminho_planilha: str) -> dict[str, tuple[str, str]]:
+    """Mapa {cnpj: (coluna_D, coluna_E)} da aba 'Empresas', montado uma só vez.
+
+    Varrer a aba a cada consulta era O(n) por CNPJ; com o mapa a consulta vira
+    uma busca em dicionário. Também é o que permite filtrar as linhas já
+    concluídas antes de abrir qualquer navegador.
+    """
+    if _sessao_planilha["status"] is None or _sessao_planilha["caminho"] != caminho_planilha:
+        ws = _wb_sessao(caminho_planilha)["Empresas"]
+        mapa: dict[str, tuple[str, str]] = {}
+        for linha in ws.iter_rows(min_row=2):
+            if not linha[0].value:
+                continue
+            val_d = str(linha[3].value or "").strip() if len(linha) > 3 else ""
+            val_e = str(linha[4].value or "").strip() if len(linha) > 4 else ""
+            mapa[_normalizar_cnpj(linha[0].value)] = (val_d, val_e)
+        _sessao_planilha["status"] = mapa
+    return _sessao_planilha["status"]
 
 
 def _escrever_status(caminho_planilha: str, cnpj: str, valor: str,
@@ -409,6 +429,13 @@ def _escrever_status(caminho_planilha: str, cnpj: str, valor: str,
             celula.value = valor
             celula.alignment = Alignment(horizontal="center", vertical="center")
             _sessao_planilha["sujo"] = True
+
+            # Mantém o mapa em sincronia com a célula
+            mapa = _sessao_planilha["status"]
+            if mapa is not None:
+                val_d, val_e = mapa.get(cnpj, ("", ""))
+                mapa[cnpj] = (valor, val_e) if coluna == 3 else (val_d, valor)
+
             print(f"    [✓] Coluna {rotulo} → '{valor}'  (CNPJ {cnpj})")
             return
 
@@ -429,17 +456,32 @@ def ler_status_cnpj(caminho_planilha: str, cnpj: str) -> tuple[str, str]:
     """Lê os valores das colunas D e E da aba 'Empresas' para o CNPJ dado.
 
     Retorna (val_d, val_e) — strings vazias quando as células estiverem em branco.
-    Usado para verificar se o CNPJ já foi (parcialmente) processado. Lê da sessão
-    em memória, então enxerga o que foi escrito nesta execução sem ir ao disco.
+    Consulta o mapa em memória, então é uma busca em dicionário e já enxerga o
+    que foi escrito nesta execução.
     """
-    ws = _wb_sessao(caminho_planilha)["Empresas"]
-    for linha in ws.iter_rows(min_row=2):
-        celula_cnpj = linha[0]   # Coluna A
-        if celula_cnpj.value and _normalizar_cnpj(celula_cnpj.value) == cnpj:
-            val_d = str(linha[3].value or "").strip()
-            val_e = str(linha[4].value or "").strip() if len(linha) > 4 else ""
-            return val_d, val_e
-    return "", ""
+    return mapa_status(caminho_planilha).get(cnpj, ("", ""))
+
+
+def filtrar_pendentes(df: pd.DataFrame, caminho_planilha: str) -> tuple[pd.DataFrame, int]:
+    """Remove do DataFrame as linhas com as colunas D e E já preenchidas.
+
+    Roda antes de abrir o navegador. Sem isso a automação fazia login num
+    certificado para só então descobrir, CNPJ a CNPJ, que todas as linhas dele
+    já estavam prontas — pagando um login inteiro à toa.
+
+    Returns:
+        (df_pendentes, quantidade_de_linhas_ja_concluidas)
+    """
+    mapa = mapa_status(caminho_planilha)
+    col_cnpj = df.columns[0]
+
+    def _pendente(valor) -> bool:
+        cnpj = _normalizar_cnpj(re.sub(r"\.0+$", "", str(valor).strip()))
+        val_d, val_e = mapa.get(cnpj, ("", ""))
+        return not (val_d and val_e)
+
+    mask = df[col_cnpj].map(_pendente)
+    return df[mask].reset_index(drop=True), int((~mask).sum())
 
 
 def _linha_vazia(ws, idx: int) -> bool:
@@ -999,8 +1041,10 @@ def trocar_perfil_procurador(page, cnpj: str) -> None:
             page.wait_for_timeout(2_000)
 
         # ── Tutorial pós-login ────────────────────────────────────────────────
-        # Se estiver aberto, cobre a tela e intercepta o clique no avatar
-        fechar_tutorial_pos_login(page)
+        # Rede de segurança: se estiver aberto, cobre a tela e intercepta o
+        # clique no avatar. Timeout 0 para não pagar espera a cada CNPJ — quem
+        # espera pelo tutorial é fazer_login(), uma vez por sessão.
+        fechar_tutorial_pos_login(page, timeout_ms=0)
 
         # ── Abre menu do avatar ───────────────────────────────────────────────
         print(f"    → Abrindo menu do certificado...")
@@ -1680,17 +1724,31 @@ def main() -> None:
     # Passo 3: leitura e ordenação por certificado (coluna C)
     df           = ler_e_ordenar(planilha)
     col_cert     = df.columns[2]
-    certificados = df[col_cert].dropna().unique().tolist()
+    total_lido   = len(df)
 
-    print(f"Registros:    {len(df)}")
+    # Passo 4: descarta o que já está concluído ANTES de abrir o navegador.
+    # Um certificado cujas linhas estejam todas prontas nem chega a ser aberto.
+    _t0 = time.perf_counter()
+    df, ja_concluidas = filtrar_pendentes(df, planilha)
+    print(f"\nRegistros:    {total_lido}")
+    print(f"Já concluídos: {ja_concluidas} (colunas D e E preenchidas) — "
+          f"verificado em {time.perf_counter() - _t0:.1f}s")
+    print(f"A processar:  {len(df)}")
+
+    if df.empty:
+        print("\nTodas as linhas já estão concluídas. Nada a fazer.")
+        fechar_planilha()
+        return
+
+    certificados = df[col_cert].dropna().unique().tolist()
     print(f"Certificados: {len(certificados)}")
     for cert in certificados:
         qtd    = (df[col_cert] == cert).sum()
         chave  = _buscar_certificado(cert, certs)
         status = "✓" if chave is not None else "✗ NÃO ENCONTRADO"
-        print(f"  {status}  {cert}  ({qtd} CNPJ{'s' if qtd > 1 else ''})")
+        print(f"  {status}  {cert}  ({qtd} CNPJ{'s' if qtd > 1 else ''} pendente(s))")
 
-    # Passo 4: fluxo completo para cada CNPJ
+    # Passo 5: fluxo completo para cada CNPJ pendente
     try:
         processar(df, certs, planilha)
     finally:
