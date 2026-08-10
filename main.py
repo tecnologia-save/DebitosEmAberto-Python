@@ -122,7 +122,14 @@ _INTERVALO_TROCA           = 30   # segundos
 class FalhaPermanente(Exception):
     """Erro permanente que impede processar este CNPJ — não retentar.
     Exemplos: procuração expirada/inválida, CNPJ não autorizado pelo portal.
+
+    `status_coluna_d`, quando informado, é gravado na coluna D da aba 'Empresas'
+    para registrar o motivo na planilha em vez de deixar a linha em branco.
     """
+
+    def __init__(self, mensagem: str, status_coluna_d: str | None = None):
+        super().__init__(mensagem)
+        self.status_coluna_d = status_coluna_d
 
 
 # Palavras que o portal exibe em span.mensagemErro para indicar que o CNPJ
@@ -133,6 +140,34 @@ _PALAVRAS_ERRO_PERMANENTE = (
     "não possui", "sem procuração", "não encontrad",
     "cnpj inválid", "não autorizado",
 )
+
+# Recusas com status próprio na coluna D: {trecho da mensagem: status}.
+# A comparação é feita sem acento e em minúsculas.
+#
+# "Sua autorização como procurador não permite acesso a este serviço" não casava
+# com nenhuma palavra da tupla acima — ela tem "procuração" e "autorizado", e a
+# mensagem traz "procurador" e "autorização". O resultado era o loop de espera
+# rodar até estourar os 60s sem classificar o erro.
+_ERROS_COM_STATUS = {
+    "nao permite acesso a este servico": "Procuração sem autorização",
+}
+
+
+def _status_erro_permanente(mensagem: str) -> str | None:
+    """Status para a coluna D quando a recusa é definitiva e conhecida."""
+    msg = _remover_acentos(mensagem.lower())
+    for trecho, status in _ERROS_COM_STATUS.items():
+        if trecho in msg:
+            return status
+    return None
+
+
+def _erro_permanente(mensagem: str) -> bool:
+    """True se a mensagem do portal caracteriza recusa que não deve ser retentada."""
+    if _status_erro_permanente(mensagem):
+        return True
+    msg = _remover_acentos(mensagem.lower())
+    return any(_remover_acentos(p) in msg for p in _PALAVRAS_ERRO_PERMANENTE)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1179,9 +1214,10 @@ def trocar_perfil_procurador(page, cnpj: str) -> None:
                     print(f"    → [!] Erro anti-bot: '{_err_msg}'")
                     _erro_bloqueado = True
                     break
-                if any(p in _err_lower for p in _PALAVRAS_ERRO_PERMANENTE):
+                if _erro_permanente(_err_msg):
                     raise FalhaPermanente(
-                        f"Portal recusou CNPJ {cnpj}: '{_err_msg}'"
+                        f"Portal recusou CNPJ {cnpj}: '{_err_msg}'",
+                        status_coluna_d=_status_erro_permanente(_err_msg),
                     )
 
             # 1. Popup nova janela
@@ -1376,9 +1412,10 @@ def trocar_perfil_procurador(page, cnpj: str) -> None:
                     f"Acesso bloqueado por anti-bot após captcha — "
                     f"{_MAX_TENTATIVAS_REPR} tentativa(s). Reprocessar manualmente."
                 )
-            if any(p in _epc_lower for p in _PALAVRAS_ERRO_PERMANENTE):
+            if _erro_permanente(_err_pos_captcha):
                 raise FalhaPermanente(
-                    f"Portal recusou CNPJ {cnpj}: '{_err_pos_captcha}'"
+                    f"Portal recusou CNPJ {cnpj}: '{_err_pos_captcha}'",
+                    status_coluna_d=_status_erro_permanente(_err_pos_captcha),
                 )
 
         # ── Verifica que o CNPJ representado realmente mudou ──────────────────
@@ -1561,6 +1598,12 @@ def processar_cnpj(page, cnpj: str, row: pd.Series,
         status = verificar_pendencias(page, cnpj, caminho_planilha,
                                        skip_dctfweb=skip_dctfweb,
                                        skip_processo=skip_processo)
+    except FalhaPermanente as e:
+        # Registra o motivo na planilha antes de propagar, para que a recusa
+        # fique visível em vez de a linha voltar em branco
+        if e.status_coluna_d:
+            escrever_coluna_d(caminho_planilha, cnpj, e.status_coluna_d)
+        raise
     finally:
         # Único toque no disco por CNPJ. No finally para que uma falha no meio
         # do fluxo não descarte o que já foi extraído.
