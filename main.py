@@ -323,6 +323,18 @@ def _listar_certs_windows() -> list[dict]:
         return []
 
 
+# CN da ICP-Brasil termina em ":" seguido do CPF (11) ou CNPJ (14) do titular.
+# Certificados de sistema — "Microsoft Your Phone" e afins — têm CN em GUID e não
+# servem para o gov.br. Precisam ficar de fora: apontar a policy de auto-seleção
+# para um deles faz o Chrome desistir e abrir a janela de escolha manual.
+_RE_CN_ICP = re.compile(r":\s*\d{11}(?:\d{3})?\s*$")
+
+
+def _e_certificado_icp(cn: str) -> bool:
+    """True se o CN tem a forma da ICP-Brasil ('NOME:CPF' ou 'NOME:CNPJ')."""
+    return bool(_RE_CN_ICP.search(str(cn or "")))
+
+
 def carregar_certificados() -> dict[str, dict]:
     """Retorna {nome_normalizado: info_do_certificado} lendo do Windows.
 
@@ -332,23 +344,31 @@ def carregar_certificados() -> dict[str, dict]:
 
     A chave do dicionário é o nome normalizado (sem acento, minúsculo), gerada
     tanto a partir do FriendlyName quanto do CN, para que a planilha possa trazer
-    qualquer um dos dois.
+    qualquer um dos dois. Só entram certificados da ICP-Brasil.
     """
     certs = _listar_certs_windows()
     if not certs:
         return {}
 
     mapa: dict[str, dict] = {}
+    ignorados = 0
     for c in certs:
         # O CN da ICP-Brasil vem como "NOME DA EMPRESA:12345678000190" — o
         # documento não ajuda a casar com a planilha, então também indexamos o
         # nome sem ele.
         cn = str(c.get("subject_cn") or "").strip()
+        if not _e_certificado_icp(cn):
+            ignorados += 1
+            continue
         nomes = {c.get("display") or "", cn, cn.split(":")[0]}
         for nome in nomes:
             chave = _remover_acentos(str(nome).strip().lower())
             if chave:
                 mapa.setdefault(chave, c)
+
+    if ignorados:
+        print(f"[cert] {ignorados} certificado(s) de sistema ignorado(s) "
+              f"(CN fora do padrão da ICP-Brasil).")
     return mapa
 
 
@@ -370,34 +390,68 @@ def _buscar_certificado(nome: str, certs: dict) -> str | None:
         2. Prefixo por palavras — o nome escrito são as primeiras palavras do
            certificado ("Cristiano" → "CRISTIANO VASCONCELOS BOAVENTURA LEITE").
         3. Palavras inteiras em qualquer posição — pega citar só o sobrenome.
-        4. Substring bidirecional.
-        5. Aproximação por difflib.
+        4. Prefixo ignorando separadores ("GSH" → "G S H CONSULTORIAS").
+        5. Substring bidirecional.
+        6. Aproximação por difflib.
 
-    Nos passos 2 a 5, empate NÃO é resolvido por chute: "Save" descreve três
-    certificados instalados, e usar o errado significa autenticar na conta de
-    outra empresa. A ambiguidade é reportada e a linha fica sem certificado.
+    Um critério que empata não encerra a busca — o seguinte pode separar os
+    candidatos. Mas empate NUNCA é resolvido por chute: se nenhum critério isolar
+    um único certificado, a linha fica sem certificado, porque usar o errado
+    significa autenticar na conta de outra empresa.
     """
     chave = _remover_acentos(Path(nome).stem.lower())
     if chave in certs:
         return chave
 
-    def _identidade(chave: str):
-        """Identifica o certificado por trás da chave.
+    def _identidade(k: str):
+        """Certificado por trás da chave.
 
         Cada certificado é indexado sob mais de um nome (FriendlyName, CN e CN sem
-        o documento), então várias chaves podem apontar para o MESMO certificado.
-        Sem isso, um nome parcial casaria em duas chaves do mesmo cert e seria
-        reportado como ambíguo sem motivo.
+        o documento), então várias chaves apontam para o MESMO certificado. Sem
+        isso, um nome parcial casaria em duas chaves do mesmo cert e viraria
+        empate sem motivo. Dois certificados de mesmo CN são intercambiáveis para
+        a policy de auto-seleção, por isso o CN é a identidade.
         """
-        valor = certs.get(chave)
+        valor = certs.get(k)
         if isinstance(valor, dict):
-            return valor.get("thumbprint") or valor.get("subject_cn") or chave
-        return chave
+            return valor.get("subject_cn") or k
+        return k
 
-    def _decidir(candidatos: list[str], criterio: str) -> str | None:
+    tokens   = _tokens_cert(chave)
+    palavras = set(tokens)
+    compacto = "".join(tokens)
+
+    criterios: list[tuple[str, list]] = []
+    if tokens:
+        criterios.append((
+            "início do nome",
+            [k for k in certs if _tokens_cert(k)[:len(tokens)] == tokens],
+        ))
+        criterios.append((
+            "palavras inteiras",
+            [k for k in certs if palavras <= _palavras_cert(k)],
+        ))
+        criterios.append((
+            "início do nome sem separadores",
+            [k for k in certs if "".join(_tokens_cert(k)).startswith(compacto)],
+        ))
+    if chave:
+        criterios.append((
+            "correspondência parcial",
+            [k for k in certs if chave in k or k in chave],
+        ))
+        criterios.append((
+            "aproximação",
+            difflib.get_close_matches(chave, list(certs.keys()), n=1, cutoff=0.75),
+        ))
+
+    empate = None
+    for criterio, candidatos in criterios:
+        if not candidatos:
+            continue
         distintos: dict = {}
-        for c in candidatos:
-            distintos.setdefault(_identidade(c), c)
+        for k in candidatos:
+            distintos.setdefault(_identidade(k), k)
 
         if len(distintos) == 1:
             escolhido = next(iter(distintos.values()))
@@ -405,51 +459,19 @@ def _buscar_certificado(nome: str, certs: dict) -> str | None:
                   f"'{escolhido}' ({criterio}).")
             return escolhido
 
+        # Empate neste critério não encerra a busca: um critério seguinte pode
+        # separar os candidatos. "D&S" vira os tokens ['d','s'], que são o início
+        # tanto de "D&S ASSESSORIA" quanto de "D.S.R. ASSESSORIA" — mas só o
+        # primeiro contém a string "d&s". Guarda o empate mais preciso para
+        # reportar caso nenhum critério resolva.
+        if empate is None:
+            empate = (criterio, sorted(distintos.values()))
+
+    if empate:
+        criterio, nomes = empate
         print(f"    [!] Nome de certificado ambíguo: '{nome}' ({criterio}) "
-              f"corresponde a {len(distintos)}: "
-              f"{', '.join(sorted(distintos.values()))}.")
-        print(f"         Escreva na planilha um nome que identifique só um deles.")
-        return None
-
-    # 2. Prefixo por palavras: o nome escrito são as primeiras palavras do
-    #    certificado. É como as pessoas abreviam — cortando o final ("Save
-    #    Tecnologia" para "SAVE TECNOLOGIA E INFORMACAO LTDA"), não o meio. Vem
-    #    antes do critério 3 porque distingue certificados que ele confundiria:
-    #    "Save Tecnologia" é prefixo de um só, mas as duas palavras aparecem
-    #    também em "SAVE SOLUCOES EM TECNOLOGIA E INFORMACAO LTDA".
-    tokens = _tokens_cert(chave)
-    if tokens:
-        por_prefixo = [k for k in certs if _tokens_cert(k)[:len(tokens)] == tokens]
-        if por_prefixo:
-            return _decidir(por_prefixo, "início do nome")
-
-    # 3. Todas as palavras do nome aparecem como palavras inteiras no certificado,
-    #    em qualquer posição — pega o caso de citar só o sobrenome.
-    palavras = set(tokens)
-    por_palavra = [k for k in certs if palavras and palavras <= _palavras_cert(k)]
-    if por_palavra:
-        return _decidir(por_palavra, "palavras inteiras")
-
-    # 4. Prefixo ignorando separadores: a planilha escreve "GSH" e o certificado é
-    #    "G S H CONSULTORIAS". Mais frouxo que os anteriores, por isso vem depois.
-    compacto = "".join(tokens)
-    if compacto:
-        por_compacto = [k for k in certs
-                        if "".join(_tokens_cert(k)).startswith(compacto)]
-        if por_compacto:
-            return _decidir(por_compacto, "início do nome sem separadores")
-
-    # 5. Substring bidirecional
-    por_substring = [k for k in certs if chave in k or k in chave]
-    if por_substring:
-        return _decidir(por_substring, "correspondência parcial")
-
-    # 4. Aproximação
-    matches = difflib.get_close_matches(chave, list(certs.keys()), n=1, cutoff=0.75)
-    if matches:
-        print(f"    → Certificado '{nome}' resolvido para '{matches[0]}' "
-              f"(correspondência aproximada).")
-        return matches[0]
+              f"corresponde a {len(nomes)}: {', '.join(nomes)}.")
+        print("         Escreva na planilha um nome que identifique só um deles.")
     return None
 
 
