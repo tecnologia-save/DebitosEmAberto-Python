@@ -48,6 +48,8 @@ a = Analysis(
         *collect_data_files('google.generativeai'),
     ],
     hiddenimports=[
+        'cert_windows',
+        'winreg',
         'servicos_rf_login',
         'servicos_rf_login.login',
         'servicos_rf_login.log_manager',

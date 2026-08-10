@@ -19,6 +19,7 @@ Fluxo:
 """
 
 import argparse
+import base64
 import difflib
 import json
 import logging
@@ -26,6 +27,7 @@ import os
 import openpyxl
 from openpyxl.styles import Alignment
 import re
+import subprocess
 import sys
 import time
 import unicodedata
@@ -45,13 +47,14 @@ else:
     if not _cap_here.exists() and _cap_sibling.exists():
         sys.path.insert(0, str(_cap_sibling))
 
+import cert_windows                                                        # noqa: E402
 from servicos_rf_login import fazer_login                                  # noqa: E402
 from servicos_rf_login.login import fechar_tutorial_pos_login              # noqa: E402
 from resolvedor_captcha import solve_hcaptcha                                  # noqa: E402
 from ui_upload import main as selecionar_planilha                         # noqa: E402
 
-CERTIFICADOS_DIR = Path(r"C:\Certificados")   # pode ser sobrescrito em main()
-SENHAS_JSON      = CERTIFICADOS_DIR / "senhas.json"
+# Os certificados vêm do Windows Certificate Store (Cert:\CurrentUser\My), não
+# mais de uma pasta com .pfx e um senhas.json ao lado.
 
 # Chave Gemini — configure via .env (GEMINI_API_KEY=sua_chave) ou variável de ambiente
 _GEMINI_API_KEY_PADRAO = os.environ.get("GEMINI_API_KEY", "")
@@ -266,126 +269,177 @@ def _aguardar_networkidle(page, timeout: int = 60_000, label: str = "") -> None:
 
 # ── Certificados ──────────────────────────────────────────────────────────────
 
-def _resolver_dir_certificados() -> Path:
-    """Resolve a pasta de certificados na seguinte ordem:
 
-    1. C:\\Certificados                    — caminho padrão (máquina do dev)
-    2. <pasta do script>\\Certificados     — ao lado do main.py / iniciar.bat
-    3. Dialog tkinter                      — usuário seleciona manualmente
+def _listar_certs_windows() -> list[dict]:
+    """Lê os certificados com chave privada do Windows Certificate Store.
+
+    Só retorna certificados utilizáveis: com chave privada, não arquivados e
+    dentro do período de validade. Um certificado vencido no repositório não
+    deve concorrer com um válido de mesmo nome.
     """
-    import tkinter as tk
-    from tkinter import filedialog, messagebox
+    ps = (
+        "$now=Get-Date\n"
+        "$c=@(Get-ChildItem Cert:\\CurrentUser\\My|Where-Object{\n"
+        "  $_.HasPrivateKey -and\n"
+        "  -not $_.Archived -and\n"
+        "  $_.NotBefore -le $now -and\n"
+        "  $_.NotAfter  -ge $now\n"
+        "})\n"
+        "$c|ForEach-Object{\n"
+        "  $n=if($_.Subject-match 'CN=([^,]+)'){$Matches[1]}else{$_.Subject}\n"
+        "  $d=if($_.FriendlyName){[string]$_.FriendlyName}else{$n}\n"
+        "  [PSCustomObject]@{\n"
+        "    display=$d\n"
+        "    subject_cn=$n\n"
+        "    thumbprint=$_.Thumbprint\n"
+        "    serial=$_.SerialNumber\n"
+        "    notafter=$_.NotAfter.ToString('yyyy-MM-dd')\n"
+        "  }\n"
+        "}|ConvertTo-Json -Compress"
+    )
+    enc = base64.b64encode(ps.encode("utf-16-le")).decode("ascii")
 
-    def _valida(p: Path) -> bool:
-        return p.is_dir() and (p / "senhas.json").exists()
+    kwargs = {}
+    if os.name == "nt":
+        # Esconde o console do PowerShell — a automação já tem o próprio
+        info = subprocess.STARTUPINFO()
+        info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        info.wShowWindow = 0
+        kwargs = {"creationflags": 0x08000000, "startupinfo": info}
 
-    # 1. Caminho padrão
-    padrao = Path(r"C:\Certificados")
-    if _valida(padrao):
-        print(f"[cert] Pasta de certificados: {padrao}")
-        return padrao
-
-    # 2. Pasta 'Certificados' ao lado do executável (frozen) ou do script (dev)
-    _base = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
-    local = _base / "Certificados"
-    if _valida(local):
-        print(f"[cert] Pasta de certificados: {local}")
-        return local
-
-    # 3. Nenhum caminho padrão encontrado — pede ao usuário
-    print("[!] Pasta de certificados não encontrada nos caminhos padrão.")
-    print("    Abrindo seletor de pasta...")
-
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes("-topmost", True)
-
-    while True:
-        pasta = filedialog.askdirectory(
-            title="Selecione a pasta com os certificados (.pfx) e senhas.json",
-            parent=root,
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", enc],
+            capture_output=True, text=True, timeout=30,
+            encoding="utf-8", errors="replace", **kwargs,
         )
-
-        if not pasta:
-            continuar = messagebox.askyesno(
-                "Certificados não encontrados",
-                "Nenhuma pasta selecionada.\nDeseja tentar novamente?",
-                parent=root,
-            )
-            if not continuar:
-                root.destroy()
-                print("[!] Operação cancelada pelo usuário. Encerrando.")
-                sys.exit(1)
-            continue
-
-        caminho = Path(pasta)
-        if not (caminho / "senhas.json").exists():
-            messagebox.showwarning(
-                "Pasta inválida",
-                f"O arquivo 'senhas.json' não foi encontrado em:\n{pasta}\n\n"
-                "Selecione a pasta correta.",
-                parent=root,
-            )
-            continue
-
-        root.destroy()
-        print(f"[cert] Pasta de certificados informada pelo usuário: {caminho}")
-        return caminho
+        saida = (r.stdout or "").strip()
+        if not saida:
+            return []
+        dados = json.loads(saida)
+        return [dados] if isinstance(dados, dict) else dados
+    except Exception as e:
+        print(f"[cert] Falha ao ler o repositório de certificados: {type(e).__name__}: {e}")
+        return []
 
 
-def carregar_certificados() -> dict[str, tuple[Path, str]]:
-    """Lê senhas.json e retorna {nome_normalizado: (pfx_path, senha)}."""
-    with open(SENHAS_JSON, encoding="utf-8") as f:
-        senhas: dict[str, str] = json.load(f)
-    return {
-        _remover_acentos(Path(nome).stem.lower()): (CERTIFICADOS_DIR / nome, senha)
-        for nome, senha in senhas.items()
-    }
+def carregar_certificados() -> dict[str, dict]:
+    """Retorna {nome_normalizado: info_do_certificado} lendo do Windows.
+
+    Substitui o antigo par C:\\Certificados + senhas.json: os certificados são os
+    que o usuário já tem instalados na máquina, e a autenticação é feita pelo
+    próprio Chrome via CAPI — sem arquivo .pfx e sem senha em lugar nenhum.
+
+    A chave do dicionário é o nome normalizado (sem acento, minúsculo), gerada
+    tanto a partir do FriendlyName quanto do CN, para que a planilha possa trazer
+    qualquer um dos dois.
+    """
+    certs = _listar_certs_windows()
+    if not certs:
+        return {}
+
+    mapa: dict[str, dict] = {}
+    for c in certs:
+        # O CN da ICP-Brasil vem como "NOME DA EMPRESA:12345678000190" — o
+        # documento não ajuda a casar com a planilha, então também indexamos o
+        # nome sem ele.
+        cn = str(c.get("subject_cn") or "").strip()
+        nomes = {c.get("display") or "", cn, cn.split(":")[0]}
+        for nome in nomes:
+            chave = _remover_acentos(str(nome).strip().lower())
+            if chave:
+                mapa.setdefault(chave, c)
+    return mapa
+
+
+def _tokens_cert(texto: str) -> list[str]:
+    """Palavras normalizadas, na ordem, sem acento nem pontuação."""
+    return [p for p in re.split(r"[^a-z0-9]+", _remover_acentos(str(texto).lower())) if p]
 
 
 def _palavras_cert(texto: str) -> set[str]:
     """Palavras normalizadas de um nome de certificado, sem acento nem pontuação."""
-    return {p for p in re.split(r"[^a-z0-9]+", _remover_acentos(str(texto).lower())) if p}
+    return set(_tokens_cert(texto))
 
 
 def _buscar_certificado(nome: str, certs: dict) -> str | None:
     """Resolve o nome escrito na planilha para uma chave de `certs`.
 
-    Ordem de tentativa:
+    Ordem de tentativa, da mais precisa para a mais frouxa:
         1. Igualdade exata do nome normalizado.
-        2. Palavras inteiras — todas as palavras do nome aparecem no certificado.
-           É o caso comum: a planilha traz "Cristiano" e o arquivo é
-           "Cristiano Vasconcelos.pfx". difflib sozinho não resolvia isso, porque
-           compara as strings inteiras e a razão fica em 0,60, abaixo do cutoff.
-        3. Substring bidirecional ("save tec" → "save tecnologia").
-        4. Aproximação por difflib.
+        2. Prefixo por palavras — o nome escrito são as primeiras palavras do
+           certificado ("Cristiano" → "CRISTIANO VASCONCELOS BOAVENTURA LEITE").
+        3. Palavras inteiras em qualquer posição — pega citar só o sobrenome.
+        4. Substring bidirecional.
+        5. Aproximação por difflib.
 
-    Nos passos 2 a 4, empate NÃO é resolvido por chute: com "Save Inteligência" e
-    "Save Tecnologia" na pasta, o nome "Save" descreve os dois, e usar o errado
-    significa autenticar na conta de outra empresa. A ambiguidade é reportada e a
-    linha fica sem certificado.
+    Nos passos 2 a 5, empate NÃO é resolvido por chute: "Save" descreve três
+    certificados instalados, e usar o errado significa autenticar na conta de
+    outra empresa. A ambiguidade é reportada e a linha fica sem certificado.
     """
     chave = _remover_acentos(Path(nome).stem.lower())
     if chave in certs:
         return chave
 
+    def _identidade(chave: str):
+        """Identifica o certificado por trás da chave.
+
+        Cada certificado é indexado sob mais de um nome (FriendlyName, CN e CN sem
+        o documento), então várias chaves podem apontar para o MESMO certificado.
+        Sem isso, um nome parcial casaria em duas chaves do mesmo cert e seria
+        reportado como ambíguo sem motivo.
+        """
+        valor = certs.get(chave)
+        if isinstance(valor, dict):
+            return valor.get("thumbprint") or valor.get("subject_cn") or chave
+        return chave
+
     def _decidir(candidatos: list[str], criterio: str) -> str | None:
-        if len(candidatos) == 1:
+        distintos: dict = {}
+        for c in candidatos:
+            distintos.setdefault(_identidade(c), c)
+
+        if len(distintos) == 1:
+            escolhido = next(iter(distintos.values()))
             print(f"    → Certificado '{nome}' resolvido para "
-                  f"'{candidatos[0]}' ({criterio}).")
-            return candidatos[0]
+                  f"'{escolhido}' ({criterio}).")
+            return escolhido
+
         print(f"    [!] Nome de certificado ambíguo: '{nome}' ({criterio}) "
-              f"corresponde a {len(candidatos)}: {', '.join(sorted(candidatos))}.")
+              f"corresponde a {len(distintos)}: "
+              f"{', '.join(sorted(distintos.values()))}.")
         print(f"         Escreva na planilha um nome que identifique só um deles.")
         return None
 
-    # 2. Todas as palavras do nome aparecem como palavras inteiras no certificado
-    palavras = _palavras_cert(chave)
+    # 2. Prefixo por palavras: o nome escrito são as primeiras palavras do
+    #    certificado. É como as pessoas abreviam — cortando o final ("Save
+    #    Tecnologia" para "SAVE TECNOLOGIA E INFORMACAO LTDA"), não o meio. Vem
+    #    antes do critério 3 porque distingue certificados que ele confundiria:
+    #    "Save Tecnologia" é prefixo de um só, mas as duas palavras aparecem
+    #    também em "SAVE SOLUCOES EM TECNOLOGIA E INFORMACAO LTDA".
+    tokens = _tokens_cert(chave)
+    if tokens:
+        por_prefixo = [k for k in certs if _tokens_cert(k)[:len(tokens)] == tokens]
+        if por_prefixo:
+            return _decidir(por_prefixo, "início do nome")
+
+    # 3. Todas as palavras do nome aparecem como palavras inteiras no certificado,
+    #    em qualquer posição — pega o caso de citar só o sobrenome.
+    palavras = set(tokens)
     por_palavra = [k for k in certs if palavras and palavras <= _palavras_cert(k)]
     if por_palavra:
         return _decidir(por_palavra, "palavras inteiras")
 
-    # 3. Substring bidirecional
+    # 4. Prefixo ignorando separadores: a planilha escreve "GSH" e o certificado é
+    #    "G S H CONSULTORIAS". Mais frouxo que os anteriores, por isso vem depois.
+    compacto = "".join(tokens)
+    if compacto:
+        por_compacto = [k for k in certs
+                        if "".join(_tokens_cert(k)).startswith(compacto)]
+        if por_compacto:
+            return _decidir(por_compacto, "início do nome sem separadores")
+
+    # 5. Substring bidirecional
     por_substring = [k for k in certs if chave in k or k in chave]
     if por_substring:
         return _decidir(por_substring, "correspondência parcial")
@@ -399,8 +453,13 @@ def _buscar_certificado(nome: str, certs: dict) -> str | None:
     return None
 
 
-def atualizar_env_certificado(pfx_path: Path, passphrase: str) -> None:
-    """Atualiza CERT_PFX_PATH e CERT_PFX_PASSPHRASE no .env do LoginEcac."""
+def atualizar_env_certificado(cert_subject_cn: str) -> None:
+    """Grava CERT_SUBJECT_CN no .env e no ambiente do processo.
+
+    O servicos_rf_login lê essa variável para montar a flag
+    --auto-select-certificate-for-urls do Chrome. Substituiu CERT_PFX_PATH e
+    CERT_PFX_PASSPHRASE: no modo Windows Store não existe arquivo nem senha.
+    """
     env_path = LOGIN_ECAC_DIR / ".env"
     existentes: dict[str, str] = {}
     if env_path.exists():
@@ -410,11 +469,14 @@ def atualizar_env_certificado(pfx_path: Path, passphrase: str) -> None:
                 existentes[chave.strip()] = valor.strip()
     if "GEMINI_API_KEY" not in existentes:
         existentes["GEMINI_API_KEY"] = os.environ.get("GEMINI_API_KEY", _GEMINI_API_KEY_PADRAO)
-    existentes["CERT_PFX_PATH"]       = str(pfx_path)
-    existentes["CERT_PFX_PASSPHRASE"] = passphrase
+    # Resíduo do modo antigo: se sobraram no .env, o login tentaria o .pfx
+    existentes.pop("CERT_PFX_PATH", None)
+    existentes.pop("CERT_PFX_PASSPHRASE", None)
+    existentes["CERT_SUBJECT_CN"] = cert_subject_cn
+
     conteudo = "\n".join(f"{k}={v}" for k, v in existentes.items()) + "\n"
     env_path.write_text(conteudo, encoding="utf-8")
-    print(f"    [cert] Configurado: {pfx_path.name}")
+    os.environ["CERT_SUBJECT_CN"] = cert_subject_cn
 
 
 # ── Planilha ──────────────────────────────────────────────────────────────────
@@ -1668,7 +1730,7 @@ def processar_cnpj(page, cnpj: str, row: pd.Series,
 
 # ── Processamento principal ───────────────────────────────────────────────────
 
-def processar(df: pd.DataFrame, certs: dict[str, tuple[Path, str]],
+def processar(df: pd.DataFrame, certs: dict[str, dict],
               caminho_planilha: str) -> None:
     """Itera pela planilha ordenada e realiza o fluxo completo para cada CNPJ.
 
@@ -1716,20 +1778,30 @@ def processar(df: pd.DataFrame, certs: dict[str, tuple[Path, str]],
 
             chave = _buscar_certificado(certificado, certs)
             if chave is None:
-                print(f"  [!] Certificado '{certificado}' não encontrado em {SENHAS_JSON.name}.")
-                print(f"       Disponíveis: {', '.join(sorted(certs.keys()))}")
+                print(f"  [!] Certificado '{certificado}' não está instalado nesta máquina.")
+                print(f"       Instalados: {', '.join(sorted(certs.keys()))}")
                 cert_atual = certificado
                 i += 1
                 continue
 
-            pfx_path, passphrase = certs[chave]
-            atualizar_env_certificado(pfx_path, passphrase)
+            cert_subject_cn = str(certs[chave].get("subject_cn") or "").strip()
+            atualizar_env_certificado(cert_subject_cn)
+            print(f"    [cert] {certs[chave].get('display', chave)}  (CN: {cert_subject_cn})")
+
+            # Guardião elevado (1 UAC): escreve a policy de auto-seleção do Chrome
+            # e a REMOVE quando esta automação terminar, por qualquer motivo. Sem
+            # ela o Chrome abriria o diálogo de escolha de certificado.
+            policy_ok = cert_windows.iniciar_guarda(cert_subject_cn)
+            if not policy_ok:
+                print("    [!] Policy de auto-seleção não ficou ativa. O Chrome pode "
+                      "pedir a escolha do certificado manualmente.")
             cert_atual = certificado
 
         chave = _buscar_certificado(cert_atual, certs)
         if chave is None:
             i += 1
             continue
+        cert_subject_cn = str(certs[chave].get("subject_cn") or "").strip()
 
         print(f"\n  [{idx + 1}/{total}] CNPJ: {cnpj}")
 
@@ -1737,8 +1809,7 @@ def processar(df: pd.DataFrame, certs: dict[str, tuple[Path, str]],
         if browser_aberto is None:
             try:
                 _res = fazer_login(
-                    cert_pfx_path=str(pfx_path),
-                    cert_pfx_passphrase=passphrase,
+                    cert_subject_cn=cert_subject_cn,
                     project_dir=LOGIN_ECAC_DIR,
                 )
                 if _res is None:
@@ -1845,13 +1916,8 @@ def main() -> None:
 
     print(f"\nPlanilha: {planilha}")
 
-    # Passo 2: resolve pasta de certificados (padrão → ao lado do script → dialog)
-    global CERTIFICADOS_DIR, SENHAS_JSON
-    CERTIFICADOS_DIR = _resolver_dir_certificados()
-    SENHAS_JSON      = CERTIFICADOS_DIR / "senhas.json"
-
-    # Carrega o .env local (traz CERT_PFX_*) e resolve a GEMINI_API_KEY antes de
-    # qualquer chamada ao captcha solver
+    # Carrega o .env local e resolve a GEMINI_API_KEY antes de qualquer chamada
+    # ao captcha solver
     _env_path = LOGIN_ECAC_DIR / ".env"
     if _env_path.exists():
         load_dotenv(dotenv_path=_env_path, override=True)
@@ -1863,8 +1929,18 @@ def main() -> None:
     else:
         print("  [!] GEMINI_API_KEY não encontrada — o captcha não será resolvido.")
 
-    # Passo 3 (era 2): carrega mapeamento de certificados
+    # Passo 2: certificados instalados nesta máquina (Windows Certificate Store)
+    print("\nLendo certificados instalados na máquina...")
     certs = carregar_certificados()
+    if not certs:
+        print("  [!] Nenhum certificado com chave privada, válido e não arquivado,")
+        print("      foi encontrado em Cert:\\CurrentUser\\My.")
+        print("      Instale o certificado no Windows antes de rodar a automação.")
+        sys.exit(1)
+    _instalados = sorted({c.get("display") or c.get("subject_cn", "?") for c in certs.values()})
+    print(f"Certificados instalados: {len(_instalados)}")
+    for _nome in _instalados:
+        print(f"  • {_nome}")
 
     # Passo 3: leitura e ordenação por certificado (coluna C)
     df           = ler_e_ordenar(planilha)
@@ -1905,4 +1981,18 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # Processo guardião: relançado ELEVADO por cert_windows.iniciar_guarda, escreve
+    # a policy de auto-seleção do Chrome e a remove quando o PID da automação
+    # morrer — por qualquer motivo. Precisa vir antes de main() porque no exe
+    # congelado o guardião é o próprio executável, com estes argumentos.
+    if len(sys.argv) >= 4 and sys.argv[1] == "--guard":
+        try:
+            cert_windows.guardiao(
+                int(sys.argv[2]),
+                base64.b64decode(sys.argv[3]).decode("utf-8"),
+            )
+        except Exception:
+            cert_windows.limpar_autoselect()
+        sys.exit(0)
+
     main()

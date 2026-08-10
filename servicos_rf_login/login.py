@@ -282,6 +282,30 @@ def _configurar_download(user_data_dir: str) -> None:
     print(f"[download] Diretório configurado: {downloads_dir}")
 
 
+def _build_auto_select_cert_flag(subject_cn: str = "") -> str:
+    """Monta --auto-select-certificate-for-urls filtrando pelo CN do certificado.
+
+    Modo Windows Store: em vez de entregar o .pfx ao Patchright (cujo proxy TLS do
+    Node falha com ICP-Brasil — SSL alert 40), o Chrome apresenta nativamente
+    (CAPI) o certificado já instalado na máquina. Com o CN no filtro, ele escolhe
+    o correto quando há vários instalados, sem exibir diálogo e sem senha.
+    """
+    subject_cn = (subject_cn or os.getenv("CERT_SUBJECT_CN", "")).strip()
+    filtro = {"SUBJECT": {"CN": subject_cn}} if subject_cn else {}
+    padroes = [
+        "https://[*.]acesso.gov.br",
+        "https://[*.]receita.fazenda.gov.br",
+        "https://[*.]fazenda.gov.br",
+        "https://[*.]receitafederal.gov.br",
+    ]
+    entradas = json.dumps(
+        [{"pattern": p, "filter": filtro} for p in padroes],
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return f"--auto-select-certificate-for-urls={entradas}"
+
+
 def _build_client_certificates(cert_path: str, cert_pass: str) -> list[dict]:
     """Monta a lista de client_certificates para todas as origens relevantes."""
     return [
@@ -536,21 +560,37 @@ def main(
     cert_pfx_passphrase: str | None = None,
     project_dir: "Path | str | None" = None,
     cnpj: str | None = None,
+    cert_subject_cn: str = "",
 ):
     """Realiza o login nos Serviços da Receita Federal e retorna (playwright, context, page).
 
+    Há duas formas de informar o certificado:
+
+    A) Windows Certificate Store (recomendado) — passe `cert_subject_cn` com o CN
+       de um certificado instalado na máquina. O Chrome o apresenta nativamente
+       via CAPI e a flag --auto-select-certificate-for-urls escolhe o correto pelo
+       CN, sem diálogo. Não usa arquivo .pfx nem senha. Depende da policy de
+       auto-seleção estar ativa (ver cert_windows.iniciar_guarda no chamador).
+
+    B) Arquivo .pfx (legado) — via `cert_name`, `cert_pfx_path` +
+       `cert_pfx_passphrase` ou as variáveis do .env. Entrega o certificado ao
+       Patchright como client_certificates, o que pode falhar com ICP-Brasil
+       (SSL alert 40).
+
     Args:
         cert_name:
-            Nome (ou parte do nome) do certificado em C:\\Certificados.
-            A senha é lida automaticamente do senhas.json.
+            Nome (ou parte) do certificado em C:\\Certificados (modo B).
         cert_pfx_path:
-            Caminho absoluto para o arquivo .pfx.
+            Caminho absoluto para o arquivo .pfx (modo B).
         cert_pfx_passphrase:
-            Senha do .pfx informado em cert_pfx_path.
+            Senha do .pfx informado em cert_pfx_path (modo B).
         project_dir:
             Diretório do projeto chamador. Padrão: Path.cwd().
         cnpj:
             CNPJ da empresa a representar como Procurador após o login.
+        cert_subject_cn:
+            CN do certificado instalado no Windows (modo A). Quando informado,
+            tem prioridade sobre o modo B.
 
     Returns:
         Tupla (p, context, page) em caso de sucesso, ou None em caso de falha.
@@ -560,15 +600,27 @@ def main(
     project_dir = Path(project_dir)
 
     # --- Resolver certificado ---
-    resolved_path, resolved_pass = _resolver_certificado(
-        cert_pfx_path, cert_pfx_passphrase, cert_name, project_dir
-    )
+    usar_windows_store = bool(cert_subject_cn and cert_subject_cn.strip())
+    resolved_path = resolved_pass = None
+
+    if usar_windows_store:
+        cert_subject_cn = cert_subject_cn.strip()
+        os.environ["CERT_SUBJECT_CN"] = cert_subject_cn
+        print(f"[cert] Certificado do Windows Store. CN: {cert_subject_cn}")
+    else:
+        resolved_path, resolved_pass = _resolver_certificado(
+            cert_pfx_path, cert_pfx_passphrase, cert_name, project_dir
+        )
 
     user_data_dir = str(project_dir / "chrome_debug_profile")
     os.makedirs(user_data_dir, exist_ok=True)
     _configurar_download(user_data_dir)
 
     # --- Montar argumentos de lançamento do Chrome ---
+    chrome_args = ["--start-maximized", "--remote-debugging-port=9222"]
+    if usar_windows_store:
+        chrome_args.append(_build_auto_select_cert_flag(cert_subject_cn))
+
     launch_kwargs = dict(
         user_data_dir=user_data_dir,
         channel="chrome",
@@ -576,13 +628,13 @@ def main(
         no_viewport=True,
         ignore_https_errors=True,
         accept_downloads=True,
-        args=["--start-maximized", "--remote-debugging-port=9222"],
+        args=chrome_args,
     )
-    if resolved_path and resolved_pass:
+    if not usar_windows_store and resolved_path and resolved_pass:
         launch_kwargs["client_certificates"] = _build_client_certificates(
             resolved_path, resolved_pass
         )
-    else:
+    elif not usar_windows_store:
         print("[cert] Nenhum certificado configurado. O navegador abrirá sem certificado embutido.")
 
     # --- Iniciar Playwright e Chrome ---

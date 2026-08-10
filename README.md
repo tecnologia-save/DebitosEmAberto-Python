@@ -1,13 +1,13 @@
 # Débitos em Aberto — Automação eCAC
 
-Automação Python que consulta o status de **débitos em aberto** de empresas no portal da Receita Federal (eCAC / Serviços RF), usando autenticação por **certificado digital A1 (.pfx)** e resolvendo automaticamente os **hCaptcha** com Gemini AI.
+Automação Python que consulta o status de **débitos em aberto** de empresas no portal da Receita Federal (eCAC / Serviços RF), usando o **certificado digital já instalado no Windows** e resolvendo automaticamente os **hCaptcha** com Gemini AI.
 
 ---
 
 ## Funcionalidades
 
 - Interface gráfica simples (Tkinter) para seleção da planilha de entrada
-- Login no eCAC via certificado digital A1 (`.pfx`) e fluxo gov.br
+- Login via certificado instalado no Windows (CAPI) e fluxo gov.br
 - Representação de múltiplos CNPJs como Procurador no portal da RF
 - Consulta de pendências fiscais para cada CNPJ
 - Preenchimento automático do resultado na coluna D da planilha
@@ -25,7 +25,7 @@ Automação Python que consulta o status de **débitos em aberto** de empresas n
 |-----------|--------|
 | Python | 3.11+ |
 | Google Chrome | instalado no sistema |
-| Certificado digital A1 | arquivo `.pfx` |
+| Certificado digital | instalado no Windows |
 
 ### Instalação das dependências
 
@@ -43,27 +43,26 @@ patchright install chromium
 
 ## Configuração
 
-### 1. Pasta de Certificados
+### 1. Certificados
 
-Crie a pasta `C:\Certificados\` (ou uma pasta `Certificados\` ao lado do `main.py`) contendo:
+**Não é preciso configurar nada.** A automação lê os certificados já instalados no
+Windows (`Cert:\CurrentUser\My`) — os mesmos que aparecem no navegador. Não existe
+pasta de `.pfx` nem arquivo de senhas.
 
-```
-C:\Certificados\
-├── empresa_a.pfx          # certificado digital A1
-├── empresa_b.pfx
-└── senhas.json            # senhas dos certificados
-```
+Requisitos do certificado para ser considerado:
 
-Formato do `senhas.json`:
+- ter chave privada
+- não estar arquivado
+- estar dentro do período de validade
 
-```json
-{
-  "empresa_a.pfx": "senha123",
-  "empresa_b.pfx": "outra_senha"
-}
-```
+A autenticação é feita pelo próprio Chrome via CAPI: a automação escreve a policy
+`AutoSelectCertificateForUrls` no registro, apontando o CN do certificado escolhido,
+e o Chrome o apresenta sem exibir diálogo e sem pedir senha.
 
-> **Nota:** A pasta `Certificados/` e o arquivo `senhas.json` estão no `.gitignore` — **nunca commite certificados ou senhas**.
+> **UAC:** ao trocar de certificado, o Windows pede elevação uma vez. Um processo
+> guardião mantém a policy enquanto a automação roda e a **remove ao terminar** —
+> por fim normal, erro, Ctrl+C ou fechamento da janela — para não deixar o Chrome
+> do usuário com auto-seleção presa.
 
 ### 2. Chave Google Gemini
 
@@ -87,11 +86,17 @@ Use `PLANILHA MODELO.xlsx` como base. A aba **`Empresas`** deve ter:
 |--------|-------|---------|
 | A | CNPJ | `12345678000195` |
 | B | EMPRESA | `Empresa XYZ Ltda` |
-| C | CERTIFICADO | `empresa_a.pfx` |
+| C | CERTIFICADO | `Cristiano` |
 | D | RESULTADO | *(preenchido pela automação)* |
 
 - CNPJs podem ser formatados (`XX.XXX.XXX/XXXX-XX`) ou apenas dígitos
-- A coluna C deve conter o **nome exato do arquivo `.pfx`** em `Certificados/`
+- A coluna C aceita o nome do certificado **como você o chama** — não precisa ser
+  o nome completo. `Cristiano` encontra `CRISTIANO VASCONCELOS BOAVENTURA LEITE`,
+  `GSH` encontra `G S H CONSULTORIAS`, `Cardoso` encontra `EMPRESARIAL CARDOSO LTDA`.
+  Acentos e maiúsculas são ignorados
+- Se o nome descrever **mais de um** certificado instalado, a automação avisa e
+  pula a linha em vez de escolher — usar o certificado errado significaria entrar
+  na conta de outra empresa
 - A automação ordena por certificado para minimizar re-logins
 
 ---
@@ -158,7 +163,7 @@ DebitosEmAberto/
 2. Leitura e ordenação por certificado
        ↓
 3. Para cada grupo de certificado:
-   ├── Login no eCAC (patchright + certificado .pfx)
+   ├── Login (patchright + certificado do Windows via CAPI)
    └── Autenticação gov.br (hCaptcha automático se necessário)
        ↓
 4. Para cada CNPJ:
@@ -189,9 +194,8 @@ O módulo `resolvedor_captcha` detecta automaticamente o tipo de desafio e usa o
 
 | Variável | Descrição | Obrigatório |
 |----------|-----------|-------------|
-| `GEMINI_API_KEY` | Chave de API do Google Gemini | Sim |
-| `CERT_PFX_PATH` | Caminho do certificado .pfx | Auto (via planilha) |
-| `CERT_PFX_PASSPHRASE` | Senha do certificado | Auto (via senhas.json) |
+| `GEMINI_API_KEY` | Chave de API do Google Gemini | Sim (embutida no .exe pelo build) |
+| `CERT_SUBJECT_CN` | CN do certificado do Windows | Auto (via planilha) |
 
 ---
 
