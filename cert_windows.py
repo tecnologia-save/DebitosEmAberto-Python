@@ -37,56 +37,80 @@ CERT_URLS = [
 ]
 REG_PATH = r"Software\Policies\Google\Chrome\AutoSelectCertificateForUrls"
 
+# A policy é escrita nas DUAS colmeias, e não só em HKCU.
+#
+# O guardião roda elevado. Quando o UAC eleva usando uma conta de administrador
+# diferente da do usuário logado, o HKEY_CURRENT_USER do guardião é a colmeia
+# DAQUELA conta — a policy é gravada com sucesso, mas o Chrome, rodando como o
+# usuário normal, nunca a enxerga. O sintoma é exatamente este: o guardião
+# registra "policy escrita" e mesmo assim a janela de seleção aparece.
+#
+# HKLM não tem essa ambiguidade: é machine-wide e o Chrome sempre a lê. HKCU
+# continua sendo escrita porque funciona sem elevação em máquinas onde a ACL
+# permite, e porque é o caminho usado pelas demais automações.
+_COLMEIAS = (
+    ("HKCU", winreg.HKEY_CURRENT_USER),
+    ("HKLM", winreg.HKEY_LOCAL_MACHINE),
+)
+
 
 # ── Operações de registro (podem exigir elevação) ─────────────────────────────
 
 def definir_autoselect(cn: str) -> None:
-    """Escreve a policy para o Chrome auto-selecionar o certificado pelo CN."""
-    key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, REG_PATH, 0, winreg.KEY_ALL_ACCESS)
-    try:
-        i = 1
-        while True:
+    """Escreve a policy para o Chrome auto-selecionar o certificado pelo CN.
+
+    Grava em HKCU e HKLM. Basta uma das duas dar certo; um erro de permissão na
+    outra é esperado e não interrompe.
+    """
+    entradas = [
+        json.dumps({"pattern": url, "filter": {"SUBJECT": {"CN": cn}}})
+        for url in CERT_URLS
+    ]
+    gravadas = []
+    for rotulo, raiz in _COLMEIAS:
+        try:
+            key = winreg.CreateKeyEx(raiz, REG_PATH, 0, winreg.KEY_ALL_ACCESS)
             try:
-                winreg.DeleteValue(key, str(i))
-                i += 1
-            except OSError:
-                break
-        for idx, url in enumerate(CERT_URLS, 1):
-            entry = json.dumps({"pattern": url, "filter": {"SUBJECT": {"CN": cn}}})
-            winreg.SetValueEx(key, str(idx), 0, winreg.REG_SZ, entry)
-    finally:
-        winreg.CloseKey(key)
-    print(f"[wincert] AutoSelect configurado para: {cn}")
+                i = 1
+                while True:
+                    try:
+                        winreg.DeleteValue(key, str(i))
+                        i += 1
+                    except OSError:
+                        break
+                for idx, entry in enumerate(entradas, 1):
+                    winreg.SetValueEx(key, str(idx), 0, winreg.REG_SZ, entry)
+                gravadas.append(rotulo)
+            finally:
+                winreg.CloseKey(key)
+        except OSError as e:
+            print(f"[wincert] {rotulo} indisponivel ({e.__class__.__name__}).")
+
+    if gravadas:
+        print(f"[wincert] AutoSelect configurado em {'+'.join(gravadas)} para: {cn}")
+    else:
+        print(f"[wincert] FALHA: nao foi possivel escrever a policy para: {cn}")
 
 
 def limpar_autoselect() -> None:
-    """Remove a policy, devolvendo o Chrome ao comportamento normal."""
-    try:
-        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, REG_PATH)
-        print("[wincert] Policy AutoSelect removida.")
-    except FileNotFoundError:
-        pass
-    except OSError:
-        pass
-
-
-def policy_existe() -> bool:
-    """True se a policy está escrita no registro."""
-    try:
-        key = winreg.OpenKeyEx(winreg.HKEY_CURRENT_USER, REG_PATH, 0, winreg.KEY_READ)
+    """Remove a policy das duas colmeias, devolvendo o Chrome ao normal."""
+    removidas = []
+    for rotulo, raiz in _COLMEIAS:
         try:
-            winreg.QueryValueEx(key, "1")
-            return True
-        finally:
-            winreg.CloseKey(key)
-    except OSError:
-        return False
+            winreg.DeleteKey(raiz, REG_PATH)
+            removidas.append(rotulo)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+    if removidas:
+        print(f"[wincert] Policy AutoSelect removida de {'+'.join(removidas)}.")
 
 
-def policy_cn() -> str:
-    """CN que está escrito na policy agora, ou '' se não houver policy."""
+def _ler_cn(raiz) -> str:
+    """CN escrito na policy da colmeia indicada, ou '' se não houver."""
     try:
-        key = winreg.OpenKeyEx(winreg.HKEY_CURRENT_USER, REG_PATH, 0, winreg.KEY_READ)
+        key = winreg.OpenKeyEx(raiz, REG_PATH, 0, winreg.KEY_READ)
         try:
             valor, _ = winreg.QueryValueEx(key, "1")
         finally:
@@ -94,6 +118,34 @@ def policy_cn() -> str:
         return json.loads(valor).get("filter", {}).get("SUBJECT", {}).get("CN", "")
     except (OSError, ValueError, KeyError, TypeError):
         return ""
+
+
+def policy_existe() -> bool:
+    """True se a policy está escrita em pelo menos uma das colmeias."""
+    return any(_ler_cn(raiz) for _, raiz in _COLMEIAS)
+
+
+def policy_cn() -> str:
+    """CN da policy que o Chrome vai aplicar, ou '' se não houver nenhuma.
+
+    Lê da perspectiva de quem chama: se este processo (não elevado, o mesmo
+    contexto do Chrome) não enxerga a policy, ela não vale — é justamente o caso
+    que o guardião elevado em outra conta produziria.
+    """
+    for _, raiz in _COLMEIAS:
+        cn = _ler_cn(raiz)
+        if cn:
+            return cn
+    return ""
+
+
+def diagnostico() -> str:
+    """Resumo do estado da policy em cada colmeia, para o log."""
+    partes = []
+    for rotulo, raiz in _COLMEIAS:
+        cn = _ler_cn(raiz)
+        partes.append(f"{rotulo}={cn or '(vazio)'}")
+    return "  ".join(partes)
 
 
 def is_admin() -> bool:
@@ -174,7 +226,9 @@ def guardiao(pid: int, cn: str) -> None:
     _log(f"=== guardiao start pid={pid} admin={is_admin()} ===")
     try:
         definir_autoselect(cn)
-        _log("policy escrita")
+        # Registra em QUAL colmeia caiu: se só HKCU tiver valor e o processo
+        # principal não enxergar, é sinal de elevação em outra conta de usuário
+        _log(f"policy escrita | {diagnostico()}")
     except Exception as e:
         _log(f"erro definir: {type(e).__name__}: {e}")
     SYNCHRONIZE = 0x00100000
@@ -232,7 +286,9 @@ def iniciar_guarda(cn: str) -> bool:
     if atual:
         print(f"[wincert] Policy ativa com OUTRO CN ({atual}); esperado {cn}.")
     else:
-        print("[wincert] Policy nao apareceu a tempo.")
+        print("[wincert] Policy nao visivel deste processo — o Chrome tambem nao a vera.")
+        print("          Provavel elevacao em outra conta de usuario (HKCU diferente).")
+    print(f"[wincert] Estado: {diagnostico()}")
     return False
 
 
