@@ -49,6 +49,8 @@ a = Analysis(
     ],
     hiddenimports=[
         'cert_windows',
+        'pywinauto',
+        'servicos_rf_login.cert_dialog',
         'winreg',
         'servicos_rf_login',
         'servicos_rf_login.login',

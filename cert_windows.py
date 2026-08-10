@@ -83,6 +83,19 @@ def policy_existe() -> bool:
         return False
 
 
+def policy_cn() -> str:
+    """CN que está escrito na policy agora, ou '' se não houver policy."""
+    try:
+        key = winreg.OpenKeyEx(winreg.HKEY_CURRENT_USER, REG_PATH, 0, winreg.KEY_READ)
+        try:
+            valor, _ = winreg.QueryValueEx(key, "1")
+        finally:
+            winreg.CloseKey(key)
+        return json.loads(valor).get("filter", {}).get("SUBJECT", {}).get("CN", "")
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
+
+
 def is_admin() -> bool:
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
@@ -191,10 +204,19 @@ def guardiao(pid: int, cn: str) -> None:
 
 def iniciar_guarda(cn: str) -> bool:
     """Lança o guardião elevado (1 UAC) que escreve a policy e a remove quando ESTE
-    processo terminar. Aguarda a policy ficar ativa antes de retornar.
+    processo terminar. Aguarda a policy ficar ativa COM O CN PEDIDO antes de retornar.
 
-    Retorna True se a policy ficou ativa (Chrome vai auto-selecionar).
+    Esperar pelo CN, e não só pela existência da policy, é o que torna seguro
+    trocar de certificado no meio da execução: a policy do certificado anterior
+    ainda está escrita quando o novo guardião sobe, e conferir só a existência
+    devolveria True de imediato — o Chrome subiria com o certificado errado.
+
+    Retorna True se a policy do CN pedido ficou ativa (Chrome vai auto-selecionar).
     """
+    if policy_cn() == cn:
+        print(f"[wincert] Policy ja ativa para: {cn}")
+        return True
+
     pid = os.getpid()
     cn_b64 = base64.b64encode(cn.encode("utf-8")).decode("ascii")
     rc = _runas(_guard_args(["--guard", str(pid), cn_b64]), wait_ms=None)
@@ -202,11 +224,15 @@ def iniciar_guarda(cn: str) -> bool:
         print("[wincert] Nao foi possivel iniciar o guardiao (UAC negado?).")
         return False
     for _ in range(60):  # ~30s
-        if policy_existe():
+        if policy_cn() == cn:
             print("[wincert] Policy ativa — guardiao vigiando p/ limpar no fim.")
             return True
         time.sleep(0.5)
-    print("[wincert] Policy nao apareceu a tempo.")
+    atual = policy_cn()
+    if atual:
+        print(f"[wincert] Policy ativa com OUTRO CN ({atual}); esperado {cn}.")
+    else:
+        print("[wincert] Policy nao apareceu a tempo.")
     return False
 
 

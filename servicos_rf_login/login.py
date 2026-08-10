@@ -35,10 +35,18 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import threading
+
 from patchright.sync_api import sync_playwright
 from resolvedor_captcha import solve_hcaptcha
 
 from .log_manager import registrar_erro
+
+try:
+    from .cert_dialog import selecionar_certificado_no_dialogo as _selecionar_cert_dialog
+    _CERT_DIALOG_OK = True
+except Exception:
+    _CERT_DIALOG_OK = False
 
 # URL de login dos Serviços da Receita Federal (gov.br SSO)
 SERVICOS_RF_URL = "https://servicos.receitafederal.gov.br/"
@@ -561,6 +569,8 @@ def main(
     project_dir: "Path | str | None" = None,
     cnpj: str | None = None,
     cert_subject_cn: str = "",
+    cert_serial: str = "",
+    policy_ok: bool = True,
 ):
     """Realiza o login nos Serviços da Receita Federal e retorna (playwright, context, page).
 
@@ -591,6 +601,13 @@ def main(
         cert_subject_cn:
             CN do certificado instalado no Windows (modo A). Quando informado,
             tem prioridade sobre o modo B.
+        cert_serial:
+            Serial do certificado (modo A). Usado pelo fallback da janela nativa
+            para casar a linha certa quando há CNs iguais.
+        policy_ok:
+            True quando a policy de auto-seleção está ativa e o Chrome escolhe o
+            certificado sozinho. False aciona o fallback via pywinauto, que
+            resolve a janela "Selecione um certificado" quando ela aparece.
 
     Returns:
         Tupla (p, context, page) em caso de sucesso, ou None em caso de falha.
@@ -757,6 +774,21 @@ def main(
             print("  -> Recarregando e tentando novamente...")
             page.goto(SERVICOS_RF_URL, wait_until="domcontentloaded", timeout=30_000)
             continue
+
+        # Fallback: sem a policy de auto-seleção o Chrome abre a janela nativa
+        # "Selecione um certificado" e o fluxo trava ali. O pywinauto casa a linha
+        # pelo serial (único mesmo com CNs iguais) e confirma. Roda em thread
+        # porque o clique acima pode bloquear até a janela ser resolvida.
+        if usar_windows_store and not policy_ok and _CERT_DIALOG_OK:
+            print("[cert] Policy inativa — resolvendo a janela de certificado por UI.")
+            threading.Thread(
+                target=_selecionar_cert_dialog,
+                args=(os.getenv("CERT_SUBJECT_CN", "").strip(), cert_serial),
+                kwargs={"timeout": 90.0},
+                daemon=True,
+            ).start()
+        elif usar_windows_store and tentativa == 1:
+            print("[cert] Policy ativa — o Chrome escolhe o certificado sozinho.")
 
         print("  -> Clicado. Aguardando página carregar...")
         try:

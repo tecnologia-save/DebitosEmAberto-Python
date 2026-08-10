@@ -4,3 +4,4 @@ openpyxl
 python-dotenv
 google-genai
 Pillow
+pywinauto>=0.6.9

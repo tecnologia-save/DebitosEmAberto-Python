@@ -53,3 +53,7 @@ desktop.ini
 *.env
 .env.*
 !.env.example
+
+# Log e diagnostico do guardiao da policy de certificado (runtime)
+_guard_log.txt
+_wincert_erro.log

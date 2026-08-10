@@ -1747,6 +1747,7 @@ def processar(df: pd.DataFrame, certs: dict[str, dict],
 
     cert_atual     = None
     browser_aberto = None   # (p, context, page) | None
+    policy_ok      = True   # definido de fato ao entrar no primeiro certificado
     _MAX_RETENT_CNPJ    = 2                          # tentativas por CNPJ (inclui a 1ª)
     _retentativas_cnpj: dict[str, int] = {}          # contador por CNPJ
 
@@ -1790,11 +1791,12 @@ def processar(df: pd.DataFrame, certs: dict[str, dict],
 
             # Guardião elevado (1 UAC): escreve a policy de auto-seleção do Chrome
             # e a REMOVE quando esta automação terminar, por qualquer motivo. Sem
-            # ela o Chrome abriria o diálogo de escolha de certificado.
+            # ela o Chrome abre a janela nativa de escolha de certificado — daí o
+            # fallback por UI dentro do fazer_login.
             policy_ok = cert_windows.iniciar_guarda(cert_subject_cn)
             if not policy_ok:
-                print("    [!] Policy de auto-seleção não ficou ativa. O Chrome pode "
-                      "pedir a escolha do certificado manualmente.")
+                print("    [!] Policy de auto-seleção não ficou ativa (UAC negado?). "
+                      "A janela de certificado será resolvida por UI.")
             cert_atual = certificado
 
         chave = _buscar_certificado(cert_atual, certs)
@@ -1802,6 +1804,7 @@ def processar(df: pd.DataFrame, certs: dict[str, dict],
             i += 1
             continue
         cert_subject_cn = str(certs[chave].get("subject_cn") or "").strip()
+        cert_serial     = str(certs[chave].get("serial") or "").strip()
 
         print(f"\n  [{idx + 1}/{total}] CNPJ: {cnpj}")
 
@@ -1810,6 +1813,8 @@ def processar(df: pd.DataFrame, certs: dict[str, dict],
             try:
                 _res = fazer_login(
                     cert_subject_cn=cert_subject_cn,
+                    cert_serial=cert_serial,
+                    policy_ok=policy_ok,
                     project_dir=LOGIN_ECAC_DIR,
                 )
                 if _res is None:
