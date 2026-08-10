@@ -1090,6 +1090,38 @@ def _fechar_navegador(p, context, page=None) -> None:
     print("    [✓] Navegador fechado.")
 
 
+def _recuperar_apos_recusa(page) -> bool:
+    """Devolve o portal a um estado utilizável depois de uma recusa de representação.
+
+    A recusa é do CNPJ, não da sessão: o certificado segue autenticado e o portal
+    aberto. Fechar o navegador aqui obrigaria um login novo para o próximo CNPJ
+    do mesmo certificado — justamente o custo que se quer evitar.
+
+    Fecha o formulário de representação (que fica aberto exibindo o erro) e volta
+    para o portal, confirmando que o avatar reaparece.
+
+    Returns:
+        True se a sessão continua utilizável para representar o próximo CNPJ.
+    """
+    try:
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(300)
+    except Exception:
+        pass
+
+    try:
+        _goto_seguro(page, URL_SERVICOS_RF, label="pós-recusa", timeout=30_000)
+        page.locator('xpath=//*[@id="avatar-dropdown-trigger"]').first.wait_for(
+            state="visible", timeout=15_000
+        )
+        print("    [✓] Sessão mantida — seguindo para o próximo CNPJ deste certificado.")
+        return True
+    except Exception as e:
+        print(f"    [!] Sessão não recuperada após a recusa "
+              f"({type(e).__name__}: {e}). Fechando o navegador.")
+        return False
+
+
 def trocar_perfil_procurador(page, cnpj: str) -> None:
     """Aguarda o intervalo de 30s, depois representa o CNPJ como Procurador
     no portal e navega para a página de pendências.
@@ -1707,9 +1739,13 @@ def processar(df: pd.DataFrame, certs: dict[str, tuple[Path, str]],
 
         except FalhaPermanente as e:
             # Procuração expirada/inválida ou CNPJ não autorizado — não retentar.
+            # O portal recusou ESTE CNPJ, não a sessão: o certificado continua
+            # autenticado. Mantém o navegador para o próximo CNPJ do mesmo grupo
+            # e só fecha se a sessão não voltar a um estado utilizável.
             print(f"    [!] Falha permanente — CNPJ {cnpj} ignorado: {e}")
-            _fechar_navegador(p, context, page)
-            browser_aberto = None
+            if not _recuperar_apos_recusa(page):
+                _fechar_navegador(p, context, page)
+                browser_aberto = None
 
         except Exception as e:
             _retentativas_cnpj[cnpj] = _retentativas_cnpj.get(cnpj, 0) + 1
