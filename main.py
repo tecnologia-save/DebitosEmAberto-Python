@@ -148,9 +148,25 @@ _PALAVRAS_ERRO_PERMANENTE = (
 # com nenhuma palavra da tupla acima — ela tem "procuração" e "autorizado", e a
 # mensagem traz "procurador" e "autorização". O resultado era o loop de espera
 # rodar até estourar os 60s sem classificar o erro.
+_STATUS_SEM_AUTORIZACAO = "Procuração sem autorização"
+
 _ERROS_COM_STATUS = {
-    "nao permite acesso a este servico": "Procuração sem autorização",
+    "nao permite acesso a este servico": _STATUS_SEM_AUTORIZACAO,
 }
+
+# Status da coluna D que encerram a linha sozinhos, sem depender da coluna E:
+# a procuração foi recusada, então não há o que buscar nem em Débitos nem em
+# Processos Fiscais. Sem isso a linha voltaria em toda execução para ser recusada
+# de novo, já que o critério padrão exige D e E preenchidas.
+_STATUS_D_TERMINAIS = (_STATUS_SEM_AUTORIZACAO,)
+
+
+def _status_encerra_linha(val_d) -> bool:
+    """True se o status já na coluna D dispensa qualquer processamento da linha."""
+    alvo = _remover_acentos(str(val_d or "").strip().lower())
+    if not alvo:
+        return False
+    return any(_remover_acentos(s.lower()) == alvo for s in _STATUS_D_TERMINAIS)
 
 
 def _status_erro_permanente(mensagem: str) -> str | None:
@@ -557,6 +573,8 @@ def filtrar_pendentes(df: pd.DataFrame, caminho_planilha: str) -> tuple[pd.DataF
     def _pendente(valor) -> bool:
         cnpj = _normalizar_cnpj(re.sub(r"\.0+$", "", str(valor).strip()))
         val_d, val_e = mapa.get(cnpj, ("", ""))
+        if _status_encerra_linha(val_d):
+            return False
         return not (val_d and val_e)
 
     mask = df[col_cnpj].map(_pendente)
@@ -1609,6 +1627,10 @@ def processar_cnpj(page, cnpj: str, row: pd.Series,
 
     # ── Verifica o que já foi processado ─────────────────────────────────────
     val_d, val_e = ler_status_cnpj(caminho_planilha, cnpj)
+
+    if _status_encerra_linha(val_d):
+        print(f"    → Coluna D = '{val_d}'. Não há o que processar. Pulando.")
+        return "ja_processado"
 
     if val_d and val_e:
         print(f"    → Já totalmente processado (D='{val_d}', E='{val_e}'). Pulando.")
