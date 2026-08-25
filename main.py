@@ -108,12 +108,6 @@ URL_ANALISE_PENDENCIAS = "https://servicos.receitafederal.gov.br/servico/pendenc
 # (o botão contém <img alt="gov.br">, por isso has-text("gov.br") não funciona)
 BTN_ENTRAR_GOV  = 'button.login-banner-button'
 
-XPATH_STATUS = (
-    "xpath=/html/body/app-root/mf-portal-layout/portal-main-layout/div/main/"
-    "ng-component/app-consultar-dividas-pendencias/div[1]/app-resultado-analise-fiscal/"
-    "div/div[2]/span"
-)
-
 # ── Timer de troca de CNPJ ────────────────────────────────────────────────────
 # O portal não permite trocar de CNPJ com intervalo menor que 30 segundos.
 _ultimo_troca_cnpj: float = 0.0
@@ -132,7 +126,8 @@ from automation.status_portal import PALAVRAS_RECUSA_PERMANENTE as _PALAVRAS_ERR
 from automation.status_portal import RECUSAS_COM_STATUS as _ERROS_COM_STATUS
 from automation.status_portal import STATUS_D_TERMINAIS as _STATUS_D_TERMINAIS
 from automation.boundary import EntradaDebitosEmAberto, EntradaInvalida, montar_entrada
-from automation import captcha, certificados_windows, login, planilha, representacao
+from automation import captcha, certificados_windows, consulta_fiscal, login
+from automation import planilha, representacao
 from patchright.sync_api import Error as PlaywrightError
 from automation.planilha import PlanilhaIndisponivel, validar_recurso
 from automation.status_portal import ANTIBOT as _ANTIBOT
@@ -570,47 +565,27 @@ def _extrair_dados_pagina(page, cnpj: str) -> list[dict]:
     )
 
 
-def extrair_debitos_dctfweb(page, cnpj: str, caminho_planilha: str) -> None:
-    """Após clicar no botão 'Dívida DCTFWeb', extrai todos os dados da tabela
-    (paginando se necessário) e grava na aba 'Débitos' + coluna D (Empresas)."""
+def extrair_debitos_dctfweb(sessao, cnpj: str, caminho_planilha: str) -> None:
+    """TRANSITIONAL_PERSISTENCE_ADAPTER — consulta pela fronteira, grava aqui.
 
+    A navegação vive em automation/consulta_fiscal.py e devolve dados. A decisão
+    de gravar continua neste adapter enquanto a orquestração não for migrada.
+
+    Condição de remoção: quando o app receber `ExtracaoFiscal` e decidir a
+    persistência, este adapter sai junto com `verificar_pendencias`.
+    """
     print("    → Aguardando tabela DCTFWeb carregar...")
-    _aguardar_networkidle(page, label="DCTFWeb")
-    page.wait_for_timeout(1_000)
+    extracao = consulta_fiscal.consultar_dctfweb(
+        sessao, cnpj,
+        extrair_pagina=_extrair_dados_pagina,
+        aguardar_rede=_aguardar_networkidle,
+        selecionar_por_pagina=_selecionar_n_por_pagina,
+        expandir_linhas=_expandir_todas_as_linhas,
+    )
 
-    # Muda para 50 itens por página
-    _selecionar_n_por_pagina(page, 50)
-
-    todos_dados: list[dict] = []
-    pagina = 1
-
-    while True:
-        print(f"    → Extraindo dados (página {pagina})...")
-        page.wait_for_timeout(1_500)
-
-        _expandir_todas_as_linhas(page)
-
-        dados_pag = _extrair_dados_pagina(page, cnpj)
-        todos_dados.extend(dados_pag)
-        print(f"    → {len(dados_pag)} linha(s) extraída(s) na página {pagina}.")
-
-        # Verifica se há próxima página habilitada
-        try:
-            btn_proxima = page.locator(
-                'button[aria-label="Página seguinte"]'
-            ).first
-            if not btn_proxima.is_disabled():
-                print("    → Indo para próxima página...")
-                btn_proxima.click()
-                _aguardar_networkidle(page, label="DCTFWeb pág.")
-                pagina += 1
-                continue
-        except Exception:
-            pass
-        break
-
-    print(f"    [✓] Total: {len(todos_dados)} linha(s) de débito DCTFWeb.")
-    escrever_aba_debitos(caminho_planilha, todos_dados)
+    print(f"    [✓] Total: {len(extracao)} linha(s) de débito DCTFWeb "
+          f"em {extracao.paginas} página(s).")
+    escrever_aba_debitos(caminho_planilha, list(extracao.linhas))
     escrever_coluna_d(caminho_planilha, cnpj, "Concluído")
 
 
@@ -757,60 +732,22 @@ def _processar_card_processo(page, cnpj: str) -> list[dict]:
     return todos_dados
 
 
-def extrair_processo_fiscal(page, cnpj: str, caminho_planilha: str) -> None:
-    """Percorre todos os cards de processo fiscal, extrai os dados de cada um
-    e grava na aba 'Processos Fiscais' da planilha."""
-
+def extrair_processo_fiscal(sessao, cnpj: str, caminho_planilha: str) -> None:
+    """TRANSITIONAL_PERSISTENCE_ADAPTER — mesma divisão do DCTFWeb."""
     print("    → Aguardando página de processos fiscais carregar...")
-    _aguardar_networkidle(page, label="proc.fiscal")
-    page.wait_for_timeout(1_000)
-
-    # Mostra 20 cards por página
-    _selecionar_n_por_pagina(page, 20)
-
-    todos_dados: list[dict] = []
-    pagina_cards = 1
-    SELETOR_CARD = (
-        'button[aria-label="Expandir informações complementares do processo fiscal"]'
+    extracao = consulta_fiscal.consultar_processos(
+        sessao, cnpj,
+        extrair_card=_processar_card_processo,
+        aguardar_rede=_aguardar_networkidle,
+        selecionar_por_pagina=_selecionar_n_por_pagina,
+        ir_para_analise=lambda pagina: _goto_seguro(
+            pagina, URL_ANALISE_PENDENCIAS, label="análise fiscal"
+        ),
     )
 
-    while True:
-        print(f"    → Processando cards (página {pagina_cards})...")
-        page.wait_for_timeout(1_500)
-
-        total_cards = page.locator(SELETOR_CARD).count()
-        print(f"    → {total_cards} card(s) nesta página.")
-
-        for i in range(total_cards):
-            print(f"    → Entrando no card {i + 1}/{total_cards}...")
-            # Rebusca o botão fresco a cada iteração (evita stale reference)
-            btn_card = page.locator(SELETOR_CARD).nth(i)
-            btn_card.scroll_into_view_if_needed()
-            btn_card.click()
-
-            dados_card = _processar_card_processo(page, cnpj)
-            todos_dados.extend(dados_card)
-
-            # Volta para a lista de cards
-            page.go_back()
-            _aguardar_networkidle(page, label="voltar")
-            page.wait_for_timeout(1_000)
-
-        # Verifica próxima página de cards
-        try:
-            btn_prox = page.locator('button[aria-label="Página seguinte"]').first
-            if not btn_prox.is_disabled():
-                print("    → Indo para próxima página de cards...")
-                btn_prox.click()
-                _aguardar_networkidle(page, label="cards pág.")
-                pagina_cards += 1
-                continue
-        except Exception:
-            pass
-        break
-
-    print(f"    [✓] Total: {len(todos_dados)} linha(s) de processo fiscal.")
-    escrever_aba_processos_fiscais(caminho_planilha, todos_dados)
+    print(f"    [✓] Total: {len(extracao)} linha(s) de processo fiscal "
+          f"em {extracao.paginas} página(s).")
+    escrever_aba_processos_fiscais(caminho_planilha, list(extracao.linhas))
     escrever_coluna_e(caminho_planilha, cnpj, "Concluído")
 
 
@@ -1243,20 +1180,18 @@ def trocar_perfil_procurador(page, cnpj: str) -> None:
     page.wait_for_timeout(500)
 
 
-def verificar_pendencias(page, cnpj: str, caminho_planilha: str,
+def verificar_pendencias(sessao, cnpj: str, caminho_planilha: str,
                           skip_dctfweb: bool = False,
                           skip_processo: bool = False) -> str:
-    """Lê o status de pendências e toma a ação correspondente.
+    """TRANSITIONAL_PERSISTENCE_ADAPTER — decide o que gravar a partir do que a
+    consulta leu.
 
-    Parâmetros de controle (usados quando uma das colunas já foi preenchida):
-        skip_dctfweb  — True quando coluna D já está preenchida (DCTFWeb concluído).
-                        Pula o botão 'Dívida DCTFWeb'; processa apenas Processo Fiscal.
-        skip_processo — True quando coluna E já está preenchida (Fiscal concluído).
-                        Pula o botão 'Processo Fiscal'; processa apenas DCTFWeb.
+    A leitura do portal vive em automation/consulta_fiscal.py. O que ficou aqui é
+    o que ainda pertence à orquestração: quais colunas escrever, e quando.
 
-    Colunas escritas:
-        D — status do DCTFWeb  ('Concluído' / 'Sem débitos' / 'Débitos não compensáveis')
-        E — status do Fiscal   ('Concluído' / 'Sem Processos')
+    A ORDEM importa e está preservada: a coluna D é gravada assim que o DCTFWeb
+    termina, ANTES de os Processos começarem. Se os Processos caem, o DCTFWeb não
+    é refeito — é o RESUMABILITY_CONTRACT da fatia 4.
 
     Retorna:
         "sem_pendencia"   — sem débitos
@@ -1265,81 +1200,48 @@ def verificar_pendencias(page, cnpj: str, caminho_planilha: str,
         "desconhecido"    — status inesperado
     """
     print("    → Verificando status de pendências...")
-    span_status = page.locator(XPATH_STATUS).first
-    span_status.wait_for(state="visible", timeout=30_000)
-    texto = (span_status.text_content() or "").strip()
-    print(f"    → Status: '{texto}'")
+    situacao = consulta_fiscal.ler_situacao(sessao)
 
-    # ── Sem pendência ─────────────────────────────────────────────────────────
-    if texto == "Sem pendência":
+    if not situacao.reconhecida:
+        print("    [!] Status de pendências não reconhecido.")
+        return "desconhecido"
+
+    if not situacao.com_pendencia:
         if not skip_dctfweb:
             escrever_coluna_d(caminho_planilha, cnpj, "Sem débitos")
         if not skip_processo:
             escrever_coluna_e(caminho_planilha, cnpj, "Sem Processos")
         return "sem_pendencia"
 
-    # ── Com pendência ─────────────────────────────────────────────────────────
-    if texto == "Com pendência":
-        btn_dctfweb = page.locator('button[aria-label*="DCTFWeb"]').first
+    # Nenhum botão de ação encontrado
+    if not situacao.tem_dctfweb and not situacao.tem_processo:
+        if not skip_dctfweb:
+            escrever_coluna_d(caminho_planilha, cnpj, "Débitos não compensáveis")
+        if not skip_processo:
+            escrever_coluna_e(caminho_planilha, cnpj, "Sem Processos")
+        return "nao_compensavel"
 
-        # Detecta presença dos botões via JS — retorna instantaneamente,
-        # sem aguardar timeout de espera (página já carregada após wait_for do span).
-        _botoes = page.evaluate(
-            """
-            () => ({
-                dctfweb:  !!document.querySelector('button[aria-label*="DCTFWeb"]'),
-                processo: !!document.querySelector(
-                    'button[aria-label*="processo fiscal" i]'
-                )
-            })
-            """
-        )
-        tem_dctfweb  = _botoes["dctfweb"]
-        tem_processo = _botoes["processo"]
+    # ── Dívida DCTFWeb ────────────────────────────────────────────────────────
+    if situacao.tem_dctfweb and not skip_dctfweb:
+        print("    → Clicando em 'Dívida DCTFWeb'...")
+        extrair_debitos_dctfweb(sessao, cnpj, caminho_planilha)
+    elif skip_dctfweb:
+        print("    → DCTFWeb já processado anteriormente. Pulando...")
 
-        # Nenhum botão de ação encontrado
-        if not tem_dctfweb and not tem_processo:
-            if not skip_dctfweb:
-                escrever_coluna_d(caminho_planilha, cnpj, "Débitos não compensáveis")
-            if not skip_processo:
-                escrever_coluna_e(caminho_planilha, cnpj, "Sem Processos")
-            return "nao_compensavel"
+    # ── Processo Fiscal ───────────────────────────────────────────────────────
+    if situacao.tem_processo and not skip_processo:
+        extrair_processo_fiscal(sessao, cnpj, caminho_planilha)
+        if not situacao.tem_dctfweb and not skip_dctfweb:
+            # Sem DCTFWeb e sem skip → marca D como concluído via Fiscal
+            escrever_coluna_d(caminho_planilha, cnpj, "Concluído")
+    elif situacao.tem_processo and skip_processo:
+        print("    → Processos Fiscais já processados anteriormente. Pulando...")
+    else:
+        # Não existe botão de Processo Fiscal
+        if not skip_processo:
+            escrever_coluna_e(caminho_planilha, cnpj, "Sem Processos")
 
-        # ── Dívida DCTFWeb ────────────────────────────────────────────────────
-        if tem_dctfweb and not skip_dctfweb:
-            print("    → Clicando em 'Dívida DCTFWeb'...")
-            btn_dctfweb.click()
-            print("    [✓] Botão 'Dívida DCTFWeb' clicado.")
-            extrair_debitos_dctfweb(page, cnpj, caminho_planilha)
-            # extrair_debitos_dctfweb já escreve "Concluído" na coluna D
-        elif skip_dctfweb:
-            print("    → DCTFWeb já processado anteriormente. Pulando...")
-
-        # ── Processo Fiscal ───────────────────────────────────────────────────
-        if tem_processo and not skip_processo:
-            _goto_seguro(page, URL_ANALISE_PENDENCIAS, label="análise fiscal")
-            page.wait_for_timeout(1_000)
-            btn_proc_fresh = page.locator('button[aria-label*="processo fiscal"]').first
-            btn_proc_fresh.wait_for(state="visible", timeout=10_000)
-            btn_proc_fresh.click()
-            print("    [✓] Botão 'Processo Fiscal' clicado.")
-            extrair_processo_fiscal(page, cnpj, caminho_planilha)
-            # extrair_processo_fiscal já escreve "Concluído" na coluna E
-            if not tem_dctfweb and not skip_dctfweb:
-                # Sem DCTFWeb e sem skip → marca D como concluído via Fiscal
-                escrever_coluna_d(caminho_planilha, cnpj, "Concluído")
-        elif tem_processo and skip_processo:
-            print("    → Processos Fiscais já processados anteriormente. Pulando...")
-        else:
-            # Não existe botão de Processo Fiscal
-            if not skip_processo:
-                escrever_coluna_e(caminho_planilha, cnpj, "Sem Processos")
-
-        return "concluido"
-
-    # ── Status inesperado ─────────────────────────────────────────────────────
-    print(f"    [!] Status não reconhecido: '{texto}'")
-    return "desconhecido"
+    return "concluido"
 
 
 # ── Processamento por CNPJ ────────────────────────────────────────────────────
@@ -1408,7 +1310,7 @@ def processar_cnpj(sessao, cnpj: str, row: pd.Series,
                 f"Representação não concluída ({resultado.situacao})."
             )
 
-        status = verificar_pendencias(sessao.pagina, cnpj, caminho_planilha,
+        status = verificar_pendencias(sessao, cnpj, caminho_planilha,
                                        skip_dctfweb=skip_dctfweb,
                                        skip_processo=skip_processo)
     finally:

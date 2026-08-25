@@ -451,3 +451,66 @@ def test_o_legado_sinaliza_desfecho_por_tipo_e_nao_por_exception_nua():
     assert "raise Exception(" not in trecho
     assert trecho.count("representacao.AntiBotEsgotado") == 2
     assert trecho.count("representacao.RepresentacaoNaoConfirmada") == 2
+
+
+# ── Fatia 8B1: a consulta fiscal ─────────────────────────────────────────────
+
+FISCAL = "consulta_fiscal.py"
+
+
+def test_a_consulta_fiscal_nao_conhece_planilha():
+    """A prova do corte: se ela nao sabe o que e coluna, aba ou Workbook, entao
+    extrair e persistir nunca estiveram entrelacados."""
+    modulo = RAIZ / "automation" / FISCAL
+    assert not _importa(modulo, {"openpyxl", "pandas", "os", "winreg", "ctypes",
+                                 "subprocess", "servicos_rf_login", "resolvedor_captcha"})
+
+    codigo = _codigo_sem_docstrings(modulo)
+    for proibido in ("planilha", "SessaoPlanilha", "escrever_coluna", "escrever_aba",
+                     "salvar", "Worksheet", "DataFrame", "COL_", "Empresas",
+                     "Débitos", "Processos Fiscais"):
+        assert proibido not in codigo, f"a consulta fiscal conhece {proibido}."
+
+
+def test_a_consulta_fiscal_nao_autentica_nem_representa():
+    codigo = _codigo_sem_docstrings(RAIZ / "automation" / FISCAL)
+
+    for proibido in ("autenticar", "fazer_login", "garantir_policy", "representar",
+                     "trocar_perfil", "encerrar", "close", "stop", "print("):
+        assert proibido not in codigo, f"a consulta fiscal chama {proibido}."
+
+
+def test_os_seletores_de_navegacao_fiscal_sairam_do_main():
+    """Os seletores de NAVEGACAO — status, botoes de acao, paginacao das listas,
+    cards — vivem na integracao.
+
+    O que ainda NAO saiu, e esta declarado: `_extrair_dados_pagina`,
+    `_extrair_dados_pagina_processo` e `_processar_card_processo` continuam em
+    main, injetados como leitores de conteudo. Sao o primeiro item da 8B2.
+    """
+    fonte = (RAIZ / "main.py").read_text(encoding="utf-8-sig")
+
+    for seletor in ('XPATH_STATUS', 'aria-label*="DCTFWeb"',
+                    'aria-label*="processo fiscal"',
+                    'Expandir informações complementares'):
+        assert seletor not in fonte, f"main.py ainda tem o seletor {seletor}."
+
+
+def test_o_que_falta_mover_esta_delimitado():
+    """A paginacao que sobrou em main pertence ao INTERIOR de um card de
+    processo, e sai junto com `_processar_card_processo` na 8B2."""
+    fonte = (RAIZ / "main.py").read_text(encoding="utf-8-sig")
+
+    assert fonte.count('aria-label="Página seguinte"') == 1
+    inicio = fonte.index("def _processar_card_processo")
+    fim = fonte.index("def extrair_processo_fiscal")
+    assert 'aria-label="Página seguinte"' in fonte[inicio:fim]
+
+
+def test_a_consulta_fiscal_expoe_tres_operacoes_e_nao_uma():
+    """RESUMABILITY_CONTRACT: a coluna D precisa poder ser gravada assim que o
+    DCTFWeb termina. Uma operacao monolitica destruiria a retomada parcial."""
+    from automation import consulta_fiscal
+
+    for operacao in ("ler_situacao", "consultar_dctfweb", "consultar_processos"):
+        assert callable(getattr(consulta_fiscal, operacao))

@@ -16,6 +16,20 @@ CNPJ = "11111111000191"
 PLANILHA = "C:/nao/existe/base.xlsx"
 
 
+class SessaoDePagina:
+    """So encanamento: a fatia 8B1 trocou `page` por `SessaoReceita` na assinatura.
+
+    Nenhuma assercao destes testes mudou — o que mudou foi COMO a pagina chega.
+    """
+
+    def __init__(self, pagina):
+        self.pagina = pagina
+
+
+def sessao_de(pagina):
+    return SessaoDePagina(pagina)
+
+
 @pytest.fixture
 def escritas(monkeypatch):
     """Registra toda gravacao que o fluxo fiscal dispara, na ordem."""
@@ -58,7 +72,7 @@ def linhas_ficticias(quantidade):
 def test_a_sem_pendencia_grava_as_duas_colunas_e_nao_navega(escritas):
     pagina = PaginaFiscal(texto_status="Sem pendência")
 
-    assert main.verificar_pendencias(pagina, CNPJ, PLANILHA) == "sem_pendencia"
+    assert main.verificar_pendencias(sessao_de(pagina), CNPJ, PLANILHA) == "sem_pendencia"
     assert escritas == [("D", "Sem débitos"), ("E", "Sem Processos")]
     assert pagina.cliques == []
 
@@ -66,7 +80,7 @@ def test_a_sem_pendencia_grava_as_duas_colunas_e_nao_navega(escritas):
 def test_a_com_pendencia_sem_botao_nenhum_e_nao_compensavel(escritas):
     pagina = PaginaFiscal(texto_status="Com pendência")
 
-    assert main.verificar_pendencias(pagina, CNPJ, PLANILHA) == "nao_compensavel"
+    assert main.verificar_pendencias(sessao_de(pagina), CNPJ, PLANILHA) == "nao_compensavel"
     assert escritas == [("D", "Débitos não compensáveis"), ("E", "Sem Processos")]
 
 
@@ -79,9 +93,17 @@ def test_q_status_nao_reconhecido_nao_grava_nada(escritas, capsys):
     """
     pagina = PaginaFiscal(texto_status="Situação em análise")
 
-    assert main.verificar_pendencias(pagina, CNPJ, PLANILHA) == "desconhecido"
+    assert main.verificar_pendencias(sessao_de(pagina), CNPJ, PLANILHA) == "desconhecido"
     assert escritas == [], "nada gravado — a linha volta"
-    assert "Status não reconhecido" in capsys.readouterr().out
+
+    # SECURITY_BEHAVIOR_CHANGE (8B1): a mensagem antiga era
+    # `Status não reconhecido: '{texto}'` e ecoava o texto bruto do portal. Este
+    # ponto de print e novo, entao a mensagem e constante. A perda de diagnostico
+    # esta declarada no relatorio: nao da mais para descobrir pelo log QUAL texto
+    # o portal passou a usar.
+    saida = capsys.readouterr().out
+    assert "não reconhecido" in saida
+    assert "Situação em análise" not in saida
 
 
 @pytest.mark.parametrize("texto", ["", "  Sem pendência  ", "sem pendência", "SEM PENDÊNCIA"])
@@ -91,7 +113,7 @@ def test_q_a_comparacao_de_status_e_por_igualdade_exata(escritas, texto):
     contrario da regra de recusa da fatia 2."""
     pagina = PaginaFiscal(texto_status=texto)
 
-    resultado = main.verificar_pendencias(pagina, CNPJ, PLANILHA)
+    resultado = main.verificar_pendencias(sessao_de(pagina), CNPJ, PLANILHA)
 
     assert resultado == ("sem_pendencia" if texto.strip() == "Sem pendência" else "desconhecido")
 
@@ -101,7 +123,7 @@ def test_q_a_comparacao_de_status_e_por_igualdade_exata(escritas, texto):
 def test_i_skip_dctfweb_nao_grava_a_coluna_d(escritas):
     pagina = PaginaFiscal(texto_status="Sem pendência")
 
-    main.verificar_pendencias(pagina, CNPJ, PLANILHA, skip_dctfweb=True)
+    main.verificar_pendencias(sessao_de(pagina), CNPJ, PLANILHA, skip_dctfweb=True)
 
     assert escritas == [("E", "Sem Processos")]
 
@@ -109,7 +131,7 @@ def test_i_skip_dctfweb_nao_grava_a_coluna_d(escritas):
 def test_i_skip_processo_nao_grava_a_coluna_e(escritas):
     pagina = PaginaFiscal(texto_status="Sem pendência")
 
-    main.verificar_pendencias(pagina, CNPJ, PLANILHA, skip_processo=True)
+    main.verificar_pendencias(sessao_de(pagina), CNPJ, PLANILHA, skip_processo=True)
 
     assert escritas == [("D", "Sem débitos")]
 
@@ -134,7 +156,7 @@ def test_g_dctfweb_extrai_e_so_entao_grava(escritas, monkeypatch):
     monkeypatch.setattr(main, "_extrair_dados_pagina", lambda page, cnpj: linhas_ficticias(3))
     pagina = PaginaFiscal()
 
-    main.extrair_debitos_dctfweb(pagina, CNPJ, PLANILHA)
+    main.extrair_debitos_dctfweb(sessao_de(pagina), CNPJ, PLANILHA)
 
     assert escritas == [("aba Débitos", 3), ("D", "Concluído")]
 
@@ -143,7 +165,7 @@ def test_g_dctfweb_sem_linhas_ainda_grava_concluido(escritas, monkeypatch):
     monkeypatch.setattr(main, "_extrair_dados_pagina", lambda page, cnpj: [])
     pagina = PaginaFiscal()
 
-    main.extrair_debitos_dctfweb(pagina, CNPJ, PLANILHA)
+    main.extrair_debitos_dctfweb(sessao_de(pagina), CNPJ, PLANILHA)
 
     assert escritas == [("aba Débitos", 0), ("D", "Concluído")]
 
@@ -165,7 +187,7 @@ def test_g_dctfweb_pagina_enquanto_houver_proxima(escritas, monkeypatch):
                 self.restantes -= 1
             return loc
 
-    main.extrair_debitos_dctfweb(ComDuasPaginas(), CNPJ, PLANILHA)
+    main.extrair_debitos_dctfweb(sessao_de(ComDuasPaginas()), CNPJ, PLANILHA)
 
     assert escritas == [("aba Débitos", 3), ("D", "Concluído")], "uma gravacao so"
 
@@ -175,7 +197,7 @@ def test_g_dctfweb_pagina_enquanto_houver_proxima(escritas, monkeypatch):
 def test_h_processos_sem_cards_ainda_grava_concluido(escritas):
     pagina = PaginaFiscal(cards=0)
 
-    main.extrair_processo_fiscal(pagina, CNPJ, PLANILHA)
+    main.extrair_processo_fiscal(sessao_de(pagina), CNPJ, PLANILHA)
 
     assert escritas == [("aba Processos", 0), ("E", "Concluído")]
 
@@ -184,7 +206,7 @@ def test_h_processos_percorre_cada_card_e_volta(escritas, monkeypatch):
     monkeypatch.setattr(main, "_processar_card_processo", lambda page, cnpj: linhas_ficticias(2))
     pagina = PaginaFiscal(cards=3)
 
-    main.extrair_processo_fiscal(pagina, CNPJ, PLANILHA)
+    main.extrair_processo_fiscal(sessao_de(pagina), CNPJ, PLANILHA)
 
     assert escritas == [("aba Processos", 6), ("E", "Concluído")]
     assert pagina.voltas == 3, "um go_back por card"
@@ -194,30 +216,41 @@ def test_h_processos_percorre_cada_card_e_volta(escritas, monkeypatch):
 
 def test_p_com_pendencia_e_os_dois_botoes(escritas, monkeypatch):
     monkeypatch.setattr(main, "extrair_debitos_dctfweb",
-                        lambda page, cnpj, caminho: escritas.append(("dctfweb", "extraiu")))
+                        lambda sessao, cnpj, caminho: escritas.append(("dctfweb", "extraiu")))
     monkeypatch.setattr(main, "extrair_processo_fiscal",
-                        lambda page, cnpj, caminho: escritas.append(("processos", "extraiu")))
+                        lambda sessao, cnpj, caminho: escritas.append(("processos", "extraiu")))
     pagina = PaginaFiscal(texto_status="Com pendência", tem_dctfweb=True, tem_processo=True)
 
-    assert main.verificar_pendencias(pagina, CNPJ, PLANILHA) == "concluido"
+    assert main.verificar_pendencias(sessao_de(pagina), CNPJ, PLANILHA) == "concluido"
     assert escritas == [("dctfweb", "extraiu"), ("processos", "extraiu")]
-    assert main.URL_ANALISE_PENDENCIAS in pagina.navegacoes
+
+
+def test_p_a_ida_para_analise_fiscal_acompanhou_os_processos(escritas, monkeypatch):
+    """A navegacao para a URL de analise saiu de `verificar_pendencias` e entrou
+    em `consultar_processos` — mesma sequencia, outra funcao. Ela acontece
+    imediatamente antes de clicar no botao, como antes."""
+    monkeypatch.setattr(main, "_processar_card_processo", lambda page, cnpj: [])
+    pagina = PaginaFiscal(cards=0)
+
+    main.extrair_processo_fiscal(sessao_de(pagina), CNPJ, PLANILHA)
+
+    assert pagina.navegacoes == [main.URL_ANALISE_PENDENCIAS]
 
 
 def test_p_so_processos_marca_a_coluna_d_como_concluida(escritas, monkeypatch):
     """Sem botao de DCTFWeb, a coluna D e marcada pelo caminho de Processos."""
-    monkeypatch.setattr(main, "extrair_processo_fiscal", lambda page, cnpj, caminho: None)
+    monkeypatch.setattr(main, "extrair_processo_fiscal", lambda s, c, p: None)
     pagina = PaginaFiscal(texto_status="Com pendência", tem_dctfweb=False, tem_processo=True)
 
-    assert main.verificar_pendencias(pagina, CNPJ, PLANILHA) == "concluido"
+    assert main.verificar_pendencias(sessao_de(pagina), CNPJ, PLANILHA) == "concluido"
     assert escritas == [("D", "Concluído")]
 
 
 def test_p_so_dctfweb_marca_e_como_sem_processos(escritas, monkeypatch):
-    monkeypatch.setattr(main, "extrair_debitos_dctfweb", lambda page, cnpj, caminho: None)
+    monkeypatch.setattr(main, "extrair_debitos_dctfweb", lambda s, c, p: None)
     pagina = PaginaFiscal(texto_status="Com pendência", tem_dctfweb=True, tem_processo=False)
 
-    assert main.verificar_pendencias(pagina, CNPJ, PLANILHA) == "concluido"
+    assert main.verificar_pendencias(sessao_de(pagina), CNPJ, PLANILHA) == "concluido"
     assert escritas == [("E", "Sem Processos")]
 
 
@@ -232,14 +265,14 @@ def test_v_dctfweb_grava_a_coluna_d_ANTES_de_processos_comecar(escritas, monkeyp
     """
     monkeypatch.setattr(main, "_extrair_dados_pagina", lambda page, cnpj: linhas_ficticias(1))
 
-    def processos_falham(page, cnpj, caminho):
+    def processos_falham(sessao, cnpj, caminho):
         raise RuntimeError("portal caiu no meio dos processos")
 
     monkeypatch.setattr(main, "extrair_processo_fiscal", processos_falham)
     pagina = PaginaFiscal(texto_status="Com pendência", tem_dctfweb=True, tem_processo=True)
 
     with pytest.raises(RuntimeError):
-        main.verificar_pendencias(pagina, CNPJ, PLANILHA)
+        main.verificar_pendencias(sessao_de(pagina), CNPJ, PLANILHA)
 
     assert escritas == [("aba Débitos", 1), ("D", "Concluído")], "o DCTFWeb sobreviveu"
 
@@ -255,6 +288,6 @@ def test_s_bug_na_extracao_nao_vira_status(escritas, monkeypatch, erro):
     monkeypatch.setattr(main, "_extrair_dados_pagina", quebrar)
 
     with pytest.raises(type(erro)):
-        main.extrair_debitos_dctfweb(PaginaFiscal(), CNPJ, PLANILHA)
+        main.extrair_debitos_dctfweb(sessao_de(PaginaFiscal()), CNPJ, PLANILHA)
 
     assert escritas == [], "nada foi gravado"
