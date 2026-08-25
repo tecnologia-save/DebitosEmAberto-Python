@@ -128,13 +128,16 @@ _INTERVALO_TROCA           = 30   # segundos
 # devolveu, sai "encerra a linha" ou "tenta de novo". Aqui só os apelidos usados
 # no restante do módulo.
 #
-# As três constantes são reexportadas porque a suíte de caracterização afirma
-# sobre elas em `main`; elas somem quando os pontos de chamada da navegação
-# passarem a falar direto com o domínio.
+# As três constantes e `_erro_permanente` são reexportadas porque a suíte de
+# caracterização afirma sobre elas em `main`; somem quando os pontos de chamada
+# da navegação passarem a falar direto com o domínio.
 from automation.status_portal import PALAVRAS_RECUSA_PERMANENTE as _PALAVRAS_ERRO_PERMANENTE
 from automation.status_portal import RECUSAS_COM_STATUS as _ERROS_COM_STATUS
 from automation.status_portal import STATUS_D_TERMINAIS as _STATUS_D_TERMINAIS
+from automation.status_portal import ANTIBOT as _ANTIBOT
+from automation.status_portal import RECUSA_DO_CNPJ as _RECUSA_DO_CNPJ
 from automation.status_portal import FalhaPermanente
+from automation.status_portal import classificar_mensagem as _classificar_mensagem
 from automation.status_portal import recusa_permanente as _erro_permanente
 from automation.status_portal import status_da_recusa as _status_erro_permanente
 from automation.status_portal import status_encerra_linha as _status_encerra_linha
@@ -1211,12 +1214,12 @@ def trocar_perfil_procurador(page, cnpj: str) -> None:
                 "return e ? e.textContent.trim() : ''; }"
             )
             if _err_msg:
-                _err_lower = _err_msg.lower()
-                if "automatizado" in _err_lower or "bloqueado" in _err_lower:
+                _classe = _classificar_mensagem(_err_msg)
+                if _classe == _ANTIBOT:
                     print(f"    → [!] Erro anti-bot: '{_err_msg}'")
                     _erro_bloqueado = True
                     break
-                if _erro_permanente(_err_msg):
+                if _classe == _RECUSA_DO_CNPJ:
                     raise FalhaPermanente(
                         f"Portal recusou CNPJ {cnpj}: '{_err_msg}'",
                         status_coluna_d=_status_erro_permanente(_err_msg),
@@ -1405,8 +1408,8 @@ def trocar_perfil_procurador(page, cnpj: str) -> None:
             "return e ? e.textContent.trim() : ''; }"
         )
         if _err_pos_captcha:
-            _epc_lower = _err_pos_captcha.lower()
-            if "automatizado" in _epc_lower or "bloqueado" in _epc_lower:
+            _classe_pos_captcha = _classificar_mensagem(_err_pos_captcha)
+            if _classe_pos_captcha == _ANTIBOT:
                 print(f"    → [!] Erro anti-bot após captcha: '{_err_pos_captcha}'")
                 if _tentativa_repr < _MAX_TENTATIVAS_REPR:
                     continue
@@ -1414,7 +1417,7 @@ def trocar_perfil_procurador(page, cnpj: str) -> None:
                     f"Acesso bloqueado por anti-bot após captcha — "
                     f"{_MAX_TENTATIVAS_REPR} tentativa(s). Reprocessar manualmente."
                 )
-            if _erro_permanente(_err_pos_captcha):
+            if _classe_pos_captcha == _RECUSA_DO_CNPJ:
                 raise FalhaPermanente(
                     f"Portal recusou CNPJ {cnpj}: '{_err_pos_captcha}'",
                     status_coluna_d=_status_erro_permanente(_err_pos_captcha),

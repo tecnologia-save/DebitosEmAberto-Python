@@ -111,3 +111,47 @@ def status_encerra_linha(val_d) -> bool:
     if not alvo:
         return False
     return any(remover_acentos(s.lower()) == alvo for s in STATUS_D_TERMINAIS)
+
+
+# ── Anti-bot: condicao da SESSAO, nao do CNPJ ────────────────────────────────
+# Provado pelo comportamento do consumidor, nao por semelhanca: uma recusa mantem
+# o navegador vivo e segue para o proximo CNPJ; o anti-bot esgotado FECHA o
+# navegador e refaz o login. Sao coisas de escopos diferentes.
+#
+# Detectado por substring em texto ja passado por .lower(). Preservado do
+# original — inclusive a ausencia de remocao de acento, ao contrario da regra de
+# recusa que le o MESMO texto (ANTIBOT_CLASSIFICATION_POSSIBLE_DEFECT).
+PALAVRAS_ANTIBOT = ("automatizado", "bloqueado")
+
+ANTIBOT = "condição anti-bot"
+RECUSA_DO_CNPJ = "recusa deste CNPJ"
+NAO_RECONHECIDA = "não reconhecida"
+
+
+def condicao_antibot(mensagem: str) -> bool:
+    """True se o texto do portal indica bloqueio de acesso automatizado.
+
+    ATENCAO — "bloqueado" tambem descreve bloqueio DO CONTRIBUINTE ("CNPJ
+    bloqueado"), que nao e anti-bot e nao melhora com retentativa. Comportamento
+    preservado do original; ver ANTIBOT_CLASSIFICATION_POSSIBLE_DEFECT.
+    """
+    baixo = mensagem.lower()
+    return any(p in baixo for p in PALAVRAS_ANTIBOT)
+
+
+def classificar_mensagem(mensagem: str) -> str:
+    """Traduz o texto do portal para um dos tres conceitos internos.
+
+    A ORDEM e parte da regra, e nao detalhe de implementacao: no original o
+    anti-bot e avaliado ANTES da recusa, entao um texto que casa nos dois e
+    tratado como anti-bot — retentado, e sem gravar nada na coluna D. Preservado.
+
+    O que o chamador faz com a classificacao — repetir, esperar, fechar a sessao,
+    gravar planilha — continua na navegacao. Aqui so se decide O QUE o portal
+    disse, nunca o que fazer a respeito.
+    """
+    if condicao_antibot(mensagem):
+        return ANTIBOT
+    if recusa_permanente(mensagem):
+        return RECUSA_DO_CNPJ
+    return NAO_RECONHECIDA
