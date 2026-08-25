@@ -76,17 +76,33 @@ def test_b_debitosemaberto_usa_somente_o_modo_windows_store():
             encoding="utf-8-sig"
         )
     )
-    chamadas = [
-        no for no in ast.walk(arvore)
+    # Ate a fatia 7B a chamada estava em main.py; agora main INJETA `fazer_login`
+    # na fronteira, e quem monta os argumentos e automation/login.py. O fato
+    # caracterizado — so o modo Windows Store e usado — continua valendo.
+    injecoes = [
+        kw for no in ast.walk(arvore)
+        if isinstance(no, ast.Call)
+        for kw in no.keywords
+        if kw.arg == "fazer_login"
+    ]
+    assert len(injecoes) == 1, "um unico ponto de login"
+
+    fronteira = ast.parse(
+        (pathlib.Path(__file__).resolve().parents[1] / "automation" / "login.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    chamada = next(
+        no for no in ast.walk(fronteira)
         if isinstance(no, ast.Call)
         and isinstance(no.func, ast.Name)
         and no.func.id == "fazer_login"
-    ]
-    assert len(chamadas) == 1, "um unico ponto de login"
-
-    nomeados = {kw.arg for kw in chamadas[0].keywords}
-    assert nomeados == {"cert_subject_cn", "cert_serial", "policy_ok", "project_dir"}
-    assert not chamadas[0].args, "tudo por nome"
+    )
+    nomeados = {kw.arg for kw in chamada.keywords}
+    assert nomeados == {
+        "cert_subject_cn", "cert_serial", "policy_ok", "project_dir", "gemini_api_key"
+    }
+    assert not chamada.args, "tudo por nome"
 
 
 # ── A flag de auto-selecao ────────────────────────────────────────────────────

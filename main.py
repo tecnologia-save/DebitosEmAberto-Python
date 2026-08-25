@@ -132,7 +132,7 @@ from automation.status_portal import PALAVRAS_RECUSA_PERMANENTE as _PALAVRAS_ERR
 from automation.status_portal import RECUSAS_COM_STATUS as _ERROS_COM_STATUS
 from automation.status_portal import STATUS_D_TERMINAIS as _STATUS_D_TERMINAIS
 from automation.boundary import EntradaDebitosEmAberto, EntradaInvalida, montar_entrada
-from automation import captcha, certificados_windows, planilha
+from automation import captcha, certificados_windows, login, planilha
 from patchright.sync_api import Error as PlaywrightError
 from automation.planilha import PlanilhaIndisponivel, validar_recurso
 from automation.status_portal import ANTIBOT as _ANTIBOT
@@ -216,6 +216,24 @@ def _aguardar_networkidle(page, timeout: int = 60_000, label: str = "") -> None:
 
 
 # ── Certificados ──────────────────────────────────────────────────────────────
+
+
+def _autenticar(cert_subject_cn: str, cert_serial: str, auto_select: bool):
+    """TRANSITIONAL — ponte entre o laço legado e a fronteira de login.
+
+    A chave do Gemini ainda é lida de `os.environ` AQUI, e só aqui: daqui para
+    baixo ela viaja explicitamente até o solver. O `os.environ` sobrevive porque
+    o modo desktop/executável legado continua populando-o (LEGACY_SECRET_LOADING).
+
+    Condição de remoção: quando o runner construir `ConfigLogin` a partir do
+    input da execução, esta função e a leitura do ambiente saem juntas.
+    """
+    config = login.ConfigLogin(
+        diretorio_perfil=str(LOGIN_ECAC_DIR),
+        gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
+    )
+    certificado = login.Certificado(subject_cn=cert_subject_cn, serial=cert_serial)
+    return login.autenticar(certificado, config, auto_select, fazer_login=fazer_login)
 
 
 def _resolver_captcha(alvo, aguardar=None) -> str:
@@ -1402,7 +1420,7 @@ def processar(df: pd.DataFrame, certs: dict[str, dict],
     col_cert = df.columns[2]   # Coluna C = CERTIFICADO
 
     cert_atual     = None
-    browser_aberto = None   # (p, context, page) | None
+    sessao = None           # login.SessaoReceita | None
     policy_ok      = True   # definido de fato ao entrar no primeiro certificado
     _MAX_RETENT_CNPJ    = 2                          # tentativas por CNPJ (inclui a 1ª)
     _retentativas_cnpj: dict[str, int] = {}          # contador por CNPJ
@@ -1428,10 +1446,9 @@ def processar(df: pd.DataFrame, certs: dict[str, dict],
             print(f"{'═' * 60}")
 
             # Fecha o navegador atual (faz logout no portal antes de fechar)
-            if browser_aberto:
-                p, context, page_atual = browser_aberto
-                _fechar_navegador(p, context, page_atual)
-                browser_aberto = None
+            if sessao:
+                _fechar_navegador(sessao.playwright, sessao.contexto, sessao.pagina)
+                sessao = None
 
             chave = _buscar_certificado(certificado, certs)
             if chave is None:
@@ -1471,18 +1488,13 @@ def processar(df: pd.DataFrame, certs: dict[str, dict],
         print(f"\n  [{idx + 1}/{total}] CNPJ: {cnpj}")
 
         # ── Login no portal (apenas quando não há sessão aberta) ─────────────────
-        if browser_aberto is None:
+        if sessao is None:
             try:
-                _res = fazer_login(
-                    cert_subject_cn=cert_subject_cn,
-                    cert_serial=cert_serial,
-                    policy_ok=policy_ok,
-                    project_dir=LOGIN_ECAC_DIR,
-                )
-                if _res is None:
-                    raise Exception("fazer_login() retornou None — login falhou.")
-                p, context, page = _res
-                browser_aberto = (p, context, page)
+                _resultado = _autenticar(cert_subject_cn, cert_serial, policy_ok)
+                if not _resultado.autenticado:
+                    raise Exception("login não autenticou.")
+                sessao = _resultado.sessao
+                page = sessao.pagina
                 print("    [✓] Login no portal concluído.")
             except Exception as e:
                 print(f"    [!] Erro ao fazer login ({type(e).__name__}: {e}). Pulando CNPJ {cnpj}.")
@@ -1490,7 +1502,7 @@ def processar(df: pd.DataFrame, certs: dict[str, dict],
                 continue
 
         else:
-            p, context, page = browser_aberto
+            page = sessao.pagina
 
         # ── Processa pendências deste CNPJ ────────────────────────────────────
         _avancar = True
@@ -1504,8 +1516,8 @@ def processar(df: pd.DataFrame, certs: dict[str, dict],
             # e só fecha se a sessão não voltar a um estado utilizável.
             print(f"    [!] Falha permanente — CNPJ {cnpj} ignorado: {e}")
             if not _recuperar_apos_recusa(page):
-                _fechar_navegador(p, context, page)
-                browser_aberto = None
+                _fechar_navegador(sessao.playwright, sessao.contexto, sessao.pagina)
+                sessao = None
 
         except Exception as e:
             _retentativas_cnpj[cnpj] = _retentativas_cnpj.get(cnpj, 0) + 1
@@ -1514,8 +1526,8 @@ def processar(df: pd.DataFrame, certs: dict[str, dict],
                 f"    [!] Erro ao processar CNPJ {cnpj} "
                 f"(tentativa {_n}/{_MAX_RETENT_CNPJ}): {e}"
             )
-            _fechar_navegador(p, context, page)
-            browser_aberto = None
+            _fechar_navegador(sessao.playwright, sessao.contexto, sessao.pagina)
+            sessao = None
             if _n < _MAX_RETENT_CNPJ:
                 print(f"    → Reabrindo sessão e retentando CNPJ {cnpj}...")
                 _avancar = False   # não incrementa i; próxima iteração refaz login
@@ -1529,9 +1541,8 @@ def processar(df: pd.DataFrame, certs: dict[str, dict],
             i += 1
 
     # ── Fecha o navegador ao terminar ─────────────────────────────────────────
-    if browser_aberto:
-        p, context, page_final = browser_aberto
-        _fechar_navegador(p, context, page_final)
+    if sessao:
+        _fechar_navegador(sessao.playwright, sessao.contexto, sessao.pagina)
 
 
 # ── Entrada ───────────────────────────────────────────────────────────────────

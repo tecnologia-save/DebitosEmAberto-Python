@@ -360,3 +360,47 @@ def test_o_guardiao_continua_entrypoint_interno():
     principal = (RAIZ / "main.py").read_text(encoding="utf-8-sig")
     assert "--guard" in principal, "o modo existe"
     assert "add_argument(\"--guard" not in principal, "mas não é argumento da CLI"
+
+
+# ── Fatia 7B: a fronteira do login ───────────────────────────────────────────
+
+LOGIN = "login.py"
+
+
+def test_a_fronteira_do_login_nao_conhece_a_policy():
+    """A 7A provou lifecycles independentes. O login recebe UMA informação —
+    posso confiar no auto-select? — e nada sobre registro, guardião ou limpeza."""
+    modulo = RAIZ / "automation" / LOGIN
+    assert not _importa(modulo, {"winreg", "ctypes", "subprocess", "cert_windows"})
+
+    codigo = _codigo_sem_docstrings(modulo)
+    for proibido in ("policy_certificado", "garantir_policy", "ResultadoDaPolicy",
+                     "limpar_autoselect", "iniciar_guarda", "definir_autoselect"):
+        assert proibido not in codigo, f"o login conhece {proibido}."
+
+
+def test_a_fronteira_do_login_nao_le_o_ambiente_nem_importa_o_fork():
+    modulo = RAIZ / "automation" / LOGIN
+    assert not _importa(modulo, {"os", "servicos_rf_login", "resolvedor_captcha",
+                                 "patchright", "playwright", "dotenv"})
+
+    codigo = _codigo_sem_docstrings(modulo)
+    assert "os.environ" not in codigo
+    assert "print(" not in codigo
+
+
+def test_a_sessao_nao_vaza_para_o_nucleo():
+    """SessaoReceita e os objetos de navegador nao atravessam para domain,
+    status_portal, boundary nem planilha."""
+    for modulo in ("domain.py", "status_portal.py", "boundary.py", "planilha.py"):
+        codigo = _codigo_sem_docstrings(RAIZ / "automation" / modulo)
+        for proibido in ("SessaoReceita", "playwright", "Page", "context"):
+            assert proibido not in codigo, f"{modulo} conhece {proibido}."
+
+
+def test_main_nao_manipula_mais_a_tupla_do_navegador():
+    fonte = (RAIZ / "main.py").read_text(encoding="utf-8-sig")
+
+    assert "browser_aberto" not in fonte
+    assert "p, context, page = " not in fonte
+    assert "sessao.pagina" in fonte, "os recursos passaram a ter nome"
