@@ -134,6 +134,7 @@ _INTERVALO_TROCA           = 30   # segundos
 from automation.status_portal import PALAVRAS_RECUSA_PERMANENTE as _PALAVRAS_ERRO_PERMANENTE
 from automation.status_portal import RECUSAS_COM_STATUS as _ERROS_COM_STATUS
 from automation.status_portal import STATUS_D_TERMINAIS as _STATUS_D_TERMINAIS
+from automation.boundary import EntradaDebitosEmAberto, EntradaInvalida, montar_entrada
 from automation.status_portal import ANTIBOT as _ANTIBOT
 from automation.status_portal import RECUSA_DO_CNPJ as _RECUSA_DO_CNPJ
 from automation.status_portal import FalhaPermanente
@@ -1767,6 +1768,20 @@ def processar(df: pd.DataFrame, certs: dict[str, dict],
 
 # ── Entrada ───────────────────────────────────────────────────────────────────
 
+def _entrada_da_execucao(planilha: str) -> EntradaDebitosEmAberto:
+    """TRANSITIONAL — ponte entre os entrypoints atuais e a fronteira tipada.
+
+    Hoje `main()` DESCOBRE a planilha (argumento da CLI ou janela do Tkinter) e
+    só depois pede à fronteira que a valide. O destino é o inverso: um runner
+    constrói `EntradaDebitosEmAberto` e a entrega pronta.
+
+    Condição de remoção: quando existir o runner/app, esta função e o argparse
+    local saem juntos e `main()` passa a receber a entrada como parâmetro.
+    Enquanto isso, ela é o único ponto do legado que conhece a fronteira.
+    """
+    return montar_entrada({"planilha": planilha})
+
+
 def main() -> None:
     # ── Argumentos de linha de comando ────────────────────────────────────────
     parser = argparse.ArgumentParser(description="Automação Débitos em Aberto")
@@ -1811,6 +1826,13 @@ def main() -> None:
     if not planilha:
         print("Nenhuma planilha selecionada. Encerrando.")
         sys.exit(0)
+
+    try:
+        entrada = _entrada_da_execucao(planilha)
+    except EntradaInvalida as erro_de_entrada:
+        print(f"  [!] {erro_de_entrada}")
+        sys.exit(2)
+    planilha = entrada.planilha
 
     print(f"\nPlanilha: {planilha}")
 
