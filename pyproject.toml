@@ -1,0 +1,36 @@
+# Configuracao de ferramentas. Minimo necessario para a migracao:
+# pytest para caracterizar antes de extrair, ruff para o codigo novo.
+#
+# Dependencias de RUNTIME continuam em requirements.txt.
+
+[dependency-groups]
+# Ferramentas de desenvolvimento — NAO sao dependencias de runtime.
+# Instalacao: pip install --group dev   (requer pip >= 25.1)
+dev = ["pytest>=8,<10", "ruff>=0.6,<1.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+# O legado nao passa pelo Ruff nesta migracao: ele tem 168 BLE001 e 65 S110, e
+# corrigi-los agora misturaria limpeza cosmetica com extracao de regra.
+# Conforme as fatias forem migrando, os arquivos saem desta lista.
+extend-exclude = [
+    "main.py",
+    "cert_windows.py",
+    "ui_upload.py",
+    "rthook_patchright.py",
+    "ecac_login",
+    "servicos_rf_login",
+    "resolvedor_captcha",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "S", "BLE", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S105", "S106"]
