@@ -123,71 +123,21 @@ _ultimo_troca_cnpj: float = 0.0
 _INTERVALO_TROCA           = 30   # segundos
 
 
-class FalhaPermanente(Exception):
-    """Erro permanente que impede processar este CNPJ — não retentar.
-    Exemplos: procuração expirada/inválida, CNPJ não autorizado pelo portal.
-
-    `status_coluna_d`, quando informado, é gravado na coluna D da aba 'Empresas'
-    para registrar o motivo na planilha em vez de deixar a linha em branco.
-    """
-
-    def __init__(self, mensagem: str, status_coluna_d: str | None = None):
-        super().__init__(mensagem)
-        self.status_coluna_d = status_coluna_d
-
-
-# Palavras que o portal exibe em span.mensagemErro para indicar que o CNPJ
-# não pode ser representado (procuração inexistente, vencida, CNPJ inválido…).
-# Erros com essas palavras levantam FalhaPermanente em vez de serem retentados.
-_PALAVRAS_ERRO_PERMANENTE = (
-    "procuração", "procuracao", "vencid", "expirad",
-    "não possui", "sem procuração", "não encontrad",
-    "cnpj inválid", "não autorizado",
-)
-
-# Recusas com status próprio na coluna D: {trecho da mensagem: status}.
-# A comparação é feita sem acento e em minúsculas.
+# ── Classificação de recusas do portal ────────────────────────────────────────
+# A regra vive em automation/status_portal.py: entra o texto que o portal
+# devolveu, sai "encerra a linha" ou "tenta de novo". Aqui só os apelidos usados
+# no restante do módulo.
 #
-# "Sua autorização como procurador não permite acesso a este serviço" não casava
-# com nenhuma palavra da tupla acima — ela tem "procuração" e "autorizado", e a
-# mensagem traz "procurador" e "autorização". O resultado era o loop de espera
-# rodar até estourar os 60s sem classificar o erro.
-_STATUS_SEM_AUTORIZACAO = "Procuração sem autorização"
-
-_ERROS_COM_STATUS = {
-    "nao permite acesso a este servico": _STATUS_SEM_AUTORIZACAO,
-}
-
-# Status da coluna D que encerram a linha sozinhos, sem depender da coluna E:
-# a procuração foi recusada, então não há o que buscar nem em Débitos nem em
-# Processos Fiscais. Sem isso a linha voltaria em toda execução para ser recusada
-# de novo, já que o critério padrão exige D e E preenchidas.
-_STATUS_D_TERMINAIS = (_STATUS_SEM_AUTORIZACAO,)
-
-
-def _status_encerra_linha(val_d) -> bool:
-    """True se o status já na coluna D dispensa qualquer processamento da linha."""
-    alvo = _remover_acentos(str(val_d or "").strip().lower())
-    if not alvo:
-        return False
-    return any(_remover_acentos(s.lower()) == alvo for s in _STATUS_D_TERMINAIS)
-
-
-def _status_erro_permanente(mensagem: str) -> str | None:
-    """Status para a coluna D quando a recusa é definitiva e conhecida."""
-    msg = _remover_acentos(mensagem.lower())
-    for trecho, status in _ERROS_COM_STATUS.items():
-        if trecho in msg:
-            return status
-    return None
-
-
-def _erro_permanente(mensagem: str) -> bool:
-    """True se a mensagem do portal caracteriza recusa que não deve ser retentada."""
-    if _status_erro_permanente(mensagem):
-        return True
-    msg = _remover_acentos(mensagem.lower())
-    return any(_remover_acentos(p) in msg for p in _PALAVRAS_ERRO_PERMANENTE)
+# As três constantes são reexportadas porque a suíte de caracterização afirma
+# sobre elas em `main`; elas somem quando os pontos de chamada da navegação
+# passarem a falar direto com o domínio.
+from automation.status_portal import PALAVRAS_RECUSA_PERMANENTE as _PALAVRAS_ERRO_PERMANENTE
+from automation.status_portal import RECUSAS_COM_STATUS as _ERROS_COM_STATUS
+from automation.status_portal import STATUS_D_TERMINAIS as _STATUS_D_TERMINAIS
+from automation.status_portal import FalhaPermanente
+from automation.status_portal import recusa_permanente as _erro_permanente
+from automation.status_portal import status_da_recusa as _status_erro_permanente
+from automation.status_portal import status_encerra_linha as _status_encerra_linha
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
