@@ -11,6 +11,7 @@ import pytest
 from navegador_falso import PaginaFiscal
 
 import main
+from automation import consulta_fiscal as fiscal
 
 CNPJ = "11111111000191"
 PLANILHA = "C:/nao/existe/base.xlsx"
@@ -56,10 +57,16 @@ def escritas(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def sem_navegacao_real(monkeypatch):
+    """Os helpers de paginacao mudaram de casa na 8B2 — so encanamento."""
     monkeypatch.setattr(main, "_aguardar_networkidle", lambda page, **k: None)
-    monkeypatch.setattr(main, "_selecionar_n_por_pagina", lambda page, n: None)
-    monkeypatch.setattr(main, "_expandir_todas_as_linhas", lambda page: None)
+    monkeypatch.setattr(fiscal, "selecionar_itens_por_pagina", lambda page, n: None)
+    monkeypatch.setattr(fiscal, "expandir_linhas", lambda page: None)
     monkeypatch.setattr(main, "_goto_seguro", lambda page, url, **k: page.goto(url))
+
+
+def usar_leitor(monkeypatch, nome, funcao):
+    """Substitui um leitor que a 8B2 moveu para a integracao."""
+    monkeypatch.setattr(fiscal, nome, funcao)
 
 
 def linhas_ficticias(quantidade):
@@ -153,7 +160,8 @@ def test_i_os_skips_vem_da_planilha_e_nao_do_portal():
 def test_g_dctfweb_extrai_e_so_entao_grava(escritas, monkeypatch):
     """O corte da fatia: a gravacao sao as DUAS ULTIMAS linhas, depois de toda a
     paginacao terminar."""
-    monkeypatch.setattr(main, "_extrair_dados_pagina", lambda page, cnpj: linhas_ficticias(3))
+    usar_leitor(monkeypatch, "_linhas_da_tabela_dctfweb",
+                lambda page, cnpj: linhas_ficticias(3))
     pagina = PaginaFiscal()
 
     main.extrair_debitos_dctfweb(sessao_de(pagina), CNPJ, PLANILHA)
@@ -162,7 +170,7 @@ def test_g_dctfweb_extrai_e_so_entao_grava(escritas, monkeypatch):
 
 
 def test_g_dctfweb_sem_linhas_ainda_grava_concluido(escritas, monkeypatch):
-    monkeypatch.setattr(main, "_extrair_dados_pagina", lambda page, cnpj: [])
+    usar_leitor(monkeypatch, "_linhas_da_tabela_dctfweb", lambda page, cnpj: [])
     pagina = PaginaFiscal()
 
     main.extrair_debitos_dctfweb(sessao_de(pagina), CNPJ, PLANILHA)
@@ -173,7 +181,8 @@ def test_g_dctfweb_sem_linhas_ainda_grava_concluido(escritas, monkeypatch):
 def test_g_dctfweb_pagina_enquanto_houver_proxima(escritas, monkeypatch):
     """A paginacao acumula tudo em memoria antes de gravar uma vez so."""
     paginas = [linhas_ficticias(2), linhas_ficticias(1)]
-    monkeypatch.setattr(main, "_extrair_dados_pagina", lambda page, cnpj: paginas.pop(0))
+    usar_leitor(monkeypatch, "_linhas_da_tabela_dctfweb",
+                lambda page, cnpj: paginas.pop(0))
 
     class ComDuasPaginas(PaginaFiscal):
         def __init__(self):
@@ -203,7 +212,8 @@ def test_h_processos_sem_cards_ainda_grava_concluido(escritas):
 
 
 def test_h_processos_percorre_cada_card_e_volta(escritas, monkeypatch):
-    monkeypatch.setattr(main, "_processar_card_processo", lambda page, cnpj: linhas_ficticias(2))
+    usar_leitor(monkeypatch, "_linhas_do_card",
+                lambda page, cnpj, aguardar: linhas_ficticias(2))
     pagina = PaginaFiscal(cards=3)
 
     main.extrair_processo_fiscal(sessao_de(pagina), CNPJ, PLANILHA)
@@ -229,12 +239,12 @@ def test_p_a_ida_para_analise_fiscal_acompanhou_os_processos(escritas, monkeypat
     """A navegacao para a URL de analise saiu de `verificar_pendencias` e entrou
     em `consultar_processos` — mesma sequencia, outra funcao. Ela acontece
     imediatamente antes de clicar no botao, como antes."""
-    monkeypatch.setattr(main, "_processar_card_processo", lambda page, cnpj: [])
+    usar_leitor(monkeypatch, "_linhas_do_card", lambda page, cnpj, aguardar: [])
     pagina = PaginaFiscal(cards=0)
 
     main.extrair_processo_fiscal(sessao_de(pagina), CNPJ, PLANILHA)
 
-    assert pagina.navegacoes == [main.URL_ANALISE_PENDENCIAS]
+    assert pagina.navegacoes == [fiscal.URL_ANALISE_PENDENCIAS]
 
 
 def test_p_so_processos_marca_a_coluna_d_como_concluida(escritas, monkeypatch):
@@ -263,7 +273,8 @@ def test_v_dctfweb_grava_a_coluna_d_ANTES_de_processos_comecar(escritas, monkeyp
     marcada em memoria e o `finally` a grava. A proxima execucao faz SO
     Processos. Juntar as duas gravacoes no fim quebraria exatamente isso.
     """
-    monkeypatch.setattr(main, "_extrair_dados_pagina", lambda page, cnpj: linhas_ficticias(1))
+    usar_leitor(monkeypatch, "_linhas_da_tabela_dctfweb",
+                lambda page, cnpj: linhas_ficticias(1))
 
     def processos_falham(sessao, cnpj, caminho):
         raise RuntimeError("portal caiu no meio dos processos")
@@ -285,7 +296,7 @@ def test_s_bug_na_extracao_nao_vira_status(escritas, monkeypatch, erro):
     def quebrar(page, cnpj):
         raise erro
 
-    monkeypatch.setattr(main, "_extrair_dados_pagina", quebrar)
+    usar_leitor(monkeypatch, "_linhas_da_tabela_dctfweb", quebrar)
 
     with pytest.raises(type(erro)):
         main.extrair_debitos_dctfweb(sessao_de(PaginaFiscal()), CNPJ, PLANILHA)

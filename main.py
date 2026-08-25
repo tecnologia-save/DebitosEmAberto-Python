@@ -103,7 +103,6 @@ def _resolver_gemini_key() -> tuple[str, str]:
 
 URL_SERVICOS_RF        = "https://servicos.receitafederal.gov.br/"
 URL_PENDENCIAS         = "https://servicos.receitafederal.gov.br/servico/pendencias/"
-URL_ANALISE_PENDENCIAS = "https://servicos.receitafederal.gov.br/servico/pendencias/#/analise-pendencias"
 # Classe específica do botão gov.br — mais robusto que XPath posicional
 # (o botão contém <img alt="gov.br">, por isso has-text("gov.br") não funciona)
 BTN_ENTRAR_GOV  = 'button.login-banner-button'
@@ -445,126 +444,6 @@ def escrever_aba_debitos(caminho_planilha: str, dados: list[dict]) -> None:
 
 # ── DCTFWeb: extração da tabela ────────────────────────────────────────────────
 
-def _selecionar_n_por_pagina(page, n: int) -> None:
-    """Seleciona N itens por página no ng-select de paginação (div.pagination-per-page).
-
-    O ng-dropdown-panel é renderizado fora do container (appendTo body), por isso a
-    opção é buscada diretamente pela span.ng-option-label com texto exato.
-    """
-    try:
-        ng_sel = page.locator('div.pagination-per-page ng-select').first
-        ng_sel.wait_for(state="visible", timeout=10_000)
-        ng_sel.click()
-        page.wait_for_timeout(600)
-
-        opcao = page.locator(f'span.ng-option-label:text-is("{n}")').first
-        opcao.wait_for(state="visible", timeout=5_000)
-        opcao.click()
-        page.wait_for_timeout(1_500)
-        print(f"    [✓] Itens por página: {n}.")
-    except Exception as exc:
-        print(f"    [!] Não foi possível mudar para {n} itens/página: {exc}")
-
-
-def _expandir_todas_as_linhas(page) -> None:
-    """Expande todas as linhas da tabela de uma só vez via JavaScript.
-
-    Um único evaluate clica todos os botões chevron-down simultaneamente,
-    eliminando os N roundtrips Playwright + N × 350 ms da abordagem anterior.
-    Aguarda 1 s para o Angular processar todas as mudanças de estado.
-    """
-    contagem = page.evaluate(
-        """
-        () => {
-            const btns = Array.from(
-                document.querySelectorAll('button.br-button.circle.small')
-            ).filter(b => b.querySelector('i.fa-chevron-down'));
-            btns.forEach(b => b.click());
-            return btns.length;
-        }
-        """
-    )
-    if contagem:
-        page.wait_for_timeout(1_000)   # aguarda Angular renderizar tudo
-        print(f"    → {contagem} linha(s) expandida(s).")
-    else:
-        print("    → Nenhuma linha para expandir.")
-
-
-def _extrair_dados_pagina(page, cnpj: str) -> list[dict]:
-    """Extrai as linhas de dados visíveis na tabela DCTFWeb (JavaScript evaluate)."""
-    return page.evaluate(
-        """
-        (cnpj) => {
-            const resultado = [];
-
-            /* Linhas principais: <tr> que contêm o botão de expandir */
-            const linhas = document.querySelectorAll(
-                'tbody tr:has(button.br-button.circle.small)'
-            );
-
-            for (const tr of linhas) {
-                const tds = Array.from(tr.querySelectorAll('td'));
-
-                /* Receita: única <td class="text-nowrap"> */
-                const tdReceita = tds.find(td => td.classList.contains('text-nowrap'));
-                const receita   = tdReceita?.textContent?.trim() ?? '';
-
-                /* Saldo devedor consolidado: última <td class="text-right"> */
-                const tdsSaldoDir = tds.filter(td => td.classList.contains('text-right'));
-                const saldo = tdsSaldoDir[tdsSaldoDir.length - 1]
-                                ?.textContent?.trim() ?? '';
-
-                /* Tipo (Situação do débito): <td> que contém <span class="text-nowrap"> */
-                const tdTipo = tds.find(td => td.querySelector('span.text-nowrap'));
-                const tipo   = tdTipo?.querySelector('span.text-nowrap')
-                                      ?.textContent?.trim() ?? '';
-
-                /* <td> sem classe especial, sem botão e sem input (checkbox)
-                   Ordem esperada no DOM: PA/Ex., Dt.Vcto., Saldo devedor (R$) */
-                const tdsSimples = tds.filter(td =>
-                    !td.classList.contains('text-nowrap') &&
-                    !td.classList.contains('text-right') &&
-                    !td.querySelector('span.text-nowrap') &&
-                    !td.querySelector('button.br-button') &&
-                    !td.querySelector('input')
-                );
-                const pa_ex   = tdsSimples[0]?.textContent?.trim() ?? '';
-                const dt_vcto = tdsSimples[1]?.textContent?.trim() ?? '';
-
-                /* Detalhe expandido: próxima <tr> irmã, revelada ao clicar na seta */
-                let tributo       = '';
-                let valor_original = '';
-                const proxTr = tr.nextElementSibling;
-                if (proxTr && proxTr.tagName === 'TR') {
-                    const labels = proxTr.querySelectorAll('p.label');
-                    for (const labelEl of labels) {
-                        const labelText = labelEl.textContent.trim();
-                        const divPai    = labelEl.closest('div');
-                        const ps        = divPai
-                            ? Array.from(divPai.querySelectorAll('p'))
-                            : [];
-                        /* Valor é o primeiro <p> que não tem class="label" */
-                        const valorEl = ps.find(p => !p.classList.contains('label'));
-                        const valor   = valorEl?.textContent?.trim() ?? '';
-                        if (labelText === 'Tributo')              tributo        = valor;
-                        if (labelText === 'Valor original (R$)')  valor_original = valor;
-                    }
-                }
-
-                resultado.push({
-                    cnpj, tipo, tributo, receita,
-                    pa_ex, dt_vcto, valor_original, saldo,
-                });
-            }
-
-            return resultado;
-        }
-        """,
-        cnpj,
-    )
-
-
 def extrair_debitos_dctfweb(sessao, cnpj: str, caminho_planilha: str) -> None:
     """TRANSITIONAL_PERSISTENCE_ADAPTER — consulta pela fronteira, grava aqui.
 
@@ -576,11 +455,7 @@ def extrair_debitos_dctfweb(sessao, cnpj: str, caminho_planilha: str) -> None:
     """
     print("    → Aguardando tabela DCTFWeb carregar...")
     extracao = consulta_fiscal.consultar_dctfweb(
-        sessao, cnpj,
-        extrair_pagina=_extrair_dados_pagina,
-        aguardar_rede=_aguardar_networkidle,
-        selecionar_por_pagina=_selecionar_n_por_pagina,
-        expandir_linhas=_expandir_todas_as_linhas,
+        sessao, cnpj, aguardar_rede=_aguardar_networkidle
     )
 
     print(f"    [✓] Total: {len(extracao)} linha(s) de débito DCTFWeb "
@@ -599,150 +474,11 @@ def escrever_aba_processos_fiscais(caminho_planilha: str, dados: list[dict]) -> 
           f"{planilha.descrever_destinos(destinos)}.")
 
 
-def _extrair_dados_pagina_processo(page, cnpj: str,
-                                   processo_credito: str) -> list[dict]:
-    """Extrai linhas da tabela de débitos de um card de processo fiscal."""
-    return page.evaluate(
-        """
-        ([cnpj, processo_credito]) => {
-            const resultado = [];
-            const linhas = document.querySelectorAll(
-                'tbody tr:has(button.br-button.circle.small)'
-            );
-
-            for (const tr of linhas) {
-                const tds = Array.from(tr.querySelectorAll('td'));
-
-                /* Receita: td.text-nowrap */
-                const tdReceita = tds.find(td => td.classList.contains('text-nowrap'));
-                const receita   = tdReceita?.textContent?.trim() ?? '';
-
-                /* Saldo devedor: td.text-right */
-                const tdSaldo = tds.find(td => td.classList.contains('text-right'));
-                const saldo   = tdSaldo?.textContent?.trim() ?? '';
-
-                /* Tipo: td contendo span.text-nowrap */
-                const tdTipo = tds.find(td => td.querySelector('span.text-nowrap'));
-                const tipo   = tdTipo?.querySelector('span.text-nowrap')
-                                      ?.textContent?.trim() ?? '';
-
-                /* TDs simples (sem classe, sem botão, sem input) → PA/Ex., Dt.Vcto. */
-                const tdsSimples = tds.filter(td =>
-                    !td.classList.contains('text-nowrap') &&
-                    !td.classList.contains('text-right') &&
-                    !td.querySelector('span.text-nowrap') &&
-                    !td.querySelector('button.br-button') &&
-                    !td.querySelector('input')
-                );
-                const pa_ex   = tdsSimples[0]?.textContent?.trim() ?? '';
-                const dt_vcto = tdsSimples[1]?.textContent?.trim() ?? '';
-
-                /* Valor original: seção expandida (próxima <tr> irmã) */
-                let valor_original = '';
-                const proxTr = tr.nextElementSibling;
-                if (proxTr && proxTr.tagName === 'TR') {
-                    const labels = proxTr.querySelectorAll('p.label');
-                    for (const labelEl of labels) {
-                        const labelText = labelEl.textContent.trim();
-                        const divPai    = labelEl.closest('div');
-                        const ps        = divPai
-                            ? Array.from(divPai.querySelectorAll('p'))
-                            : [];
-                        const valorEl = ps.find(p => !p.classList.contains('label'));
-                        const valor   = valorEl?.textContent?.trim() ?? '';
-                        if (labelText === 'Valor original (R$)') valor_original = valor;
-                    }
-                }
-
-                resultado.push({
-                    cnpj, tipo, receita, pa_ex, dt_vcto,
-                    valor_original, saldo, processo_credito,
-                });
-            }
-
-            return resultado;
-        }
-        """,
-        [cnpj, processo_credito],
-    )
-
-
-def _processar_card_processo(page, cnpj: str) -> list[dict]:
-    """Extrai dados de um card de processo fiscal já aberto (nova página).
-
-    Retorna lista de dicts com as linhas da tabela de débitos do card.
-    """
-    _aguardar_networkidle(page, label="card")
-    page.wait_for_timeout(1_000)
-
-    # ── "Processo de crédito" (expande se existir) ────────────────────────────
-    processo_credito = ""
-    btn_cred = page.locator(
-        'button[aria-label="Expandir processo de crédito"]'
-    ).first
-    try:
-        if btn_cred.is_visible(timeout=3_000):
-            btn_cred.click()
-            page.wait_for_timeout(800)
-            # Após o clique o Angular muda o aria-label do botão (Expandir → Recolher),
-            # por isso NÃO buscamos o botão novamente no JS.
-            # Buscamos diretamente o div revelado: div.processo-credito
-            try:
-                div_proc = page.locator('div.processo-credito').first
-                div_proc.wait_for(state="visible", timeout=3_000)
-                processo_credito = (div_proc.text_content() or "").strip()
-            except Exception:
-                # Fallback via JS — cobre o caso de o div já existir mas sem estado "visible"
-                processo_credito = page.evaluate(
-                    "() => {"
-                    "  const d = document.querySelector('div.processo-credito');"
-                    "  return d ? d.textContent.trim() : '';"
-                    "}"
-                )
-            print(f"    → Processo de crédito: {processo_credito}")
-    except Exception:
-        pass
-
-    # ── Tabela de débitos do card ─────────────────────────────────────────────
-    _selecionar_n_por_pagina(page, 50)
-
-    todos_dados: list[dict] = []
-    pagina = 1
-
-    while True:
-        print(f"    → Extraindo débitos do card (página {pagina})...")
-        page.wait_for_timeout(1_500)
-        _expandir_todas_as_linhas(page)
-
-        dados_pag = _extrair_dados_pagina_processo(page, cnpj, processo_credito)
-        todos_dados.extend(dados_pag)
-        print(f"    → {len(dados_pag)} linha(s) na página {pagina}.")
-
-        try:
-            btn_prox = page.locator('button[aria-label="Página seguinte"]').first
-            if not btn_prox.is_disabled():
-                btn_prox.click()
-                _aguardar_networkidle(page, label="card pág.")
-                pagina += 1
-                continue
-        except Exception:
-            pass
-        break
-
-    return todos_dados
-
-
 def extrair_processo_fiscal(sessao, cnpj: str, caminho_planilha: str) -> None:
     """TRANSITIONAL_PERSISTENCE_ADAPTER — mesma divisão do DCTFWeb."""
     print("    → Aguardando página de processos fiscais carregar...")
     extracao = consulta_fiscal.consultar_processos(
-        sessao, cnpj,
-        extrair_card=_processar_card_processo,
-        aguardar_rede=_aguardar_networkidle,
-        selecionar_por_pagina=_selecionar_n_por_pagina,
-        ir_para_analise=lambda pagina: _goto_seguro(
-            pagina, URL_ANALISE_PENDENCIAS, label="análise fiscal"
-        ),
+        sessao, cnpj, aguardar_rede=_aguardar_networkidle, navegar=_goto_seguro
     )
 
     print(f"    [✓] Total: {len(extracao)} linha(s) de processo fiscal "

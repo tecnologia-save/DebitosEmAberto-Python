@@ -33,6 +33,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from patchright.sync_api import Error as ErroDoNavegador
+
 # O que o portal diz no span de status.
 SEM_PENDENCIA = "sem pendência"
 COM_PENDENCIA = "com pendência"
@@ -52,7 +54,17 @@ XPATH_STATUS = (
 BOTAO_DCTFWEB = 'button[aria-label*="DCTFWeb"]'
 BOTAO_PROCESSO = 'button[aria-label*="processo fiscal"]'
 BOTAO_PROXIMA_PAGINA = 'button[aria-label="Página seguinte"]'
+URL_ANALISE_PENDENCIAS = (
+    "https://servicos.receitafederal.gov.br/servico/pendencias/#/analise-pendencias"
+)
 CARD_PROCESSO = 'button[aria-label="Expandir informações complementares do processo fiscal"]'
+
+_JS_PROCESSO_CREDITO = (
+    "() => {"
+    "  const d = document.querySelector('div.processo-credito');"
+    "  return d ? d.textContent.trim() : '';"
+    "}"
+)
 
 _JS_BOTOES = """
 () => ({
@@ -131,21 +143,262 @@ def ler_situacao(sessao, esperar_visivel_ms: int = 30_000) -> SituacaoFiscal:
     )
 
 
+# ── Leitores do conteúdo do portal ──────────────────────────────────────────
+
+def selecionar_itens_por_pagina(page, n: int) -> None:
+    """Seleciona N itens por página no ng-select de paginação (div.pagination-per-page).
+
+    O ng-dropdown-panel é renderizado fora do container (appendTo body), por isso a
+    opção é buscada diretamente pela span.ng-option-label com texto exato.
+    """
+    try:
+        ng_sel = page.locator('div.pagination-per-page ng-select').first
+        ng_sel.wait_for(state="visible", timeout=10_000)
+        ng_sel.click()
+        page.wait_for_timeout(600)
+
+        opcao = page.locator(f'span.ng-option-label:text-is("{n}")').first
+        opcao.wait_for(state="visible", timeout=5_000)
+        opcao.click()
+        page.wait_for_timeout(1_500)
+    except ErroDoNavegador:
+        # Best-effort, preservado: não conseguir mudar a paginação não interrompe
+        # a extração — só muda quantas páginas serão percorridas.
+        pass
+
+
+def expandir_linhas(page) -> None:
+    """Expande todas as linhas da tabela de uma só vez via JavaScript.
+
+    Um único evaluate clica todos os botões chevron-down simultaneamente,
+    eliminando os N roundtrips Playwright + N vezes 350 ms da abordagem anterior.
+    Aguarda 1 s para o Angular processar todas as mudanças de estado.
+    """
+    contagem = page.evaluate(
+        """
+        () => {
+            const btns = Array.from(
+                document.querySelectorAll('button.br-button.circle.small')
+            ).filter(b => b.querySelector('i.fa-chevron-down'));
+            btns.forEach(b => b.click());
+            return btns.length;
+        }
+        """
+    )
+    if contagem:
+        page.wait_for_timeout(1_000)   # aguarda Angular renderizar tudo
+
+
+def _linhas_da_tabela_dctfweb(page, cnpj: str) -> list[dict]:
+    """Extrai as linhas de dados visíveis na tabela DCTFWeb (JavaScript evaluate)."""
+    return page.evaluate(
+        """
+        (cnpj) => {
+            const resultado = [];
+
+            /* Linhas principais: <tr> que contêm o botão de expandir */
+            const linhas = document.querySelectorAll(
+                'tbody tr:has(button.br-button.circle.small)'
+            );
+
+            for (const tr of linhas) {
+                const tds = Array.from(tr.querySelectorAll('td'));
+
+                /* Receita: única <td class="text-nowrap"> */
+                const tdReceita = tds.find(td => td.classList.contains('text-nowrap'));
+                const receita   = tdReceita?.textContent?.trim() ?? '';
+
+                /* Saldo devedor consolidado: última <td class="text-right"> */
+                const tdsSaldoDir = tds.filter(td => td.classList.contains('text-right'));
+                const saldo = tdsSaldoDir[tdsSaldoDir.length - 1]
+                                ?.textContent?.trim() ?? '';
+
+                /* Tipo (Situação do débito): <td> que contém <span class="text-nowrap"> */
+                const tdTipo = tds.find(td => td.querySelector('span.text-nowrap'));
+                const tipo   = tdTipo?.querySelector('span.text-nowrap')
+                                      ?.textContent?.trim() ?? '';
+
+                /* <td> sem classe especial, sem botão e sem input (checkbox)
+                   Ordem esperada no DOM: PA/Ex., Dt.Vcto., Saldo devedor (R$) */
+                const tdsSimples = tds.filter(td =>
+                    !td.classList.contains('text-nowrap') &&
+                    !td.classList.contains('text-right') &&
+                    !td.querySelector('span.text-nowrap') &&
+                    !td.querySelector('button.br-button') &&
+                    !td.querySelector('input')
+                );
+                const pa_ex   = tdsSimples[0]?.textContent?.trim() ?? '';
+                const dt_vcto = tdsSimples[1]?.textContent?.trim() ?? '';
+
+                /* Detalhe expandido: próxima <tr> irmã, revelada ao clicar na seta */
+                let tributo       = '';
+                let valor_original = '';
+                const proxTr = tr.nextElementSibling;
+                if (proxTr && proxTr.tagName === 'TR') {
+                    const labels = proxTr.querySelectorAll('p.label');
+                    for (const labelEl of labels) {
+                        const labelText = labelEl.textContent.trim();
+                        const divPai    = labelEl.closest('div');
+                        const ps        = divPai
+                            ? Array.from(divPai.querySelectorAll('p'))
+                            : [];
+                        /* Valor é o primeiro <p> que não tem class="label" */
+                        const valorEl = ps.find(p => !p.classList.contains('label'));
+                        const valor   = valorEl?.textContent?.trim() ?? '';
+                        if (labelText === 'Tributo')              tributo        = valor;
+                        if (labelText === 'Valor original (R$)')  valor_original = valor;
+                    }
+                }
+
+                resultado.push({
+                    cnpj, tipo, tributo, receita,
+                    pa_ex, dt_vcto, valor_original, saldo,
+                });
+            }
+
+            return resultado;
+        }
+        """,
+        cnpj,
+    )
+
+
+
+def _linhas_da_tabela_do_card(page, cnpj: str,
+                                   processo_credito: str) -> list[dict]:
+    """Extrai linhas da tabela de débitos de um card de processo fiscal."""
+    return page.evaluate(
+        """
+        ([cnpj, processo_credito]) => {
+            const resultado = [];
+            const linhas = document.querySelectorAll(
+                'tbody tr:has(button.br-button.circle.small)'
+            );
+
+            for (const tr of linhas) {
+                const tds = Array.from(tr.querySelectorAll('td'));
+
+                /* Receita: td.text-nowrap */
+                const tdReceita = tds.find(td => td.classList.contains('text-nowrap'));
+                const receita   = tdReceita?.textContent?.trim() ?? '';
+
+                /* Saldo devedor: td.text-right */
+                const tdSaldo = tds.find(td => td.classList.contains('text-right'));
+                const saldo   = tdSaldo?.textContent?.trim() ?? '';
+
+                /* Tipo: td contendo span.text-nowrap */
+                const tdTipo = tds.find(td => td.querySelector('span.text-nowrap'));
+                const tipo   = tdTipo?.querySelector('span.text-nowrap')
+                                      ?.textContent?.trim() ?? '';
+
+                /* TDs simples (sem classe, sem botão, sem input) → PA/Ex., Dt.Vcto. */
+                const tdsSimples = tds.filter(td =>
+                    !td.classList.contains('text-nowrap') &&
+                    !td.classList.contains('text-right') &&
+                    !td.querySelector('span.text-nowrap') &&
+                    !td.querySelector('button.br-button') &&
+                    !td.querySelector('input')
+                );
+                const pa_ex   = tdsSimples[0]?.textContent?.trim() ?? '';
+                const dt_vcto = tdsSimples[1]?.textContent?.trim() ?? '';
+
+                /* Valor original: seção expandida (próxima <tr> irmã) */
+                let valor_original = '';
+                const proxTr = tr.nextElementSibling;
+                if (proxTr && proxTr.tagName === 'TR') {
+                    const labels = proxTr.querySelectorAll('p.label');
+                    for (const labelEl of labels) {
+                        const labelText = labelEl.textContent.trim();
+                        const divPai    = labelEl.closest('div');
+                        const ps        = divPai
+                            ? Array.from(divPai.querySelectorAll('p'))
+                            : [];
+                        const valorEl = ps.find(p => !p.classList.contains('label'));
+                        const valor   = valorEl?.textContent?.trim() ?? '';
+                        if (labelText === 'Valor original (R$)') valor_original = valor;
+                    }
+                }
+
+                resultado.push({
+                    cnpj, tipo, receita, pa_ex, dt_vcto,
+                    valor_original, saldo, processo_credito,
+                });
+            }
+
+            return resultado;
+        }
+        """,
+        [cnpj, processo_credito],
+    )
+
+
+
+def _linhas_do_card(page, cnpj: str, aguardar_rede) -> list[dict]:
+    """Extrai dados de um card de processo fiscal já aberto (nova página).
+
+    Retorna lista de dicts com as linhas da tabela de débitos do card.
+    """
+    aguardar_rede(page, label="card")
+    page.wait_for_timeout(1_000)
+
+    # ── "Processo de crédito" (expande se existir) ────────────────────────────
+    processo_credito = ""
+    btn_cred = page.locator(
+        'button[aria-label="Expandir processo de crédito"]'
+    ).first
+    try:
+        if btn_cred.is_visible(timeout=3_000):
+            btn_cred.click()
+            page.wait_for_timeout(800)
+            # Após o clique o Angular muda o aria-label do botão (Expandir → Recolher),
+            # por isso NÃO buscamos o botão novamente no JS.
+            # Buscamos diretamente o div revelado: div.processo-credito
+            try:
+                div_proc = page.locator('div.processo-credito').first
+                div_proc.wait_for(state="visible", timeout=3_000)
+                processo_credito = (div_proc.text_content() or "").strip()
+            except ErroDoNavegador:
+                # Fallback via JS — cobre o caso de o div já existir mas sem estado "visible"
+                processo_credito = page.evaluate(_JS_PROCESSO_CREDITO)
+    except ErroDoNavegador:
+        # O botão pode simplesmente não existir: card sem processo de crédito é
+        # estado normal do portal. Estreitado do `except Exception` original —
+        # um bug nosso aqui produzia `processo_credito` vazio em silêncio.
+        pass
+
+    # ── Tabela de débitos do card ─────────────────────────────────────────────
+    selecionar_itens_por_pagina(page, 50)
+
+    todos_dados: list[dict] = []
+    pagina = 1
+
+    while True:
+        page.wait_for_timeout(1_500)
+        expandir_linhas(page)
+
+        todos_dados.extend(_linhas_da_tabela_do_card(page, cnpj, processo_credito))
+
+        if not _ir_para_proxima(page, aguardar_rede, "card pág."):
+            break
+        pagina += 1
+
+    return todos_dados
+
+
 # ── DCTFWeb ───────────────────────────────────────────────────────────────────
 
-def consultar_dctfweb(sessao, cnpj: str, extrair_pagina, aguardar_rede,
-                      selecionar_por_pagina, expandir_linhas) -> ExtracaoFiscal:
+def consultar_dctfweb(sessao, cnpj: str, aguardar_rede) -> ExtracaoFiscal:
     """Abre a dívida DCTFWeb e extrai todas as páginas da tabela.
 
-    Os quatro helpers de navegação entram por parâmetro porque são o que precisa
-    de navegador de verdade — e é isso que torna a paginação testável.
+    `aguardar_rede` é o único parâmetro externo: espera genérica de navegação, e
+    a única coisa aqui que não é conhecimento do portal fiscal.
     """
     pagina = sessao.pagina
     pagina.locator(BOTAO_DCTFWEB).first.click()
 
     aguardar_rede(pagina, label="DCTFWeb")
     pagina.wait_for_timeout(1_000)
-    selecionar_por_pagina(pagina, 50)
+    selecionar_itens_por_pagina(pagina, 50)
 
     linhas: list[dict] = []
     numero = 1
@@ -153,7 +406,7 @@ def consultar_dctfweb(sessao, cnpj: str, extrair_pagina, aguardar_rede,
     while True:
         pagina.wait_for_timeout(1_500)
         expandir_linhas(pagina)
-        linhas.extend(extrair_pagina(pagina, cnpj))
+        linhas.extend(_linhas_da_tabela_dctfweb(pagina, cnpj))
 
         if not _ir_para_proxima(pagina, aguardar_rede, "DCTFWeb pág."):
             break
@@ -164,11 +417,10 @@ def consultar_dctfweb(sessao, cnpj: str, extrair_pagina, aguardar_rede,
 
 # ── Processos Fiscais ─────────────────────────────────────────────────────────
 
-def consultar_processos(sessao, cnpj: str, extrair_card, aguardar_rede,
-                        selecionar_por_pagina, ir_para_analise) -> ExtracaoFiscal:
+def consultar_processos(sessao, cnpj: str, aguardar_rede, navegar) -> ExtracaoFiscal:
     """Abre os processos fiscais e percorre todos os cards de todas as páginas."""
     pagina = sessao.pagina
-    ir_para_analise(pagina)
+    navegar(pagina, URL_ANALISE_PENDENCIAS, label="análise fiscal")
     pagina.wait_for_timeout(1_000)
 
     botao = pagina.locator(BOTAO_PROCESSO).first
@@ -177,7 +429,7 @@ def consultar_processos(sessao, cnpj: str, extrair_card, aguardar_rede,
 
     aguardar_rede(pagina, label="proc.fiscal")
     pagina.wait_for_timeout(1_000)
-    selecionar_por_pagina(pagina, 20)
+    selecionar_itens_por_pagina(pagina, 20)
 
     linhas: list[dict] = []
     numero = 1
@@ -192,7 +444,7 @@ def consultar_processos(sessao, cnpj: str, extrair_card, aguardar_rede,
             card.scroll_into_view_if_needed()
             card.click()
 
-            linhas.extend(extrair_card(pagina, cnpj))
+            linhas.extend(_linhas_do_card(pagina, cnpj, aguardar_rede))
 
             pagina.go_back()
             aguardar_rede(pagina, label="voltar")

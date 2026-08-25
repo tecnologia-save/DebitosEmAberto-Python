@@ -27,7 +27,8 @@ AUTOMATION = sorted((RAIZ / "automation").glob("*.py"))
 PLANILHA = "planilha.py"
 CERTIFICADOS = "certificados_windows.py"
 CAPTCHA = "captcha.py"
-INTEGRACOES = {PLANILHA, CERTIFICADOS, CAPTCHA}
+FISCAL = "consulta_fiscal.py"
+INTEGRACOES = {PLANILHA, CERTIFICADOS, CAPTCHA, FISCAL}
 NUCLEO = [m for m in AUTOMATION if m.name not in INTEGRACOES]
 
 # Nada disso pode aparecer no nucleo.
@@ -117,11 +118,11 @@ def test_a_integracao_windows_nao_altera_o_sistema():
         assert chamada not in fonte, f"a descoberta toca {chamada}."
 
 
-def test_so_a_fronteira_do_captcha_conhece_o_navegador():
-    """Page e Locator podem atravessar a fronteira do captcha — e integracao
-    stateful com o browser. Mas nao passam dali."""
+def test_so_as_integracoes_de_browser_conhecem_o_navegador():
+    """Page e Locator atravessam as duas fronteiras que falam com o navegador —
+    captcha e consulta fiscal. Nao passam dali."""
     culpados = {m.name for m in AUTOMATION if _importa(m, {"patchright", "playwright"})}
-    assert culpados == {CAPTCHA}, f"esperado {CAPTCHA}, encontrado {culpados}"
+    assert culpados == {CAPTCHA, FISCAL}, f"encontrado {culpados}"
 
 
 def test_a_fronteira_do_captcha_nao_le_o_ambiente_nem_o_fork():
@@ -453,17 +454,15 @@ def test_o_legado_sinaliza_desfecho_por_tipo_e_nao_por_exception_nua():
     assert trecho.count("representacao.RepresentacaoNaoConfirmada") == 2
 
 
-# ── Fatia 8B1: a consulta fiscal ─────────────────────────────────────────────
-
-FISCAL = "consulta_fiscal.py"
-
+# ── Fatia 8B1 e 8B2: a consulta fiscal ───────────────────────────────────────
 
 def test_a_consulta_fiscal_nao_conhece_planilha():
     """A prova do corte: se ela nao sabe o que e coluna, aba ou Workbook, entao
     extrair e persistir nunca estiveram entrelacados."""
     modulo = RAIZ / "automation" / FISCAL
     assert not _importa(modulo, {"openpyxl", "pandas", "os", "winreg", "ctypes",
-                                 "subprocess", "servicos_rf_login", "resolvedor_captcha"})
+                                 "subprocess", "servicos_rf_login", "resolvedor_captcha",
+                                 "main"})
 
     codigo = _codigo_sem_docstrings(modulo)
     for proibido in ("planilha", "SessaoPlanilha", "escrever_coluna", "escrever_aba",
@@ -475,8 +474,9 @@ def test_a_consulta_fiscal_nao_conhece_planilha():
 def test_a_consulta_fiscal_nao_autentica_nem_representa():
     codigo = _codigo_sem_docstrings(RAIZ / "automation" / FISCAL)
 
-    for proibido in ("autenticar", "fazer_login", "garantir_policy", "representar",
-                     "trocar_perfil", "encerrar", "close", "stop", "print("):
+    # Por CHAMADA: `closest('div')` do JavaScript contem "close", e citar nao e usar.
+    for proibido in ("autenticar(", "fazer_login(", "garantir_policy(", "representar(",
+                     "trocar_perfil(", ".encerrar(", ".close(", ".stop(", "print("):
         assert proibido not in codigo, f"a consulta fiscal chama {proibido}."
 
 
@@ -496,15 +496,33 @@ def test_os_seletores_de_navegacao_fiscal_sairam_do_main():
         assert seletor not in fonte, f"main.py ainda tem o seletor {seletor}."
 
 
-def test_o_que_falta_mover_esta_delimitado():
-    """A paginacao que sobrou em main pertence ao INTERIOR de um card de
-    processo, e sai junto com `_processar_card_processo` na 8B2."""
+def test_nao_sobrou_parsing_fiscal_em_main():
+    """O criterio de conclusao da 8B2: nenhum leitor, nenhum JavaScript de
+    parsing e nenhuma paginacao fiscal restaram em main."""
     fonte = (RAIZ / "main.py").read_text(encoding="utf-8-sig")
 
-    assert fonte.count('aria-label="Página seguinte"') == 1
-    inicio = fonte.index("def _processar_card_processo")
-    fim = fonte.index("def extrair_processo_fiscal")
-    assert 'aria-label="Página seguinte"' in fonte[inicio:fim]
+    for nome in ("_extrair_dados_pagina", "_extrair_dados_pagina_processo",
+                 "_processar_card_processo", "_selecionar_n_por_pagina",
+                 "_expandir_todas_as_linhas"):
+        assert nome not in fonte, f"main.py ainda tem {nome}."
+
+    for marca in ('aria-label="Página seguinte"', "chevron-down", "resultado.push",
+                  "querySelectorAll", "text-nowrap", "processo-credito",
+                  "ng-option-label", "URL_ANALISE_PENDENCIAS ="):
+        assert marca not in fonte, f"main.py ainda tem {marca}."
+
+
+def test_a_consulta_fiscal_nao_recebe_callback_de_parsing():
+    """§18: o unico parametro externo das consultas e espera/navegacao generica."""
+    import inspect
+
+    from automation import consulta_fiscal
+
+    dctfweb = set(inspect.signature(consulta_fiscal.consultar_dctfweb).parameters)
+    processos = set(inspect.signature(consulta_fiscal.consultar_processos).parameters)
+
+    assert dctfweb == {"sessao", "cnpj", "aguardar_rede"}
+    assert processos == {"sessao", "cnpj", "aguardar_rede", "navegar"}
 
 
 def test_a_consulta_fiscal_expoe_tres_operacoes_e_nao_uma():
