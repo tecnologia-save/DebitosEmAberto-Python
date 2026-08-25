@@ -22,9 +22,11 @@ from automation.domain import buscar_certificado
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
 AUTOMATION = sorted((RAIZ / "automation").glob("*.py"))
 
-# `planilha.py` e a INTEGRACAO: ela pode — e deve ser a unica a — conhecer
-# openpyxl e pandas. Todo o resto e nucleo e nao toca efeito externo.
-INTEGRACOES = {"planilha.py"}
+# As INTEGRACOES podem tocar o mundo — cada uma o seu pedaco, e so ela.
+# Todo o resto e nucleo e nao toca efeito externo nenhum.
+PLANILHA = "planilha.py"
+CERTIFICADOS = "certificados_windows.py"
+INTEGRACOES = {PLANILHA, CERTIFICADOS}
 NUCLEO = [m for m in AUTOMATION if m.name not in INTEGRACOES]
 
 # Nada disso pode aparecer no nucleo.
@@ -74,7 +76,47 @@ def test_so_a_integracao_conhece_openpyxl_e_pandas():
     para explicar por que so .xlsx passa — citar e diferente de depender.
     """
     culpados = {m.name for m in AUTOMATION if _importa(m, {"openpyxl", "pandas"})}
-    assert culpados == INTEGRACOES, f"esperado {INTEGRACOES}, encontrado {culpados}"
+    assert culpados == {PLANILHA}, f"esperado {PLANILHA}, encontrado {culpados}"
+
+
+def test_so_a_integracao_windows_conhece_subprocess():
+    """A fronteira arquitetural da fatia 5A: PowerShell mora num lugar so."""
+    culpados = {m.name for m in AUTOMATION if _importa(m, {"subprocess", "winreg", "ctypes"})}
+    assert culpados == {CERTIFICADOS}, f"esperado {CERTIFICADOS}, encontrado {culpados}"
+
+
+def test_a_integracao_windows_nao_altera_o_sistema():
+    """5A e READ-ONLY. Registro, policy, elevacao e guardiao ficam no legado.
+
+    Por IMPORT para os modulos, e por CHAMADA para as funcoes: o docstring cita
+    "guardiao" e "registro" justamente para dizer que nao os toca, e citar e
+    diferente de usar.
+    """
+    modulo = RAIZ / "automation" / CERTIFICADOS
+    assert not _importa(modulo, {"winreg", "ctypes", "patchright", "playwright",
+                                 "tkinter", "openpyxl", "pandas"})
+
+    fonte = modulo.read_text(encoding="utf-8")
+    for chamada in ("ShellExecute", "SetValueEx", "CreateKey", "DeleteKey",
+                    "AutoSelectCertificateForUrls", "REG_PATH", "iniciar_guarda("):
+        assert chamada not in fonte, f"a descoberta toca {chamada}."
+
+
+def test_a_integracao_windows_nao_imprime():
+    fonte = (RAIZ / "automation" / CERTIFICADOS).read_text(encoding="utf-8")
+    assert "print(" not in fonte
+
+
+def test_o_comando_powershell_nao_tem_interpolacao():
+    """SECURITY: o comando e literal. Nenhuma f-string, format ou concatenacao
+    com dado externo — nao ha superficie de injecao para fechar."""
+    fonte = (RAIZ / "automation" / CERTIFICADOS).read_text(encoding="utf-8")
+    trecho = fonte[fonte.index("COMANDO_POWERSHELL = ("):fonte.index("_RE_CN_ICP")]
+
+    assert 'f"' not in trecho, "sem f-string no comando"
+    assert ".format(" not in trecho
+    assert " % " not in trecho
+    assert " + " not in trecho, "sem concatenação com dado externo"
 
 
 def test_a_integracao_nao_conhece_o_resto_do_mundo():

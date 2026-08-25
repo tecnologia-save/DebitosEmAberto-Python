@@ -20,11 +20,9 @@ Fluxo:
 
 import argparse
 import base64
-import json
 import logging
 import os
 import re
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -134,7 +132,7 @@ from automation.status_portal import PALAVRAS_RECUSA_PERMANENTE as _PALAVRAS_ERR
 from automation.status_portal import RECUSAS_COM_STATUS as _ERROS_COM_STATUS
 from automation.status_portal import STATUS_D_TERMINAIS as _STATUS_D_TERMINAIS
 from automation.boundary import EntradaDebitosEmAberto, EntradaInvalida, montar_entrada
-from automation import planilha
+from automation import certificados_windows, planilha
 from automation.planilha import PlanilhaIndisponivel, validar_recurso
 from automation.status_portal import ANTIBOT as _ANTIBOT
 from automation.status_portal import RECUSA_DO_CNPJ as _RECUSA_DO_CNPJ
@@ -220,68 +218,21 @@ def _aguardar_networkidle(page, timeout: int = 60_000, label: str = "") -> None:
 
 
 def _listar_certs_windows() -> list[dict]:
-    """Lê os certificados com chave privada do Windows Certificate Store.
+    """Adapter sobre a integração Windows: lista os certificados utilizáveis.
 
-    Só retorna certificados utilizáveis: com chave privada, não arquivados e
-    dentro do período de validade. Um certificado vencido no repositório não
-    deve concorrer com um válido de mesmo nome.
+    A leitura em si vive em `automation/certificados_windows.py`. O que fica aqui
+    é o que pertence ao adapter local — decidir que uma falha conhecida vira
+    lista vazia, e o que aparece no console.
     """
-    ps = (
-        "$now=Get-Date\n"
-        "$c=@(Get-ChildItem Cert:\\CurrentUser\\My|Where-Object{\n"
-        "  $_.HasPrivateKey -and\n"
-        "  -not $_.Archived -and\n"
-        "  $_.NotBefore -le $now -and\n"
-        "  $_.NotAfter  -ge $now\n"
-        "})\n"
-        "$c|ForEach-Object{\n"
-        "  $n=if($_.Subject-match 'CN=([^,]+)'){$Matches[1]}else{$_.Subject}\n"
-        "  $d=if($_.FriendlyName){[string]$_.FriendlyName}else{$n}\n"
-        "  [PSCustomObject]@{\n"
-        "    display=$d\n"
-        "    subject_cn=$n\n"
-        "    thumbprint=$_.Thumbprint\n"
-        "    serial=$_.SerialNumber\n"
-        "    notafter=$_.NotAfter.ToString('yyyy-MM-dd')\n"
-        "  }\n"
-        "}|ConvertTo-Json -Compress"
-    )
-    enc = base64.b64encode(ps.encode("utf-16-le")).decode("ascii")
-
-    kwargs = {}
-    if os.name == "nt":
-        # Esconde o console do PowerShell — a automação já tem o próprio
-        info = subprocess.STARTUPINFO()
-        info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        info.wShowWindow = 0
-        kwargs = {"creationflags": 0x08000000, "startupinfo": info}
-
     try:
-        r = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", enc],
-            capture_output=True, text=True, timeout=30,
-            encoding="utf-8", errors="replace", **kwargs,
+        return certificados_windows.interpretar_saida(
+            certificados_windows.executar_powershell(
+                certificados_windows.COMANDO_POWERSHELL
+            )
         )
-        saida = (r.stdout or "").strip()
-        if not saida:
-            return []
-        dados = json.loads(saida)
-        return [dados] if isinstance(dados, dict) else dados
-    except Exception as e:
-        print(f"[cert] Falha ao ler o repositório de certificados: {type(e).__name__}: {e}")
+    except certificados_windows.FalhaAoLerCertificados as erro:
+        print(f"[cert] Falha ao ler o repositório de certificados: {erro}")
         return []
-
-
-# CN da ICP-Brasil termina em ":" seguido do CPF (11) ou CNPJ (14) do titular.
-# Certificados de sistema — "Microsoft Your Phone" e afins — têm CN em GUID e não
-# servem para o gov.br. Precisam ficar de fora: apontar a policy de auto-seleção
-# para um deles faz o Chrome desistir e abrir a janela de escolha manual.
-_RE_CN_ICP = re.compile(r":\s*\d{11}(?:\d{3})?\s*$")
-
-
-def _e_certificado_icp(cn: str) -> bool:
-    """True se o CN tem a forma da ICP-Brasil ('NOME:CPF' ou 'NOME:CNPJ')."""
-    return bool(_RE_CN_ICP.search(str(cn or "")))
 
 
 def carregar_certificados() -> dict[str, dict]:
@@ -299,22 +250,7 @@ def carregar_certificados() -> dict[str, dict]:
     if not certs:
         return {}
 
-    mapa: dict[str, dict] = {}
-    ignorados = 0
-    for c in certs:
-        # O CN da ICP-Brasil vem como "NOME DA EMPRESA:12345678000190" — o
-        # documento não ajuda a casar com a planilha, então também indexamos o
-        # nome sem ele.
-        cn = str(c.get("subject_cn") or "").strip()
-        if not _e_certificado_icp(cn):
-            ignorados += 1
-            continue
-        nomes = {c.get("display") or "", cn, cn.split(":")[0]}
-        for nome in nomes:
-            chave = _remover_acentos(str(nome).strip().lower())
-            if chave:
-                mapa.setdefault(chave, c)
-
+    mapa, ignorados = certificados_windows.indexar(certs)
     if ignorados:
         print(f"[cert] {ignorados} certificado(s) de sistema ignorado(s) "
               f"(CN fora do padrão da ICP-Brasil).")
@@ -327,11 +263,7 @@ def _buscar_certificado(nome: str, certs: dict) -> str | None:
     Traduz o dicionário de certificados do Windows no mapa CHAVE -> IDENTIDADE que
     a regra consome, e é aqui — não no domínio — que as mensagens são impressas.
     """
-    identidades = {
-        k: (v.get("subject_cn") or k) if isinstance(v, dict) else k
-        for k, v in certs.items()
-    }
-    resultado = buscar_certificado(nome, identidades)
+    resultado = buscar_certificado(nome, certificados_windows.identidades(certs))
 
     if resultado.resolvida:
         print(f"    → Certificado '{nome}' resolvido para "

@@ -187,41 +187,55 @@ def test_h_codigo_de_saida_nao_zero_e_ignorado(powershell):
     assert main._listar_certs_windows() == [ALFA]
 
 
+# Os quatro testes abaixo afirmavam o `except Exception` ate o commit d8c4881.
+# A fatia 5A o estreitou de proposito — MIGRATION_SEMANTIC_CHANGE exigido pela
+# regra "falha externa conhecida vira erro nosso e seguro; bug inesperado sobe".
+# O comportamento antigo continua legivel no historico.
+
 def test_h_powershell_ausente(powershell, capsys):
+    """ANTES: imprimia "FileNotFoundError". DEPOIS: mensagem nossa e acionavel."""
     powershell.resposta = FileNotFoundError("powershell nao encontrado")
 
     assert main._listar_certs_windows() == []
-    assert "FileNotFoundError" in capsys.readouterr().out
+    assert "PowerShell não foi encontrado" in capsys.readouterr().out
 
 
 def test_h_timeout(powershell, capsys):
+    """ANTES: imprimia "TimeoutExpired"."""
     powershell.resposta = subprocess.TimeoutExpired(cmd="powershell", timeout=30)
 
     assert main._listar_certs_windows() == []
-    assert "TimeoutExpired" in capsys.readouterr().out
+    assert "demorou demais" in capsys.readouterr().out
 
 
-def test_h_defeito_qualquer_erro_vira_lista_vazia(powershell, capsys):
-    """CERT_WINDOWS_POSSIBLE_DEFECT — o mais grave da fatia.
+def test_h_bug_nosso_sobe_em_vez_de_virar_lista_vazia(powershell):
+    """A correcao do defeito mais grave da fatia.
 
-    O `except Exception` engole TUDO, inclusive um bug nosso, e devolve `[]`.
-    E `[]` e indistinguivel de "nao ha certificado instalado" — o `main` entao
-    manda o operador instalar um certificado e encerra com sys.exit(1).
+    ANTES: o `except Exception` engolia TUDO, inclusive um bug nosso, e devolvia
+    `[]` — indistinguivel de "nao ha certificado instalado". O `main` entao
+    mandava o operador instalar um certificado e encerrava com sys.exit(1).
+    Uma falha de leitura e um repositorio vazio produziam a MESMA saida.
 
-    Uma falha de leitura e um repositorio vazio produzem a MESMA saida.
+    DEPOIS: falha externa conhecida vira lista vazia com diagnostico; bug nosso
+    sobe e aparece como o que e.
     """
     powershell.resposta = TypeError("bug nosso, nao falha do Windows")
 
-    assert main._listar_certs_windows() == []
-    assert "TypeError" in capsys.readouterr().out
+    with pytest.raises(TypeError):
+        main._listar_certs_windows()
 
 
-def test_h_defeito_o_diagnostico_ecoa_a_excecao_crua(powershell, capsys):
-    """CERT_WINDOWS_POSSIBLE_DEFECT: `{e}` pode trazer saida do PowerShell."""
-    powershell.resposta = RuntimeError("SENTINELA-CN-ALFA:11111111000191")
+def test_h_o_diagnostico_nao_ecoa_mais_a_excecao_crua(powershell, capsys):
+    """ANTES: `{e}` ia inteiro para o console e podia trazer saida do PowerShell,
+    CN ou serial. DEPOIS: so mensagens constantes nossas."""
+    powershell.resposta = Saida(stdout="SENTINELA-CN-ALFA:11111111000191 nao e json")
 
     main._listar_certs_windows()
-    assert "SENTINELA-CN-ALFA" in capsys.readouterr().out
+
+    saida = capsys.readouterr().out
+    assert "Falha ao ler o repositório" in saida
+    assert "SENTINELA-CN-ALFA" not in saida
+    assert "11111111000191" not in saida
 
 
 # ── I · indexacao e deduplicacao ──────────────────────────────────────────────
