@@ -113,13 +113,15 @@ def test_e_a_chave_e_transportada_por_variavel_de_ambiente_global():
 
 # ── SENSITIVE_OUTPUT: o que o main imprime hoje ───────────────────────────────
 
-def test_o_main_imprime_prefixo_e_sufixo_da_chave():
-    """SENSITIVE_OUTPUT caracterizado: seis primeiros e quatro ultimos caracteres
-    da chave vao para o console — e para o arquivo, quando `--log` esta ligado."""
+def test_o_main_nao_imprime_mais_pedacos_da_chave():
+    """Este teste afirmava o SENSITIVE_OUTPUT ate o commit 25744d0: os seis
+    primeiros e os quatro ultimos caracteres da chave iam para o console — e para
+    um arquivo, com `--log` ligado. Agora so a origem aparece."""
     fonte = (RAIZ / "main.py").read_text(encoding="utf-8-sig")
 
-    assert "_chave[:6]" in fonte
-    assert "_chave[-4:]" in fonte
+    assert "_chave[:6]" not in fonte
+    assert "_chave[-4:]" not in fonte
+    assert "configurada (origem:" in fonte
 
 
 # ── B · a API realmente consumida do fork ─────────────────────────────────────
@@ -247,8 +249,13 @@ def test_h_o_retry_esta_duplicado_em_tres_niveis():
     login = (RAIZ / "servicos_rf_login" / "login.py").read_text(encoding="utf-8")
     assert "max_attempts: int = 3" in login, "3 tentativas no login"
 
+    # No main o retry era escrito DUAS vezes, inline, uma por tipo de captcha.
+    # A extracao juntou as duas numa chamada so — o numero nao mudou, o lugar sim.
+    assert FONTE_ORIGINAL.count("for tentativa in range(1, 3):") == 2, "2x, no original"
+
     principal = (RAIZ / "main.py").read_text(encoding="utf-8-sig")
-    assert principal.count("for tentativa in range(1, 3):") == 2, "2 tentativas no main"
+    assert "tentativas=2" in principal, "as mesmas 2 tentativas, agora num lugar so"
+    assert "for tentativa in range(1, 3):" not in principal
 
 
 # ── O bloco do main, congelado antes da extracao ──────────────────────────────

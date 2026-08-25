@@ -132,7 +132,8 @@ from automation.status_portal import PALAVRAS_RECUSA_PERMANENTE as _PALAVRAS_ERR
 from automation.status_portal import RECUSAS_COM_STATUS as _ERROS_COM_STATUS
 from automation.status_portal import STATUS_D_TERMINAIS as _STATUS_D_TERMINAIS
 from automation.boundary import EntradaDebitosEmAberto, EntradaInvalida, montar_entrada
-from automation import certificados_windows, planilha
+from automation import captcha, certificados_windows, planilha
+from patchright.sync_api import Error as PlaywrightError
 from automation.planilha import PlanilhaIndisponivel, validar_recurso
 from automation.status_portal import ANTIBOT as _ANTIBOT
 from automation.status_portal import RECUSA_DO_CNPJ as _RECUSA_DO_CNPJ
@@ -215,6 +216,26 @@ def _aguardar_networkidle(page, timeout: int = 60_000, label: str = "") -> None:
 
 
 # ── Certificados ──────────────────────────────────────────────────────────────
+
+
+def _resolver_captcha(alvo, aguardar=None) -> str:
+    """TRANSITIONAL — ponte entre o fluxo legado e a fronteira do captcha.
+
+    Duas coisas moram aqui e não na integração, de propósito:
+
+    1. A chave sai de `os.environ`. A fronteira a recebe por parâmetro e nunca
+       lê o ambiente; é o adapter que sabe onde ela está hoje.
+    2. `resolvedor_captcha.solve_hcaptcha` lê `os.environ["GEMINI_API_KEY"]` por
+       conta própria — não há parâmetro. Enquanto o fork não mudar, a variável
+       global CONTINUA sendo o único transporte do segredo até ele.
+       Ver CAPTCHA_INTEGRATION_COUPLING e LEGACY_SECRET_LOADING.
+
+    Condição de remoção: quando o fork aceitar a chave por parâmetro, esta função
+    passa a construir `ConfigCaptcha` a partir do input da execução e some junto
+    com o `os.environ` do passo 1.
+    """
+    config = captcha.ConfigCaptcha(api_key=os.environ.get("GEMINI_API_KEY", ""))
+    return captcha.resolver(alvo, config, tentativas=2, aguardar=aguardar)
 
 
 def _listar_certs_windows() -> list[dict]:
@@ -1084,41 +1105,24 @@ def trocar_perfil_procurador(page, cnpj: str) -> None:
 
         # ── Resolve captcha conforme tipo ─────────────────────────────────────
         _captcha_repr_ok = True   # False se 2 tentativas falharem → retry repr
-        if captcha_tipo == "popup":
-            popup = _popups[0]
-            print("    → Popup de captcha detectada. Resolvendo...")
-            _popup_ok = False
-            for tentativa in range(1, 3):   # máx. 2 tentativas
-                try:
-                    if solve_hcaptcha(popup):
-                        print(f"    [✓] Captcha resolvido (tentativa {tentativa}/2).")
-                        _popup_ok = True
-                        break
-                except Exception as e:
-                    print(f"    → Captcha tentativa {tentativa}/2: {type(e).__name__}: {e}")
-                if tentativa < 2:
-                    page.wait_for_timeout(2_000)
-            if not _popup_ok:
+        if captcha_tipo in ("popup", "inline"):
+            _alvo = _popups[0] if captcha_tipo == "popup" else page
+            if captcha_tipo == "popup":
+                print("    → Popup de captcha detectada. Resolvendo...")
+
+            _desfecho = _resolver_captcha(_alvo, aguardar=lambda: page.wait_for_timeout(2_000))
+            if _desfecho == captcha.RESOLVIDO_OU_AUSENTE:
+                print("    [✓] Captcha resolvido.")
+            else:
+                print(f"    → Captcha não resolvido em 2 tentativas ({_desfecho}).")
                 _captcha_repr_ok = False
-            try:
-                popup.wait_for_close(timeout=15_000)
-                print("    [✓] Popup do captcha fechada.")
-            except Exception:
-                pass
-        elif captcha_tipo == "inline":
-            _inline_ok = False
-            for tentativa in range(1, 3):   # máx. 2 tentativas
+
+            if captcha_tipo == "popup":
                 try:
-                    if solve_hcaptcha(page):
-                        print(f"    [✓] Captcha resolvido (tentativa {tentativa}/2).")
-                        _inline_ok = True
-                        break
-                except Exception as e:
-                    print(f"    → Captcha tentativa {tentativa}/2: {type(e).__name__}: {e}")
-                if tentativa < 2:
-                    page.wait_for_timeout(2_000)
-            if not _inline_ok:
-                _captcha_repr_ok = False
+                    _popups[0].wait_for_close(timeout=15_000)
+                    print("    [✓] Popup do captcha fechada.")
+                except PlaywrightError:
+                    pass
         else:
             print("    → Nenhum captcha detectado. Aguardando confirmação...")
 
@@ -1607,7 +1611,9 @@ def main() -> None:
     _chave, _origem = _resolver_gemini_key()
     os.environ["GEMINI_API_KEY"] = _chave
     if _chave:
-        print(f"Chave Gemini:  {_chave[:6]}...{_chave[-4:]}  (origem: {_origem})")
+        # Só a origem. O prefixo e o sufixo da chave saíam daqui para o console
+        # e, com `--log`, para um arquivo — SENSITIVE_OUTPUT sem contrapartida.
+        print(f"Chave Gemini:  configurada (origem: {_origem})")
     else:
         print("  [!] GEMINI_API_KEY não encontrada — o captcha não será resolvido.")
 

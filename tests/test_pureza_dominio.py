@@ -26,7 +26,8 @@ AUTOMATION = sorted((RAIZ / "automation").glob("*.py"))
 # Todo o resto e nucleo e nao toca efeito externo nenhum.
 PLANILHA = "planilha.py"
 CERTIFICADOS = "certificados_windows.py"
-INTEGRACOES = {PLANILHA, CERTIFICADOS}
+CAPTCHA = "captcha.py"
+INTEGRACOES = {PLANILHA, CERTIFICADOS, CAPTCHA}
 NUCLEO = [m for m in AUTOMATION if m.name not in INTEGRACOES]
 
 # Nada disso pode aparecer no nucleo.
@@ -69,6 +70,20 @@ def _importa(modulo, pacotes: set[str]) -> bool:
     return False
 
 
+def _importa_no_topo(modulo, pacotes: set[str]) -> bool:
+    """So os imports de nivel de modulo — um import preguicoso dentro de funcao
+    nao e carregado quando alguem importa o modulo."""
+    arvore = ast.parse(modulo.read_text(encoding="utf-8-sig"))
+    for no in arvore.body:
+        if isinstance(no, ast.Import):
+            if pacotes & {a.name.split(".")[0] for a in no.names}:
+                return True
+        elif isinstance(no, ast.ImportFrom) and no.level == 0 and no.module:
+            if no.module.split(".")[0] in pacotes:
+                return True
+    return False
+
+
 def test_so_a_integracao_conhece_openpyxl_e_pandas():
     """A fronteira arquitetural da fatia 4: DataFrame e Workbook moram num lugar so.
 
@@ -100,6 +115,36 @@ def test_a_integracao_windows_nao_altera_o_sistema():
     for chamada in ("ShellExecute", "SetValueEx", "CreateKey", "DeleteKey",
                     "AutoSelectCertificateForUrls", "REG_PATH", "iniciar_guarda("):
         assert chamada not in fonte, f"a descoberta toca {chamada}."
+
+
+def test_so_a_fronteira_do_captcha_conhece_o_navegador():
+    """Page e Locator podem atravessar a fronteira do captcha — e integracao
+    stateful com o browser. Mas nao passam dali."""
+    culpados = {m.name for m in AUTOMATION if _importa(m, {"patchright", "playwright"})}
+    assert culpados == {CAPTCHA}, f"esperado {CAPTCHA}, encontrado {culpados}"
+
+
+def test_a_fronteira_do_captcha_nao_le_o_ambiente_nem_o_fork():
+    """A chave chega por parametro. O fork so e importado sob demanda, dentro da
+    funcao, para que a fronteira continue carregavel sem ele."""
+    modulo = RAIZ / "automation" / CAPTCHA
+    assert not _importa(modulo, {"os", "dotenv", "google"})
+    assert not _importa_no_topo(modulo, {"resolvedor_captcha"}), (
+        "o fork entra sob demanda, dentro da função"
+    )
+    assert _importa(modulo, {"resolvedor_captcha"}), "mas o default ainda é ele"
+
+    # Sem `import os` a leitura do ambiente e impossivel — o docstring cita
+    # `os.environ` justamente para explicar que quem o le e o adapter, nao aqui.
+    assert "print(" not in modulo.read_text(encoding="utf-8")
+
+
+def test_a_fronteira_do_captcha_nao_tem_chave_padrao():
+    """Nenhuma chave embutida, nenhum default, nenhum placeholder utilizavel."""
+    fonte = (RAIZ / "automation" / CAPTCHA).read_text(encoding="utf-8")
+
+    assert "AIza" not in fonte, "nada com cara de chave do Google"
+    assert "api_key: str = field(repr=False)" in fonte, "obrigatoria, sem default"
 
 
 def test_a_integracao_windows_nao_imprime():
