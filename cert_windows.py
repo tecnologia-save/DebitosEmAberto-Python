@@ -25,6 +25,8 @@ import winreg
 from ctypes import wintypes
 from pathlib import Path
 
+from automation import policy_certificado
+
 # URLs do eCAC / acesso.gov.br onde o certificado é solicitado.
 CERT_URLS = [
     "https://certificado.sso.acesso.gov.br",
@@ -256,40 +258,58 @@ def guardiao(pid: int, cn: str) -> None:
         _log(f"limpeza removeu={removeu}")
 
 
+def _lancar_guardiao(cn: str) -> int:
+    """Relança ESTE programa elevado no modo guardião. 0 = o Windows aceitou.
+
+    O CN vai em base64 apenas como QUOTING — remove espaços e acentos do argv.
+    Não é proteção: qualquer um que veja a linha de comando o decodifica.
+    """
+    cn_b64 = base64.b64encode(cn.encode("utf-8")).decode("ascii")
+    return _runas(_guard_args(["--guard", str(os.getpid()), cn_b64]), wait_ms=None)
+
+
+def iniciar_guarda_detalhado(cn: str) -> policy_certificado.ResultadoDaPolicy:
+    """Garante a policy e devolve COMO ela ficou — inclusive quem vai limpá-la.
+
+    O protocolo vive em automation/policy_certificado.py; aqui ficam as
+    primitivas do Windows e o que vai para o console.
+    """
+    resultado = policy_certificado.garantir_policy(
+        cn,
+        ler_cn_atual=policy_cn,
+        lancar_guardiao=_lancar_guardiao,
+        aguardar=lambda: time.sleep(policy_certificado.INTERVALO_SONDAGEM_S),
+    )
+
+    if resultado.situacao == policy_certificado.JA_ATIVA:
+        print(f"[wincert] Policy ja ativa para: {cn}")
+        print("[wincert] AVISO: nenhum guardiao desta execucao — ela nao sera "
+              "removida por nos ao terminar.")
+    elif resultado.situacao == policy_certificado.ATIVADA:
+        print("[wincert] Policy ativa — guardiao vigiando p/ limpar no fim.")
+    elif resultado.situacao == policy_certificado.ELEVACAO_RECUSADA:
+        print("[wincert] Nao foi possivel iniciar o guardiao (UAC negado?).")
+    else:
+        atual = policy_cn()
+        if atual:
+            print(f"[wincert] Policy ativa com OUTRO CN ({atual}); esperado {cn}.")
+        else:
+            print("[wincert] Policy nao visivel deste processo — o Chrome tambem nao a vera.")
+            print("          Provavel elevacao em outra conta de usuario (HKCU diferente).")
+        print(f"[wincert] Estado: {diagnostico()}")
+
+    return resultado
+
+
 def iniciar_guarda(cn: str) -> bool:
-    """Lança o guardião elevado (1 UAC) que escreve a policy e a remove quando ESTE
-    processo terminar. Aguarda a policy ficar ativa COM O CN PEDIDO antes de retornar.
+    """Compatibilidade: o `policy_ok` booleano que o login consome hoje.
 
     Esperar pelo CN, e não só pela existência da policy, é o que torna seguro
     trocar de certificado no meio da execução: a policy do certificado anterior
     ainda está escrita quando o novo guardião sobe, e conferir só a existência
     devolveria True de imediato — o Chrome subiria com o certificado errado.
-
-    Retorna True se a policy do CN pedido ficou ativa (Chrome vai auto-selecionar).
     """
-    if policy_cn() == cn:
-        print(f"[wincert] Policy ja ativa para: {cn}")
-        return True
-
-    pid = os.getpid()
-    cn_b64 = base64.b64encode(cn.encode("utf-8")).decode("ascii")
-    rc = _runas(_guard_args(["--guard", str(pid), cn_b64]), wait_ms=None)
-    if rc != 0:
-        print("[wincert] Nao foi possivel iniciar o guardiao (UAC negado?).")
-        return False
-    for _ in range(60):  # ~30s
-        if policy_cn() == cn:
-            print("[wincert] Policy ativa — guardiao vigiando p/ limpar no fim.")
-            return True
-        time.sleep(0.5)
-    atual = policy_cn()
-    if atual:
-        print(f"[wincert] Policy ativa com OUTRO CN ({atual}); esperado {cn}.")
-    else:
-        print("[wincert] Policy nao visivel deste processo — o Chrome tambem nao a vera.")
-        print("          Provavel elevacao em outra conta de usuario (HKCU diferente).")
-    print(f"[wincert] Estado: {diagnostico()}")
-    return False
+    return iniciar_guarda_detalhado(cn).confiavel
 
 
 if __name__ == "__main__":

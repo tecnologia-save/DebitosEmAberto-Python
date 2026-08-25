@@ -291,3 +291,72 @@ def test_main_nao_manipula_mais_celula_nem_indice_de_linha():
     for marca in ("iter_rows", "create_sheet", ".max_row", "ws.cell(", "sheetnames",
                   "Alignment("):
         assert marca not in fonte, f"main.py ainda manipula planilha ({marca})."
+
+
+# ── Fatia 7A: o protocolo da policy ──────────────────────────────────────────
+
+POLICY = "policy_certificado.py"
+
+
+def _codigo_sem_docstrings(modulo) -> str:
+    """A fonte sem docstring nenhuma.
+
+    Quatro vezes nesta migracao uma checagem por texto falhou porque o modulo
+    DOCUMENTAVA o que nao faz. O que interessa e o codigo.
+    """
+    arvore = ast.parse(modulo.read_text(encoding="utf-8-sig"))
+    for no in ast.walk(arvore):
+        corpo = getattr(no, "body", None)
+        if not corpo or not isinstance(
+            no, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        ):
+            continue
+        if (
+            isinstance(corpo[0], ast.Expr)
+            and isinstance(corpo[0].value, ast.Constant)
+            and isinstance(corpo[0].value.value, str)
+        ):
+            corpo[0].value.value = ""
+    return ast.unparse(arvore)
+
+
+def test_o_protocolo_da_policy_e_nucleo_e_nao_integracao():
+    """Ele decide, nao executa: winreg, ctypes e o processo elevado ficam em
+    cert_windows.py, e entram por parametro."""
+    modulo = RAIZ / "automation" / POLICY
+    assert modulo.exists()
+    assert modulo in NUCLEO, "esta no nucleo, entao ja passa pela varredura geral"
+
+    codigo = _codigo_sem_docstrings(modulo)
+    for chamada in ("SetValueEx", "DeleteKey", "CreateKeyEx", "ShellExecute",
+                    "OpenProcess", "sys.executable", "time.sleep", "winreg", "ctypes"):
+        assert chamada not in codigo, f"o protocolo executa {chamada}."
+
+
+def test_o_protocolo_da_policy_nao_imprime():
+    assert "print(" not in _codigo_sem_docstrings(RAIZ / "automation" / POLICY)
+
+
+def test_o_protocolo_da_policy_roda_sem_windows():
+    """Num interpretador limpo, importa-lo nao carrega nada de Windows."""
+    codigo = (
+        "import sys; import automation.policy_certificado; "
+        "pesados=[m for m in ('ctypes','subprocess','patchright','openpyxl','pandas') "
+        "if m in sys.modules]; print(','.join(pesados))"
+    )
+    saida = subprocess.run(  # noqa: S603 — comando fixo, montado aqui mesmo
+        [sys.executable, "-c", codigo], cwd=RAIZ, capture_output=True, text=True, check=True
+    )
+    assert saida.stdout.strip() == "", f"o protocolo carregou {saida.stdout.strip()}"
+
+
+def test_o_guardiao_continua_entrypoint_interno():
+    """`--guard <pid> <b64>` é modo interno de processo elevado, NÃO input da
+    execução. A boundary da fatia 3 segue com um campo só."""
+    from automation.boundary import CAMPOS_CONHECIDOS
+
+    assert CAMPOS_CONHECIDOS == {"planilha"}
+
+    principal = (RAIZ / "main.py").read_text(encoding="utf-8-sig")
+    assert "--guard" in principal, "o modo existe"
+    assert "add_argument(\"--guard" not in principal, "mas não é argumento da CLI"

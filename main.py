@@ -1449,10 +1449,16 @@ def processar(df: pd.DataFrame, certs: dict[str, dict],
             # e a REMOVE quando esta automação terminar, por qualquer motivo. Sem
             # ela o Chrome abre a janela nativa de escolha de certificado — daí o
             # fallback por UI dentro do fazer_login.
-            policy_ok = cert_windows.iniciar_guarda(cert_subject_cn)
+            _policy = cert_windows.iniciar_guarda_detalhado(cert_subject_cn)
+            policy_ok = _policy.confiavel
             if not policy_ok:
                 print("    [!] Policy de auto-seleção não ficou ativa (UAC negado?). "
                       "A janela de certificado será resolvida por UI.")
+            elif not _policy.sera_limpa:
+                # POLICY_STALE_OWNERSHIP_GAP: a policy já estava escrita e nenhum
+                # guardião foi lançado — ninguém desta execução vai removê-la.
+                print("    [!] A policy do Chrome já existia e continuará na máquina "
+                      "depois desta execução.")
             cert_atual = certificado
 
         chave = _buscar_certificado(cert_atual, certs)
