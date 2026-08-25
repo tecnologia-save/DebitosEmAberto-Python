@@ -12,11 +12,13 @@ class ErroDeNavegacao(Exception):
 
 
 class LocatorFalso:
-    def __init__(self, visivel=True, ao_esperar=None, contagem=0):
+    def __init__(self, visivel=True, ao_esperar=None, contagem=0, pagina=None, seletor=""):
         self.visivel = visivel
         self.ao_esperar = ao_esperar
         self.contagem = contagem
         self.cliques = 0
+        self.pagina = pagina
+        self.seletor = seletor
 
     @property
     def first(self):
@@ -31,6 +33,12 @@ class LocatorFalso:
 
     def click(self, **kwargs):
         self.cliques += 1
+        if self.pagina is not None:
+            self.pagina.cliques.append(self.seletor)
+
+    def fill(self, valor, **kwargs):
+        if self.pagina is not None:
+            self.pagina.preenchidos.append((self.seletor, valor))
 
     def evaluate(self, *args, **kwargs):
         return None
@@ -112,3 +120,71 @@ class SyncPlaywrightFalso:
 
     def __call__(self):
         return self
+
+
+# ── O minimo que a representacao toca ────────────────────────────────────────
+
+class TecladoFalso:
+    def __init__(self):
+        self.teclas = []
+
+    def press(self, tecla):
+        self.teclas.append(tecla)
+
+
+class ContextoDeEventos:
+    def __init__(self):
+        self.ouvintes = []
+
+    def on(self, evento, callback):
+        self.ouvintes.append((evento, callback))
+
+
+class PaginaDeRepresentacao:
+    """Page falsa para `trocar_perfil_procurador`.
+
+    Nao e um framework: sao os metodos que aquela funcao realmente chama. O
+    comportamento variavel entra por `mensagem_erro` e `cnpj_no_cabecalho`, que
+    sao o que decide o desfecho.
+    """
+
+    def __init__(self, cnpj_no_cabecalho="", mensagem_erro="", frames=None, url="https://p/"):
+        self.cnpj_no_cabecalho = cnpj_no_cabecalho
+        self.mensagem_erro = mensagem_erro
+        self.frames = frames or []
+        self.url = url
+        self.keyboard = TecladoFalso()
+        self.context = ContextoDeEventos()
+        self.esperas = []
+        self.preenchidos = []
+        self.cliques = []
+        self.navegacoes = []
+        self.recarregou = 0
+
+    # ── o que a funcao chama ──────────────────────────────────────────────────
+
+    def locator(self, seletor):
+        return LocatorFalso(pagina=self, seletor=seletor)
+
+    def get_by_role(self, papel, name=None):
+        return LocatorFalso(pagina=self, seletor=f"role:{papel}:{name}")
+
+    def evaluate(self, script, *args):
+        if "mensagemErro" in script:
+            return self.mensagem_erro
+        if "ni-pessoa" in script:
+            return self.cnpj_no_cabecalho
+        return ""
+
+    def wait_for_timeout(self, ms):
+        self.esperas.append(ms)
+
+    def goto(self, url, **kwargs):
+        self.navegacoes.append(url)
+        self.url = url
+
+    def reload(self, **kwargs):
+        self.recarregou += 1
+
+    def wait_for_load_state(self, *a, **k):
+        pass
