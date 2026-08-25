@@ -137,3 +137,62 @@ def test_h_a_alteracao_no_fork_e_so_o_parametro():
     assert "if api_key is None:" in fonte
     assert "api_key = api_key or" not in fonte, "`or` misturaria omitido com vazio"
     assert fonte.count('os.environ.get("GEMINI_API_KEY", "")') == 1, "um fallback só"
+
+
+# ── I · o mesmo seam no servicos_rf_login ─────────────────────────────────────
+
+def test_i_o_login_repassa_a_chave_recebida(monkeypatch):
+    """`fazer_login(gemini_api_key=...)` chega ao solver sem passar pelo ambiente."""
+    from servicos_rf_login import login as login_rf
+
+    recebidas = []
+    monkeypatch.setattr(
+        login_rf, "solve_hcaptcha",
+        lambda page, api_key=None: recebidas.append(api_key) or True,
+    )
+
+    assert login_rf._try_solve_captcha("pagina", "etapa", api_key=CHAVE_EXPLICITA) is True
+    assert recebidas == [CHAVE_EXPLICITA]
+
+
+def test_i_o_login_sem_chave_mantem_o_comportamento_antigo(monkeypatch):
+    from servicos_rf_login import login as login_rf
+
+    recebidas = []
+    monkeypatch.setattr(
+        login_rf, "solve_hcaptcha",
+        lambda page, api_key=None: recebidas.append(api_key) or True,
+    )
+
+    login_rf._try_solve_captcha("pagina", "etapa")
+
+    assert recebidas == [None], "None = 'nao informei', e o solver busca no ambiente"
+
+
+def test_i_os_tres_pontos_de_captcha_repassam_a_chave():
+    """Nenhum dos três pontos ficou para trás — senão um deles cairia no ambiente."""
+    import pathlib
+
+    from servicos_rf_login import login as login_rf
+
+    fonte = pathlib.Path(login_rf.__file__).read_text(encoding="utf-8")
+
+    # Dois `_try_solve_captcha` diretos e dois `_recuperar_acesso_bloqueado`,
+    # que por sua vez repassa ao terceiro ponto de captcha.
+    assert fonte.count("api_key=gemini_api_key") == 4
+    assert fonte.count('_try_solve_captcha(page, "captcha-pos-bloqueado", api_key=api_key)') == 1
+    assert "solve_hcaptcha(page, api_key=api_key)" in fonte
+    assert "_recuperar_acesso_bloqueado(page)" not in fonte, "nenhuma chamada ficou sem chave"
+
+
+def test_i_a_alteracao_no_login_e_pequena():
+    """18 inserções e 8 remoções em 869 linhas: um parâmetro e seu repasse."""
+    import pathlib
+
+    from servicos_rf_login import login as login_rf
+
+    fonte = pathlib.Path(login_rf.__file__).read_text(encoding="utf-8")
+
+    assert "gemini_api_key: str | None = None," in fonte
+    assert "api_key: str | None = None" in fonte
+    assert "os.environ.get(\"GEMINI_API_KEY\"" not in fonte, "o login nunca leu o ambiente"

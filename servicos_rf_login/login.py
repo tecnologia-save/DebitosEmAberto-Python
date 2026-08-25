@@ -420,15 +420,19 @@ def _clicar_certificado(page) -> bool:
     return False
 
 
-def _try_solve_captcha(page, etapa: str, max_attempts: int = 3) -> bool:
+def _try_solve_captcha(page, etapa: str, max_attempts: int = 3,
+                       api_key: str | None = None) -> bool:
     """Tenta resolver o hCaptcha até `max_attempts` vezes.
 
     Move o mouse uma única vez antes de resolver para evitar detecção de automação.
+
+    `api_key` omitido mantém o comportamento antigo — o solver busca a chave no
+    ambiente. Informado, é repassado explicitamente. Ver test_secret_seam_captcha.
     """
     print(f"[{etapa}] Verificando hCaptcha (até {max_attempts} tentativas)...")
     for tentativa in range(1, max_attempts + 1):
         try:
-            resultado = solve_hcaptcha(page)
+            resultado = solve_hcaptcha(page, api_key=api_key)
             if resultado:
                 print(f"[{etapa}] tentativa {tentativa}/{max_attempts}: OK (resolvido ou ausente).")
                 return True
@@ -454,7 +458,7 @@ def _acesso_bloqueado(page) -> bool:
         return False
 
 
-def _recuperar_acesso_bloqueado(page) -> bool:
+def _recuperar_acesso_bloqueado(page, api_key: str | None = None) -> bool:
     """Volta à página anterior, re-clica 'Entrar com gov.br' e resolve captcha se aparecer.
 
     Retorna True se a recuperação foi concluída (captcha resolvido ou ausente).
@@ -479,7 +483,7 @@ def _recuperar_acesso_bloqueado(page) -> bool:
         print(f"[bloqueado] Botão 'Entrar com gov.br' não encontrado após go_back: {e}")
         return False
 
-    return _try_solve_captcha(page, "captcha-pos-bloqueado")
+    return _try_solve_captcha(page, "captcha-pos-bloqueado", api_key=api_key)
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +575,7 @@ def main(
     cert_subject_cn: str = "",
     cert_serial: str = "",
     policy_ok: bool = True,
+    gemini_api_key: str | None = None,
 ):
     """Realiza o login nos Serviços da Receita Federal e retorna (playwright, context, page).
 
@@ -608,6 +613,10 @@ def main(
             True quando a policy de auto-seleção está ativa e o Chrome escolhe o
             certificado sozinho. False aciona o fallback via pywinauto, que
             resolve a janela "Selecione um certificado" quando ela aparece.
+        gemini_api_key:
+            Chave usada para resolver captcha. Omitida, o solver a busca no
+            ambiente (comportamento legado). Informada, é repassada
+            explicitamente e o ambiente não é consultado.
 
     Returns:
         Tupla (p, context, page) em caso de sucesso, ou None em caso de falha.
@@ -722,7 +731,7 @@ def main(
         print("  -> Redirecionado automaticamente após gov.br. Login concluído.")
 
     # --- Resolver captcha após "Entrar com gov.br" (se aparecer) ---
-    if not _try_solve_captcha(page, "captcha-pos-govbr"):
+    if not _try_solve_captcha(page, "captcha-pos-govbr", api_key=gemini_api_key):
         if _ja_logado(page):
             print("  -> Captcha falhou mas já está logado. Continuando.")
         else:
@@ -736,7 +745,7 @@ def main(
 
     # Verifica bloqueio logo após resolver captcha do govbr
     if not _ja_logado(page) and _acesso_bloqueado(page):
-        if not _recuperar_acesso_bloqueado(page):
+        if not _recuperar_acesso_bloqueado(page, api_key=gemini_api_key):
             registrar_erro("Login: acesso bloqueado após 'Entrar com gov.br' — recuperação falhou.")
             try:
                 p.stop()
@@ -802,7 +811,8 @@ def main(
             break
 
         # --- Resolver captcha caso apareça após o clique no certificado ---
-        if not _try_solve_captcha(page, f"captcha-pos-cert-t{tentativa}"):
+        if not _try_solve_captcha(page, f"captcha-pos-cert-t{tentativa}",
+                                  api_key=gemini_api_key):
             print(f"[captcha] tentativa {tentativa}: falhou ao resolver captcha.")
 
         if _ja_logado(page):
@@ -812,7 +822,7 @@ def main(
         # Verifica bloqueio após captcha do certificado
         if _acesso_bloqueado(page):
             print(f"[cert-t{tentativa}] Acesso bloqueado. Tentando recuperar...")
-            if not _recuperar_acesso_bloqueado(page):
+            if not _recuperar_acesso_bloqueado(page, api_key=gemini_api_key):
                 if tentativa == MAX_TENTATIVAS_CERT:
                     registrar_erro("Login: acesso bloqueado após certificado — recuperação esgotada.")
                     try:

@@ -48,15 +48,18 @@ def test_a_a_api_publica_e_uma_funcao_so():
     assert servicos_rf_login.fazer_login is login_rf.main
 
 
-def test_a_os_oito_parametros_e_seus_defaults():
+def test_a_os_parametros_e_seus_defaults():
+    """Eram oito ate a fatia 7B; `gemini_api_key` entrou em commit proprio para
+    que o segredo pare de viajar por os.environ. Todos continuam opcionais."""
     import inspect
 
     parametros = inspect.signature(login_rf.main).parameters
 
     assert list(parametros) == [
         "cert_name", "cert_pfx_path", "cert_pfx_passphrase", "project_dir",
-        "cnpj", "cert_subject_cn", "cert_serial", "policy_ok",
+        "cnpj", "cert_subject_cn", "cert_serial", "policy_ok", "gemini_api_key",
     ]
+    assert parametros["gemini_api_key"].default is None, "omitir = comportamento antigo"
     assert all(p.default is not inspect.Parameter.empty for p in parametros.values())
     assert parametros["policy_ok"].default is True
     assert parametros["cert_subject_cn"].default == ""

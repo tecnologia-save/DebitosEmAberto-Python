@@ -197,7 +197,10 @@ def test_k_a_mensagem_de_precondicao_nao_ecoa_a_chave(monkeypatch):
 
 def test_g_o_retry_do_login_sao_tres_tentativas(monkeypatch, capsys):
     chamadas = []
-    monkeypatch.setattr(login_rf, "solve_hcaptcha", lambda page: chamadas.append(page) or False)
+    monkeypatch.setattr(
+        login_rf, "solve_hcaptcha",
+        lambda page, api_key=None: chamadas.append(page) or False,
+    )
 
     assert login_rf._try_solve_captcha("pagina", "etapa") is False
     assert len(chamadas) == 3
@@ -206,7 +209,7 @@ def test_g_o_retry_do_login_sao_tres_tentativas(monkeypatch, capsys):
 def test_g_sucesso_encerra_o_retry_na_primeira(monkeypatch):
     chamadas = []
 
-    def resolver(page):
+    def resolver(page, api_key=None):
         chamadas.append(page)
         return True
 
@@ -220,7 +223,7 @@ def test_g_excecao_do_solver_e_engolida_e_a_tentativa_continua(monkeypatch, caps
     """CAPTCHA_POSSIBLE_DEFECT: `except Exception` no caller — chave ausente,
     Gemini fora do ar e bug nosso produzem o MESMO desfecho, e ainda gastam as
     tres tentativas."""
-    def resolver(page):
+    def resolver(page, api_key=None):
         raise RuntimeError("GEMINI_API_KEY não configurada no ambiente.")
 
     monkeypatch.setattr(login_rf, "solve_hcaptcha", resolver)
