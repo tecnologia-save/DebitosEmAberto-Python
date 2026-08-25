@@ -188,3 +188,92 @@ class PaginaDeRepresentacao:
 
     def wait_for_load_state(self, *a, **k):
         pass
+
+
+# ── O minimo que a consulta fiscal toca ──────────────────────────────────────
+
+class LocatorFiscal:
+    """Locator com contagem, nth e is_disabled — o que a paginacao usa."""
+
+    def __init__(self, pagina, seletor, quantidade=0, desabilitado=True):
+        self.pagina = pagina
+        self.seletor = seletor
+        self.quantidade = quantidade
+        self.desabilitado = desabilitado
+
+    @property
+    def first(self):
+        return self
+
+    def nth(self, i):
+        return self
+
+    def count(self):
+        return self.quantidade
+
+    def is_disabled(self):
+        return self.desabilitado
+
+    def is_visible(self, **kwargs):
+        return True
+
+    def wait_for(self, **kwargs):
+        pass
+
+    def scroll_into_view_if_needed(self, **kwargs):
+        pass
+
+    def click(self, **kwargs):
+        self.pagina.cliques.append(self.seletor)
+
+    def text_content(self):
+        return self.pagina.texto_status
+
+    def evaluate(self, *a, **k):
+        return None
+
+
+class PaginaFiscal:
+    """Page falsa para a consulta fiscal.
+
+    O comportamento entra por: o texto do span de status, quais botoes existem,
+    quantos cards ha e o que cada extracao devolve.
+    """
+
+    def __init__(self, texto_status="Sem pendência", tem_dctfweb=False,
+                 tem_processo=False, cards=0, url="https://portal/"):
+        self.texto_status = texto_status
+        self.tem_dctfweb = tem_dctfweb
+        self.tem_processo = tem_processo
+        self.cards = cards
+        self.url = url
+        self.cliques = []
+        self.esperas = []
+        self.navegacoes = []
+        self.voltas = 0
+
+    def locator(self, seletor):
+        if "Expandir informações complementares" in seletor:
+            return LocatorFiscal(self, seletor, quantidade=self.cards)
+        return LocatorFiscal(self, seletor)
+
+    def evaluate(self, script, *args):
+        if "aria-label*=\"DCTFWeb\"" in script or "dctfweb:" in script:
+            return {"dctfweb": self.tem_dctfweb, "processo": self.tem_processo}
+        return []
+
+    def wait_for_timeout(self, ms):
+        self.esperas.append(ms)
+
+    def wait_for_load_state(self, *a, **k):
+        pass
+
+    def goto(self, url, **kwargs):
+        self.navegacoes.append(url)
+        self.url = url
+
+    def go_back(self, **kwargs):
+        self.voltas += 1
+
+    def screenshot(self, **kwargs):
+        pass
