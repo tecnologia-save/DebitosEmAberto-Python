@@ -1,0 +1,42 @@
+# Congelado de main.py ANTES da extracao da fatia 6.
+# Nao editar: este arquivo e a evidencia do ANTES.
+
+        # ── Resolve captcha conforme tipo ─────────────────────────────────────
+        _captcha_repr_ok = True   # False se 2 tentativas falharem → retry repr
+        if captcha_tipo == "popup":
+            popup = _popups[0]
+            print("    → Popup de captcha detectada. Resolvendo...")
+            _popup_ok = False
+            for tentativa in range(1, 3):   # máx. 2 tentativas
+                try:
+                    if solve_hcaptcha(popup):
+                        print(f"    [✓] Captcha resolvido (tentativa {tentativa}/2).")
+                        _popup_ok = True
+                        break
+                except Exception as e:
+                    print(f"    → Captcha tentativa {tentativa}/2: {type(e).__name__}: {e}")
+                if tentativa < 2:
+                    page.wait_for_timeout(2_000)
+            if not _popup_ok:
+                _captcha_repr_ok = False
+            try:
+                popup.wait_for_close(timeout=15_000)
+                print("    [✓] Popup do captcha fechada.")
+            except Exception:
+                pass
+        elif captcha_tipo == "inline":
+            _inline_ok = False
+            for tentativa in range(1, 3):   # máx. 2 tentativas
+                try:
+                    if solve_hcaptcha(page):
+                        print(f"    [✓] Captcha resolvido (tentativa {tentativa}/2).")
+                        _inline_ok = True
+                        break
+                except Exception as e:
+                    print(f"    → Captcha tentativa {tentativa}/2: {type(e).__name__}: {e}")
+                if tentativa < 2:
+                    page.wait_for_timeout(2_000)
+            if not _inline_ok:
+                _captcha_repr_ok = False
+        else:
+            print("    → Nenhum captcha detectado. Aguardando confirmação...")
