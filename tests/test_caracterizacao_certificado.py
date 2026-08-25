@@ -137,22 +137,24 @@ def test_o_mesmo_certificado_em_varias_chaves_nao_e_ambiguidade():
 
 # ── CERTIFICATE_MATCH_POSSIBLE_DEFECT ─────────────────────────────────────────
 
-def test_defeito_difflib_desempata_o_que_nenhum_criterio_isolou():
-    """CERTIFICATE_MATCH_POSSIBLE_DEFECT — o mais grave encontrado.
+def test_ambiguidade_no_criterio_aproximado_corrigida_na_fatia_1_1():
+    """UNICO teste desta suite alterado apos a caracterizacao — e por necessidade
+    logica, nao por conveniencia: ele afirmava um comportamento que a fatia 1.1
+    mudou DE PROPOSITO (CERTIFICATE_MATCH_BEHAVIOR_CHANGE).
 
-    'ASSESSORIA' e palavra inteira em DOIS certificados distintos. Os criterios 3
-    e 5 empatam. Mas `difflib.get_close_matches(..., n=1)` devolve NO MAXIMO um
-    resultado, entao o criterio 6 nunca empata: ele escolhe um dos dois e a busca
-    termina "resolvida".
+    O que ele afirmava ANTES, e que continua legivel no historico (cffa5bb e
+    476a4ab): 'ASSESSORIA' e palavra inteira em DOIS certificados distintos, os
+    criterios 3 e 5 empatavam, e o criterio 6 escolhia um dos dois em silencio,
+    porque `get_close_matches(n=1)` nunca consegue empatar.
 
-    Ou seja, a propriedade documentada — "empate NUNCA e resolvido por chute" —
-    NAO vale quando a disputa chega ao ultimo criterio. Caracterizado, nao corrigido.
+    O que ele afirma DEPOIS: a duvida levantada pelo criterio mais preciso vale, e
+    a regra recusa em vez de escolher.
     """
     identidade, saida = resolver("ASSESSORIA")
 
-    assert identidade == DES, "escolhe um dos dois em vez de recusar"
-    assert "aproximação" in saida
-    assert "ambíguo" not in saida, "e o silencio que torna isso perigoso"
+    assert identidade is None, "recusar e o comportamento seguro"
+    assert "ambíguo" in saida
+    assert "corresponde a 2" in saida
 
 
 def test_defeito_nome_com_ponto_e_truncado():

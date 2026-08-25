@@ -17,7 +17,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import PurePath
 
-# Recorte minimo do difflib, preservado do original.
+# Cutoff do difflib, preservado do original: a fatia 1.1 mexeu em quantos
+# candidatos o criterio aproximado enxerga, nunca em quao parecido algo precisa ser.
 _CUTOFF_APROXIMACAO = 0.75
 
 CRITERIO_EXATO = "igualdade exata"
@@ -112,10 +113,17 @@ def _criterios(chave: str, disponiveis: Mapping[str, str]) -> list[tuple[str, li
             CRITERIO_PARCIAL,
             [k for k in disponiveis if chave in k or k in chave],
         ))
+        # `n` = todos os nomes disponiveis, e nao 1. Com n=1 o difflib devolve no
+        # maximo um resultado, entao o criterio jamais conseguia OBSERVAR um empate:
+        # ele sempre "resolvia". O cutoff continua o mesmo — muda quantos candidatos
+        # o criterio enxerga, nao quao parecido algo precisa ser.
         criterios.append((
             CRITERIO_APROXIMACAO,
             difflib.get_close_matches(
-                chave, list(disponiveis.keys()), n=1, cutoff=_CUTOFF_APROXIMACAO
+                chave,
+                list(disponiveis.keys()),
+                n=max(1, len(disponiveis)),
+                cutoff=_CUTOFF_APROXIMACAO,
             ),
         ))
     return criterios
@@ -141,9 +149,11 @@ def buscar_certificado(nome: str, disponiveis: Mapping[str, str]) -> ResultadoDa
     candidatos. O empate mais preciso e guardado para ser reportado caso nenhum
     criterio isole um unico certificado.
 
-    ATENCAO — o criterio 6 nao respeita essa promessa: `get_close_matches(n=1)`
-    devolve no maximo um resultado, entao ele nunca empata e sempre "resolve".
-    Comportamento preservado do original; ver CERTIFICATE_MATCH_POSSIBLE_DEFECT.
+    A excecao e o criterio 6, o mais frouxo: se algum criterio anterior ja empatou,
+    ele nao resolve — a duvida prevalece. E se ele proprio alcanca dois
+    certificados distintos, isso tambem e empate. Diante de duvida a regra prefere
+    NAO autenticar, porque o certificado errado autentica na conta errada.
+    Ver CERTIFICATE_MATCH_BEHAVIOR_CHANGE (fatia 1.1).
     """
     chave = normalizar_nome_certificado(nome)
     if chave in disponiveis:
@@ -160,6 +170,13 @@ def buscar_certificado(nome: str, disponiveis: Mapping[str, str]) -> ResultadoDa
         distintos: dict[str, str] = {}
         for k in candidatos:
             distintos.setdefault(disponiveis.get(k) or k, k)
+
+        # O criterio aproximado e o mais frouxo de todos: ele nao tem autoridade
+        # para desfazer uma duvida que um criterio mais preciso ja levantou. Sem
+        # isto, "ASSESSORIA" — palavra inteira em dois certificados — empatava no
+        # criterio 3 e era escolhido em silencio no 6.
+        if criterio == CRITERIO_APROXIMACAO and empate is not None:
+            break
 
         if len(distintos) == 1:
             return ResultadoDaBusca(chave=next(iter(distintos.values())), criterio=criterio)

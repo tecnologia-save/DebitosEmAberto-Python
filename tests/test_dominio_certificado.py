@@ -141,13 +141,18 @@ def test_o_resultado_e_imutavel():
 
 # ── CERTIFICATE_MATCH_POSSIBLE_DEFECT preservados ─────────────────────────────
 
-def test_defeito_difflib_desempata_silenciosamente():
-    """O mais grave: 'ASSESSORIA' e palavra inteira em DOIS certificados, empata
-    nos criterios 3 e 5, e o 6 escolhe um — porque `n=1` nunca empata."""
+def test_empate_no_criterio_aproximado_foi_corrigido():
+    """CERTIFICATE_MATCH_BEHAVIOR_CHANGE (fatia 1.1) — este teste afirmava o
+    DEFEITO e hoje afirma a CORRECAO. O comportamento antigo — 'ASSESSORIA'
+    resolvendo em silencio para um dos dois certificados de assessoria — esta
+    preservado no historico, em 476a4ab.
+
+    A suite dedicada e `test_ambiguidade_aproximada.py`.
+    """
     ident, resultado = resolver("ASSESSORIA")
-    assert ident == DES
-    assert resultado.criterio == CRITERIO_APROXIMACAO
-    assert not resultado.ambigua, "e o silencio que torna isso perigoso"
+    assert ident is None
+    assert resultado.ambigua
+    assert resultado.criterio == CRITERIO_PALAVRAS, "reporta o empate mais preciso"
 
 
 def test_defeito_nome_com_ponto_e_truncado():
