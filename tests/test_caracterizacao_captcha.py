@@ -108,7 +108,10 @@ def test_e_a_chave_e_transportada_por_variavel_de_ambiente_global():
     fonte = (RAIZ / "resolvedor_captcha" / "solver.py").read_text(encoding="utf-8")
 
     assert 'os.environ.get("GEMINI_API_KEY", "")' in fonte
-    assert "def solve_hcaptcha(page, max_rounds: int = 6) -> bool:" in fonte
+    # A assinatura ganhou `api_key` na fatia 7B, em commit proprio: o fallback no
+    # ambiente permanece SO para caller que omite o parametro. Ver
+    # test_secret_seam_captcha.py.
+    assert "def solve_hcaptcha(page, max_rounds: int = 6, api_key" in fonte
 
 
 # ── SENSITIVE_OUTPUT: o que o main imprime hoje ───────────────────────────────
@@ -243,7 +246,7 @@ def test_h_o_retry_esta_duplicado_em_tres_niveis():
     """
     solver = (RAIZ / "resolvedor_captcha" / "solver.py").read_text(encoding="utf-8")
 
-    assert "def solve_hcaptcha(page, max_rounds: int = 6)" in solver, "6 rodadas internas"
+    assert "max_rounds: int = 6" in solver, "6 rodadas internas"
     assert "MAX_GEMINI_TRIES       = 5" in solver, "5 tentativas por chamada"
 
     login = (RAIZ / "servicos_rf_login" / "login.py").read_text(encoding="utf-8")

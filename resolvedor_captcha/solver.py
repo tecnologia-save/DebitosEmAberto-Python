@@ -2068,14 +2068,23 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5) -> bool:
 # Ponto de entrada público
 # ──────────────────────────────────────────────────────────────────────────────
 
-def solve_hcaptcha(page, max_rounds: int = 6) -> bool:
+def solve_hcaptcha(page, max_rounds: int = 6, api_key: str | None = None) -> bool:
     """Resolve hCaptcha na página.
+
+    Args:
+        api_key:
+            Chave do Gemini. OMITIR (None) mantém o comportamento antigo: a chave
+            é buscada em GEMINI_API_KEY. Passar explicitamente — inclusive ""  —
+            usa o valor informado e NÃO consulta o ambiente. A distinção importa:
+            "não informei" e "informei vazio" são coisas diferentes, e a segunda
+            precisa falhar em vez de cair num fallback silencioso.
 
     Returns:
         True  — captcha resolvido ou ausente
         False — não resolvido após max_rounds iterações
     """
-    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if api_key is None:
+        api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key or api_key.startswith("cole-"):
         raise RuntimeError("GEMINI_API_KEY não configurada no ambiente.")
 
