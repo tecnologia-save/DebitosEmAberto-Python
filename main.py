@@ -20,7 +20,6 @@ Fluxo:
 
 import argparse
 import base64
-import difflib
 import json
 import logging
 import os
@@ -30,7 +29,6 @@ import re
 import subprocess
 import sys
 import time
-import unicodedata
 from pathlib import Path
 
 import pandas as pd
@@ -52,6 +50,9 @@ from servicos_rf_login import fazer_login                                  # noq
 from servicos_rf_login.login import fechar_tutorial_pos_login              # noqa: E402
 from resolvedor_captcha import solve_hcaptcha                                  # noqa: E402
 from ui_upload import main as selecionar_planilha                         # noqa: E402
+
+from automation.domain import buscar_certificado                            # noqa: E402
+from automation.domain import remover_acentos as _remover_acentos          # noqa: E402
 
 # Os certificados vêm do Windows Certificate Store (Cert:\CurrentUser\My), não
 # mais de uma pasta com .pfx e um senhas.json ao lado.
@@ -190,11 +191,6 @@ def _erro_permanente(mensagem: str) -> bool:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _remover_acentos(texto: str) -> str:
-    """Remove acentos e diacríticos (NFD → ASCII)."""
-    return unicodedata.normalize("NFD", texto).encode("ascii", "ignore").decode("ascii")
-
 
 def _normalizar_cnpj(valor) -> str:
     """Remove qualquer formatação de CNPJ e retorna apenas 14 dígitos."""
@@ -372,105 +368,27 @@ def carregar_certificados() -> dict[str, dict]:
     return mapa
 
 
-def _tokens_cert(texto: str) -> list[str]:
-    """Palavras normalizadas, na ordem, sem acento nem pontuação."""
-    return [p for p in re.split(r"[^a-z0-9]+", _remover_acentos(str(texto).lower())) if p]
-
-
-def _palavras_cert(texto: str) -> set[str]:
-    """Palavras normalizadas de um nome de certificado, sem acento nem pontuação."""
-    return set(_tokens_cert(texto))
-
-
 def _buscar_certificado(nome: str, certs: dict) -> str | None:
-    """Resolve o nome escrito na planilha para uma chave de `certs`.
+    """Adapter sobre a regra pura de `automation.domain`.
 
-    Ordem de tentativa, da mais precisa para a mais frouxa:
-        1. Igualdade exata do nome normalizado.
-        2. Prefixo por palavras — o nome escrito são as primeiras palavras do
-           certificado ("Cristiano" → "CRISTIANO VASCONCELOS BOAVENTURA LEITE").
-        3. Palavras inteiras em qualquer posição — pega citar só o sobrenome.
-        4. Prefixo ignorando separadores ("GSH" → "G S H CONSULTORIAS").
-        5. Substring bidirecional.
-        6. Aproximação por difflib.
-
-    Um critério que empata não encerra a busca — o seguinte pode separar os
-    candidatos. Mas empate NUNCA é resolvido por chute: se nenhum critério isolar
-    um único certificado, a linha fica sem certificado, porque usar o errado
-    significa autenticar na conta de outra empresa.
+    Traduz o dicionário de certificados do Windows no mapa CHAVE -> IDENTIDADE que
+    a regra consome, e é aqui — não no domínio — que as mensagens são impressas.
     """
-    chave = _remover_acentos(Path(nome).stem.lower())
-    if chave in certs:
-        return chave
+    identidades = {
+        k: (v.get("subject_cn") or k) if isinstance(v, dict) else k
+        for k, v in certs.items()
+    }
+    resultado = buscar_certificado(nome, identidades)
 
-    def _identidade(k: str):
-        """Certificado por trás da chave.
+    if resultado.resolvida:
+        print(f"    → Certificado '{nome}' resolvido para "
+              f"'{resultado.chave}' ({resultado.criterio}).")
+        return resultado.chave
 
-        Cada certificado é indexado sob mais de um nome (FriendlyName, CN e CN sem
-        o documento), então várias chaves apontam para o MESMO certificado. Sem
-        isso, um nome parcial casaria em duas chaves do mesmo cert e viraria
-        empate sem motivo. Dois certificados de mesmo CN são intercambiáveis para
-        a policy de auto-seleção, por isso o CN é a identidade.
-        """
-        valor = certs.get(k)
-        if isinstance(valor, dict):
-            return valor.get("subject_cn") or k
-        return k
-
-    tokens   = _tokens_cert(chave)
-    palavras = set(tokens)
-    compacto = "".join(tokens)
-
-    criterios: list[tuple[str, list]] = []
-    if tokens:
-        criterios.append((
-            "início do nome",
-            [k for k in certs if _tokens_cert(k)[:len(tokens)] == tokens],
-        ))
-        criterios.append((
-            "palavras inteiras",
-            [k for k in certs if palavras <= _palavras_cert(k)],
-        ))
-        criterios.append((
-            "início do nome sem separadores",
-            [k for k in certs if "".join(_tokens_cert(k)).startswith(compacto)],
-        ))
-    if chave:
-        criterios.append((
-            "correspondência parcial",
-            [k for k in certs if chave in k or k in chave],
-        ))
-        criterios.append((
-            "aproximação",
-            difflib.get_close_matches(chave, list(certs.keys()), n=1, cutoff=0.75),
-        ))
-
-    empate = None
-    for criterio, candidatos in criterios:
-        if not candidatos:
-            continue
-        distintos: dict = {}
-        for k in candidatos:
-            distintos.setdefault(_identidade(k), k)
-
-        if len(distintos) == 1:
-            escolhido = next(iter(distintos.values()))
-            print(f"    → Certificado '{nome}' resolvido para "
-                  f"'{escolhido}' ({criterio}).")
-            return escolhido
-
-        # Empate neste critério não encerra a busca: um critério seguinte pode
-        # separar os candidatos. "D&S" vira os tokens ['d','s'], que são o início
-        # tanto de "D&S ASSESSORIA" quanto de "D.S.R. ASSESSORIA" — mas só o
-        # primeiro contém a string "d&s". Guarda o empate mais preciso para
-        # reportar caso nenhum critério resolva.
-        if empate is None:
-            empate = (criterio, sorted(distintos.values()))
-
-    if empate:
-        criterio, nomes = empate
-        print(f"    [!] Nome de certificado ambíguo: '{nome}' ({criterio}) "
-              f"corresponde a {len(nomes)}: {', '.join(nomes)}.")
+    if resultado.ambigua:
+        print(f"    [!] Nome de certificado ambíguo: '{nome}' ({resultado.criterio}) "
+              f"corresponde a {len(resultado.ambiguidade)}: "
+              f"{', '.join(resultado.ambiguidade)}.")
         print("         Escreva na planilha um nome que identifique só um deles.")
     return None
 
