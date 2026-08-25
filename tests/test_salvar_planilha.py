@@ -27,6 +27,28 @@ class WorkbookQueNaoSalva:
         self.fechado = True
 
 
+class WorkbookQueSalva:
+    def __init__(self):
+        self.salvou = False
+
+    def save(self, caminho):
+        self.salvou = True
+
+    def close(self):
+        pass
+
+
+@pytest.fixture
+def log_isolado(tmp_path, monkeypatch):
+    """`registrar_erro` grava em `Path.cwd() / "logs"`. Nos testes, em tmp_path."""
+    destino = tmp_path / "logs"
+    original = main.registrar_erro
+    monkeypatch.setattr(
+        main, "registrar_erro", lambda mensagem: original(mensagem, log_dir=destino)
+    )
+    return destino
+
+
 @pytest.fixture
 def sessao_suja():
     """Sessao com alteracao pendente e um workbook que falha ao gravar."""
@@ -40,33 +62,38 @@ def sessao_suja():
     main._sessao_planilha.update(original)
 
 
-def test_o_defeito_f821_mascara_a_falha_de_salvamento(sessao_suja, capsys):
-    """Prova do bug, ANTES da correcao.
+def test_a_falha_de_salvamento_nao_e_mais_mascarada(sessao_suja, log_isolado, capsys):
+    """Estes dois testes afirmavam o DEFEITO ate o commit 4236b40: `NameError`
+    no lugar de `False`, apagando a causa real — e, dentro do `finally` de
+    `processar_cnpj`, apagando tambem a excecao que estava em voo.
 
-    A falha real e PermissionError. Mas o tratamento dela chama um nome que nao
-    existe, entao quem chama recebe NameError — e a causa verdadeira some.
-
-    Pior no ponto que importa: `processar_cnpj` chama `salvar_planilha()` dentro
-    de um `finally`. Uma excecao levantada ali SUBSTITUI a que estava em voo,
-    entao o NameError apaga tambem o erro original do processamento do CNPJ.
+    Agora afirmam a correcao. O historico preserva o antes.
     """
-    with pytest.raises(NameError, match="registrar_erro") as erro:
-        main.salvar_planilha()
+    assert main.salvar_planilha() is False
 
     assert "Falha ao salvar a planilha" in capsys.readouterr().out
-    # A causa real vira contexto encadeado: quem captura OSError/PermissionError
-    # nao pega nada, e o traceback aponta para o nome inexistente.
-    assert isinstance(erro.value.__context__, PermissionError)
-    assert not isinstance(erro.value, OSError)
 
 
-def test_o_return_false_nunca_e_alcancado(sessao_suja):
-    """A consequencia funcional: `salvar_planilha` promete devolver False numa
-    falha, e a sessao suja deveria sobreviver para a proxima tentativa."""
-    with pytest.raises(NameError):
-        main.salvar_planilha()
+def test_a_sessao_continua_suja_para_a_proxima_tentativa(sessao_suja, log_isolado):
+    """O contrato prometido no docstring da funcao: uma falha nao descarta o
+    dado, a proxima chamada tenta de novo."""
+    assert main.salvar_planilha() is False
+    assert main._sessao_planilha["sujo"] is True
 
-    assert main._sessao_planilha["sujo"] is True, "o dado nao foi descartado"
+    main._sessao_planilha["wb"] = WorkbookQueSalva()
+    assert main.salvar_planilha() is True, "a retentativa grava"
+    assert main._sessao_planilha["sujo"] is False
+
+
+def test_o_diagnostico_gravado_nao_carrega_o_caminho(sessao_suja, log_isolado):
+    """A mensagem do openpyxl traz o caminho completo — nome de cliente incluso —
+    e este log vai para disco. So o TIPO do erro e registrado."""
+    main.salvar_planilha()
+
+    gravado = "".join(f.read_text(encoding="utf-8") for f in log_isolado.glob("*.txt"))
+    assert "PermissionError" in gravado, "o tipo orienta a acao"
+    for proibido in ["ACME", "11222333000199", "C:/Clientes", "Permission denied"]:
+        assert proibido not in gravado
 
 
 def test_o_caminho_feliz_nao_passa_pelo_defeito(sessao_suja):

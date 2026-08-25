@@ -47,6 +47,7 @@ else:
 
 import cert_windows                                                        # noqa: E402
 from servicos_rf_login import fazer_login                                  # noqa: E402
+from servicos_rf_login.log_manager import registrar_erro                   # noqa: E402
 from servicos_rf_login.login import fechar_tutorial_pos_login              # noqa: E402
 from resolvedor_captcha import solve_hcaptcha                                  # noqa: E402
 from ui_upload import main as selecionar_planilha                         # noqa: E402
@@ -431,7 +432,10 @@ def salvar_planilha() -> bool:
         _sessao_planilha["wb"].save(_sessao_planilha["caminho"])
     except Exception as e:
         print(f"    [!] Falha ao salvar a planilha: {type(e).__name__}: {e}")
-        registrar_erro(f"Planilha: falha ao salvar. {type(e).__name__}: {e}")
+        # Sem o `: {e}`, ao contrário do print acima: a mensagem do openpyxl
+        # carrega o caminho completo do arquivo, e isto aqui vai para um log em
+        # disco. O tipo já é o que orienta a ação (PermissionError = feche o Excel).
+        registrar_erro(f"Planilha: falha ao salvar. {type(e).__name__}")
         return False
     _sessao_planilha["sujo"] = False
     return True
