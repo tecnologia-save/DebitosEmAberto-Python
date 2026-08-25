@@ -20,7 +20,12 @@ from casos_certificado import CERTS
 from automation.domain import buscar_certificado
 
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
-NUCLEO = sorted((RAIZ / "automation").glob("*.py"))
+AUTOMATION = sorted((RAIZ / "automation").glob("*.py"))
+
+# `planilha.py` e a INTEGRACAO: ela pode — e deve ser a unica a — conhecer
+# openpyxl e pandas. Todo o resto e nucleo e nao toca efeito externo.
+INTEGRACOES = {"planilha.py"}
+NUCLEO = [m for m in AUTOMATION if m.name not in INTEGRACOES]
 
 # Nada disso pode aparecer no nucleo.
 PROIBIDOS = {
@@ -47,6 +52,45 @@ def _exercitar():
 def test_o_nucleo_foi_encontrado():
     """Guarda contra varredura vazia."""
     assert len(NUCLEO) >= 2
+    assert {m.name for m in AUTOMATION} >= INTEGRACOES, "a integracao existe e esta na lista"
+
+
+def _importa(modulo, pacotes: set[str]) -> bool:
+    arvore = ast.parse(modulo.read_text(encoding="utf-8-sig"))
+    for no in ast.walk(arvore):
+        if isinstance(no, ast.Import):
+            if pacotes & {a.name.split(".")[0] for a in no.names}:
+                return True
+        elif isinstance(no, ast.ImportFrom) and no.level == 0 and no.module:
+            if no.module.split(".")[0] in pacotes:
+                return True
+    return False
+
+
+def test_so_a_integracao_conhece_openpyxl_e_pandas():
+    """A fronteira arquitetural da fatia 4: DataFrame e Workbook moram num lugar so.
+
+    Por IMPORT, e nao por texto: os outros modulos citam openpyxl em comentario
+    para explicar por que so .xlsx passa — citar e diferente de depender.
+    """
+    culpados = {m.name for m in AUTOMATION if _importa(m, {"openpyxl", "pandas"})}
+    assert culpados == INTEGRACOES, f"esperado {INTEGRACOES}, encontrado {culpados}"
+
+
+def test_a_integracao_nao_conhece_o_resto_do_mundo():
+    """openpyxl e pandas sim; Windows, navegador, Gemini e Tkinter nao."""
+    fonte = (RAIZ / "automation" / "planilha.py").read_text(encoding="utf-8")
+    for proibido in ("winreg", "subprocess", "patchright", "playwright", "tkinter",
+                     "google", "requests", "ctypes", "cert_windows",
+                     "servicos_rf_login", "resolvedor_captcha"):
+        assert proibido not in fonte, f"a integracao de planilha importa {proibido}."
+
+
+def test_a_integracao_nao_imprime():
+    """Diagnostico e do adapter. Sem isto, a integracao decidiria o que vai para
+    o log — e ela manipula CNPJ, empresa e conteudo de celula."""
+    fonte = (RAIZ / "automation" / "planilha.py").read_text(encoding="utf-8")
+    assert "print(" not in fonte
 
 
 @pytest.mark.parametrize("modulo", NUCLEO, ids=lambda p: p.name)
@@ -133,3 +177,30 @@ def test_a_regra_nao_depende_de_plataforma():
     for marca in ("sys.platform", "os.name", "platform.system"):
         assert marca not in fonte, f"o dominio ramifica por plataforma ({marca})."
     assert buscar_certificado("Bernardo", DISPONIVEIS).resolvida
+
+
+def test_a_integracao_so_embrulha_erro_com_mensagem_constante():
+    """Onde ela embrulha um erro externo, corta o encadeamento com `from None`.
+
+    A mensagem do openpyxl e a do sistema de arquivos carregam o caminho
+    completo; deixa-las penduradas na nossa exception vazaria o nome do cliente.
+    Que as mensagens sao mesmo seguras esta provado por comportamento em
+    `test_planilha_recurso.py`, com sentinelas plantadas no caminho.
+    """
+    fonte = (RAIZ / "automation" / "planilha.py").read_text(encoding="utf-8")
+    embrulhos = fonte.count("raise PlanilhaIndisponivel")
+    assert embrulhos >= 4
+    assert fonte.count("from None") >= 2, "os que nascem de erro externo cortam a cadeia"
+
+
+def test_main_nao_manipula_mais_celula_nem_indice_de_linha():
+    """Depois da fatia 4, main orquestra e imprime; quem mexe em célula é a
+    integração."""
+    principal = RAIZ / "main.py"
+    assert not _importa(principal, {"openpyxl"}), "main.py ainda importa openpyxl."
+
+    # Por texto aqui e proposital: nao ha como chamar isto sem manipular planilha.
+    fonte = principal.read_text(encoding="utf-8-sig")
+    for marca in ("iter_rows", "create_sheet", ".max_row", "ws.cell(", "sheetnames",
+                  "Alignment("):
+        assert marca not in fonte, f"main.py ainda manipula planilha ({marca})."

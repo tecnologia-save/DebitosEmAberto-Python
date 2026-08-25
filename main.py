@@ -23,8 +23,6 @@ import base64
 import json
 import logging
 import os
-import openpyxl
-from openpyxl.styles import Alignment
 import re
 import subprocess
 import sys
@@ -136,6 +134,8 @@ from automation.status_portal import PALAVRAS_RECUSA_PERMANENTE as _PALAVRAS_ERR
 from automation.status_portal import RECUSAS_COM_STATUS as _ERROS_COM_STATUS
 from automation.status_portal import STATUS_D_TERMINAIS as _STATUS_D_TERMINAIS
 from automation.boundary import EntradaDebitosEmAberto, EntradaInvalida, montar_entrada
+from automation import planilha
+from automation.planilha import PlanilhaIndisponivel, validar_recurso
 from automation.status_portal import ANTIBOT as _ANTIBOT
 from automation.status_portal import RECUSA_DO_CNPJ as _RECUSA_DO_CNPJ
 from automation.status_portal import FalhaPermanente
@@ -147,9 +147,7 @@ from automation.status_portal import status_encerra_linha as _status_encerra_lin
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _normalizar_cnpj(valor) -> str:
-    """Remove qualquer formatação de CNPJ e retorna apenas 14 dígitos."""
-    return re.sub(r"\D", "", str(valor)).zfill(14)
+_normalizar_cnpj = planilha.normalizar_cnpj
 
 
 def _aguardar_intervalo_troca() -> None:
@@ -378,46 +376,29 @@ def atualizar_env_certificado(cert_subject_cn: str) -> None:
 
 def ler_e_ordenar(caminho: str) -> pd.DataFrame:
     """Lê a aba 'Empresas', remove duplicatas e ordena pela coluna C (certificado)."""
-    ext = Path(caminho).suffix.lower()
-    if ext in (".xlsx", ".xls"):
-        df = pd.read_excel(caminho, sheet_name="Empresas", dtype=str)
-    else:
-        df = pd.read_csv(caminho, dtype=str)
-
-    df = df.dropna(how="all").reset_index(drop=True)
-
-    total_antes = len(df)
-    df = df.drop_duplicates(ignore_index=True)
-    removidas = total_antes - len(df)
+    df, removidas = planilha.ler_e_ordenar(caminho)
     if removidas:
         print(f"  ⚠ {removidas} linha(s) duplicada(s) removida(s) da planilha.")
-
-    col_certificado = df.columns[2]   # Coluna C = CERTIFICADO
-    df = df.sort_values(by=col_certificado, kind="stable", ignore_index=True)
     return df
 
 
 # ── Sessão de planilha ────────────────────────────────────────────────────────
-# Antes, cada leitura recarregava o arquivo inteiro do disco e cada escrita o
-# regravava inteiro. Medido numa planilha de 1031 empresas e 20 mil linhas de
-# resultado: 1,2s só para ler duas células e 2,9s por gravação, com até quatro
-# gravações por CNPJ. Só a verificação de "já concluído" custava 21 minutos.
+# O recurso e suas regras vivem em automation/planilha.py. O que fica aqui é o
+# que pertence ao adapter local: quando gravar, quando fechar e o que imprimir.
 #
-# Agora o arquivo é carregado uma vez e mantido em memória; as escritas apenas
-# marcam a sessão como suja e o disco é tocado uma vez por CNPJ. Se o processo
-# morrer no meio de um CNPJ, esse CNPJ perde o que não foi salvo — mas ele
-# também não foi marcado como concluído, então a próxima execução o refaz.
-_sessao_planilha: dict = {"caminho": None, "wb": None, "sujo": False, "status": None}
+# TRANSITIONAL: `_sessao_planilha` é o dicionário interno da sessão, exposto
+# enquanto o legado o lê direto. Sai quando `main` falar só pelos métodos —
+# provavelmente junto com a fatia de app/orquestração.
+_SESSAO = planilha.SessaoPlanilha()
+_sessao_planilha = _SESSAO.estado
 
 
 def _wb_sessao(caminho_planilha: str):
     """Workbook da sessão, carregado do disco só na primeira chamada."""
-    if _sessao_planilha["wb"] is None or _sessao_planilha["caminho"] != caminho_planilha:
+    if _SESSAO.precisa_abrir(caminho_planilha):
         fechar_planilha()
-        _sessao_planilha["caminho"] = caminho_planilha
-        _sessao_planilha["wb"] = openpyxl.load_workbook(caminho_planilha)
-        _sessao_planilha["sujo"] = False
-    return _sessao_planilha["wb"]
+        _SESSAO.abrir(caminho_planilha)
+    return _SESSAO.wb
 
 
 def salvar_planilha() -> bool:
@@ -426,10 +407,10 @@ def salvar_planilha() -> bool:
     Uma falha (arquivo aberto no Excel, por exemplo) mantém a sessão suja para
     que a próxima chamada tente de novo, em vez de descartar os dados.
     """
-    if _sessao_planilha["wb"] is None or not _sessao_planilha["sujo"]:
+    if not _SESSAO.precisa_gravar():
         return False
     try:
-        _sessao_planilha["wb"].save(_sessao_planilha["caminho"])
+        _SESSAO.gravar()
     except Exception as e:
         print(f"    [!] Falha ao salvar a planilha: {type(e).__name__}: {e}")
         # Sem o `: {e}`, ao contrário do print acima: a mensagem do openpyxl
@@ -437,198 +418,63 @@ def salvar_planilha() -> bool:
         # disco. O tipo já é o que orienta a ação (PermissionError = feche o Excel).
         registrar_erro(f"Planilha: falha ao salvar. {type(e).__name__}")
         return False
-    _sessao_planilha["sujo"] = False
+    _SESSAO.marcar_gravado()
     return True
 
 
 def fechar_planilha() -> None:
     """Salva o que estiver pendente e descarta o workbook da memória."""
     salvar_planilha()
-    if _sessao_planilha["wb"] is not None:
-        try:
-            _sessao_planilha["wb"].close()
-        except Exception:
-            pass
-    _sessao_planilha.update({"caminho": None, "wb": None, "sujo": False, "status": None})
+    _SESSAO.descartar()
 
 
 def mapa_status(caminho_planilha: str) -> dict[str, tuple[str, str]]:
-    """Mapa {cnpj: (coluna_D, coluna_E)} da aba 'Empresas', montado uma só vez.
-
-    Varrer a aba a cada consulta era O(n) por CNPJ; com o mapa a consulta vira
-    uma busca em dicionário. Também é o que permite filtrar as linhas já
-    concluídas antes de abrir qualquer navegador.
-    """
-    if _sessao_planilha["status"] is None or _sessao_planilha["caminho"] != caminho_planilha:
-        ws = _wb_sessao(caminho_planilha)["Empresas"]
-        mapa: dict[str, tuple[str, str]] = {}
-        for linha in ws.iter_rows(min_row=2):
-            if not linha[0].value:
-                continue
-            val_d = str(linha[3].value or "").strip() if len(linha) > 3 else ""
-            val_e = str(linha[4].value or "").strip() if len(linha) > 4 else ""
-            mapa[_normalizar_cnpj(linha[0].value)] = (val_d, val_e)
-        _sessao_planilha["status"] = mapa
-    return _sessao_planilha["status"]
+    """Mapa {cnpj: (coluna_D, coluna_E)} da aba 'Empresas', montado uma só vez."""
+    _wb_sessao(caminho_planilha)
+    return _SESSAO.mapa_status(caminho_planilha)
 
 
 def _escrever_status(caminho_planilha: str, cnpj: str, valor: str,
                      coluna: int, rotulo: str) -> None:
     """Escreve `valor` na coluna indicada da linha do CNPJ na aba 'Empresas'."""
-    ws = _wb_sessao(caminho_planilha)["Empresas"]
-
-    for linha in ws.iter_rows(min_row=2):
-        celula_cnpj = linha[0]   # Coluna A
-        if celula_cnpj.value and _normalizar_cnpj(celula_cnpj.value) == cnpj:
-            celula = linha[coluna]
-            celula.value = valor
-            celula.alignment = Alignment(horizontal="center", vertical="center")
-            _sessao_planilha["sujo"] = True
-
-            # Mantém o mapa em sincronia com a célula
-            mapa = _sessao_planilha["status"]
-            if mapa is not None:
-                val_d, val_e = mapa.get(cnpj, ("", ""))
-                mapa[cnpj] = (valor, val_e) if coluna == 3 else (val_d, valor)
-
-            print(f"    [✓] Coluna {rotulo} → '{valor}'  (CNPJ {cnpj})")
-            return
+    _wb_sessao(caminho_planilha)
+    if _SESSAO.escrever_status(cnpj, valor, coluna):
+        print(f"    [✓] Coluna {rotulo} → '{valor}'  (CNPJ {cnpj})")
+        return
 
     print(f"    [!] CNPJ {cnpj} não encontrado na planilha para escrita em {rotulo}.")
 
 
 def escrever_coluna_d(caminho_planilha: str, cnpj: str, valor: str) -> None:
     """Escreve o status do DCTFWeb na coluna D da aba 'Empresas'."""
-    _escrever_status(caminho_planilha, cnpj, valor, coluna=3, rotulo="D")
+    _escrever_status(caminho_planilha, cnpj, valor,
+                     coluna=planilha.COL_STATUS_DCTFWEB, rotulo="D")
 
 
 def escrever_coluna_e(caminho_planilha: str, cnpj: str, valor: str) -> None:
     """Escreve o status dos Processos Fiscais na coluna E da aba 'Empresas'."""
-    _escrever_status(caminho_planilha, cnpj, valor, coluna=4, rotulo="E")
+    _escrever_status(caminho_planilha, cnpj, valor,
+                     coluna=planilha.COL_STATUS_PROCESSOS, rotulo="E")
 
 
 def ler_status_cnpj(caminho_planilha: str, cnpj: str) -> tuple[str, str]:
-    """Lê os valores das colunas D e E da aba 'Empresas' para o CNPJ dado.
-
-    Retorna (val_d, val_e) — strings vazias quando as células estiverem em branco.
-    Consulta o mapa em memória, então é uma busca em dicionário e já enxerga o
-    que foi escrito nesta execução.
-    """
+    """Lê os valores das colunas D e E da aba 'Empresas' para o CNPJ dado."""
     return mapa_status(caminho_planilha).get(cnpj, ("", ""))
 
 
 def filtrar_pendentes(df: pd.DataFrame, caminho_planilha: str) -> tuple[pd.DataFrame, int]:
-    """Remove do DataFrame as linhas com as colunas D e E já preenchidas.
-
-    Roda antes de abrir o navegador. Sem isso a automação fazia login num
-    certificado para só então descobrir, CNPJ a CNPJ, que todas as linhas dele
-    já estavam prontas — pagando um login inteiro à toa.
-
-    Returns:
-        (df_pendentes, quantidade_de_linhas_ja_concluidas)
-    """
-    mapa = mapa_status(caminho_planilha)
-    col_cnpj = df.columns[0]
-
-    def _pendente(valor) -> bool:
-        cnpj = _normalizar_cnpj(re.sub(r"\.0+$", "", str(valor).strip()))
-        val_d, val_e = mapa.get(cnpj, ("", ""))
-        if _status_encerra_linha(val_d):
-            return False
-        return not (val_d and val_e)
-
-    mask = df[col_cnpj].map(_pendente)
-    return df[mask].reset_index(drop=True), int((~mask).sum())
-
-
-def _linha_vazia(ws, idx: int) -> bool:
-    """True se a linha não tem nenhum valor.
-
-    Só o conteúdo conta. Formatação remanescente, bordas e preenchimento de
-    linhas que um dia tiveram dados e foram apagadas são ignorados — é por isso
-    que não se pode usar ws.max_row / ws.append() aqui: eles enxergam essas
-    linhas fantasma como ocupadas e empurram a gravação para muito abaixo.
-    """
-    if idx > ws.max_row:
-        return True
-    return all(
-        celula.value is None or str(celula.value).strip() == ""
-        for celula in ws[idx]
+    """Remove do DataFrame as linhas com as colunas D e E já preenchidas."""
+    return planilha.linhas_pendentes(
+        df, mapa_status(caminho_planilha), _status_encerra_linha
     )
 
 
-def _proximas_linhas_vazias(ws, quantidade: int) -> list[int]:
-    """Índices das próximas `quantidade` linhas vazias, varrendo de cima para baixo.
-
-    Começa na linha 2 (linha 1 é o cabeçalho) e devolve toda linha sem conteúdo,
-    tenha ela sido usada antes ou não. Linhas ocupadas são puladas, nunca
-    sobrescritas — então se a lacuna do topo for menor que o volume de dados, o
-    restante continua depois da última linha ocupada.
-    """
-    livres: list[int] = []
-    idx = 2
-    while len(livres) < quantidade:
-        if _linha_vazia(ws, idx):
-            livres.append(idx)
-        idx += 1
-    return livres
-
-
-def _anexar_linhas(ws, linhas: list[list]) -> list[int]:
-    """Escreve cada linha na próxima linha vazia. Retorna os índices usados."""
-    destinos = _proximas_linhas_vazias(ws, len(linhas))
-    for destino, valores in zip(destinos, linhas):
-        for col, valor in enumerate(valores, start=1):
-            ws.cell(row=destino, column=col, value=valor)
-    return destinos
-
-
-def _descrever_destinos(destinos: list[int]) -> str:
-    """Resumo legível das linhas usadas, sinalizando quando não são contíguas."""
-    if not destinos:
-        return "nenhuma linha"
-    if len(destinos) == 1:
-        return f"L{destinos[0]}"
-    contiguo = destinos == list(range(destinos[0], destinos[0] + len(destinos)))
-    faixa = f"L{destinos[0]}-L{destinos[-1]}"
-    return faixa if contiguo else f"{faixa} (com saltos)"
-
-
 def escrever_aba_debitos(caminho_planilha: str, dados: list[dict]) -> None:
-    """Adiciona os dados extraídos da tabela DCTFWeb na aba 'Débitos' da planilha.
-
-    Se a aba ainda não existir, ela é criada com cabeçalho.
-    Os dados são sempre acrescentados após a última linha preenchida.
-    """
-    wb = _wb_sessao(caminho_planilha)
-
-    if "Débitos" not in wb.sheetnames:
-        ws = wb.create_sheet("Débitos")
-        cabecalho = [
-            "CNPJ", "TIPO", "TRIBUTO", "Rec.", "PA/Ex.",
-            "Dt.Vcto.", "Valor Original", "Saldo Devedor",
-        ]
-        ws.append(cabecalho)
-    else:
-        ws = wb["Débitos"]
-
-    destinos = _anexar_linhas(ws, [
-        [
-            d.get("cnpj", ""),
-            d.get("tipo", ""),
-            d.get("tributo", ""),
-            d.get("receita", ""),
-            d.get("pa_ex", ""),
-            d.get("dt_vcto", ""),
-            d.get("valor_original", ""),
-            d.get("saldo", ""),
-        ]
-        for d in dados
-    ])
-
-    _sessao_planilha["sujo"] = True
+    """Adiciona os dados extraídos da tabela DCTFWeb na aba 'Débitos' da planilha."""
+    _wb_sessao(caminho_planilha)
+    destinos = _SESSAO.anexar_debitos(dados)
     print(f"    [✓] Aba 'Débitos': {len(dados)} linha(s) gravada(s) em "
-          f"{_descrever_destinos(destinos)}.")
+          f"{planilha.descrever_destinos(destinos)}.")
 
 
 # ── DCTFWeb: extração da tabela ────────────────────────────────────────────────
@@ -801,34 +647,10 @@ def extrair_debitos_dctfweb(page, cnpj: str, caminho_planilha: str) -> None:
 
 def escrever_aba_processos_fiscais(caminho_planilha: str, dados: list[dict]) -> None:
     """Adiciona linhas na aba 'Processos Fiscais' (cria se não existir)."""
-    wb = _wb_sessao(caminho_planilha)
-
-    if "Processos Fiscais" not in wb.sheetnames:
-        ws = wb.create_sheet("Processos Fiscais")
-        ws.append([
-            "CNPJ", "TIPO", "RECEITA", "PA/Ex.", "Dt.Vcto.",
-            "Valor Original", "Saldo Devedor", "Processo de Crédito",
-        ])
-    else:
-        ws = wb["Processos Fiscais"]
-
-    destinos = _anexar_linhas(ws, [
-        [
-            d.get("cnpj", ""),
-            d.get("tipo", ""),
-            d.get("receita", ""),
-            d.get("pa_ex", ""),
-            d.get("dt_vcto", ""),
-            d.get("valor_original", ""),
-            d.get("saldo", ""),
-            d.get("processo_credito", ""),
-        ]
-        for d in dados
-    ])
-
-    _sessao_planilha["sujo"] = True
+    _wb_sessao(caminho_planilha)
+    destinos = _SESSAO.anexar_processos(dados)
     print(f"    [✓] Aba 'Processos Fiscais': {len(dados)} linha(s) gravada(s) em "
-          f"{_descrever_destinos(destinos)}.")
+          f"{planilha.descrever_destinos(destinos)}.")
 
 
 def _extrair_dados_pagina_processo(page, cnpj: str,
@@ -1831,9 +1653,13 @@ def main() -> None:
         print("Nenhuma planilha selecionada. Encerrando.")
         sys.exit(0)
 
+    # A forma vem da fronteira; o recurso, da integração. Ambas antes de qualquer
+    # navegador — descobrir que a planilha está aberta no Excel só na primeira
+    # gravação custa um login e um CNPJ inteiros.
     try:
         entrada = _entrada_da_execucao(planilha)
-    except EntradaInvalida as erro_de_entrada:
+        validar_recurso(entrada.planilha)
+    except (EntradaInvalida, PlanilhaIndisponivel) as erro_de_entrada:
         print(f"  [!] {erro_de_entrada}")
         sys.exit(2)
     planilha = entrada.planilha
