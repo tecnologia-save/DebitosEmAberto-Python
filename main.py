@@ -132,7 +132,7 @@ from automation.status_portal import PALAVRAS_RECUSA_PERMANENTE as _PALAVRAS_ERR
 from automation.status_portal import RECUSAS_COM_STATUS as _ERROS_COM_STATUS
 from automation.status_portal import STATUS_D_TERMINAIS as _STATUS_D_TERMINAIS
 from automation.boundary import EntradaDebitosEmAberto, EntradaInvalida, montar_entrada
-from automation import captcha, certificados_windows, login, planilha
+from automation import captcha, certificados_windows, login, planilha, representacao
 from patchright.sync_api import Error as PlaywrightError
 from automation.planilha import PlanilhaIndisponivel, validar_recurso
 from automation.status_portal import ANTIBOT as _ANTIBOT
@@ -1116,7 +1116,7 @@ def trocar_perfil_procurador(page, cnpj: str) -> None:
         if _erro_bloqueado:
             if _tentativa_repr < _MAX_TENTATIVAS_REPR:
                 continue  # abre menu, preenche, clica de novo
-            raise Exception(
+            raise representacao.AntiBotEsgotado(
                 f"Acesso bloqueado por anti-bot após {_MAX_TENTATIVAS_REPR} "
                 "tentativa(s). Reprocessar manualmente mais tarde."
             )
@@ -1149,7 +1149,7 @@ def trocar_perfil_procurador(page, cnpj: str) -> None:
             print("    → Captcha não resolvido em 2 tentativas. Refazendo 'Representar'...")
             if _tentativa_repr < _MAX_TENTATIVAS_REPR:
                 continue
-            raise Exception(
+            raise representacao.RepresentacaoNaoConfirmada(
                 f"Captcha não resolvido para CNPJ {cnpj} após "
                 f"{_MAX_TENTATIVAS_REPR} tentativa(s)."
             )
@@ -1194,7 +1194,7 @@ def trocar_perfil_procurador(page, cnpj: str) -> None:
                 print(f"    → [!] Erro anti-bot após captcha: '{_err_pos_captcha}'")
                 if _tentativa_repr < _MAX_TENTATIVAS_REPR:
                     continue
-                raise Exception(
+                raise representacao.AntiBotEsgotado(
                     f"Acesso bloqueado por anti-bot após captcha — "
                     f"{_MAX_TENTATIVAS_REPR} tentativa(s). Reprocessar manualmente."
                 )
@@ -1232,7 +1232,7 @@ def trocar_perfil_procurador(page, cnpj: str) -> None:
             )
             continue
 
-        raise Exception(
+        raise representacao.RepresentacaoNaoConfirmada(
             f"Representação falhou para CNPJ {cnpj} após {_MAX_TENTATIVAS_REPR} "
             f"tentativa(s). Portal ainda exibe: '{_cnpj_pag_final}'."
         )
@@ -1344,7 +1344,7 @@ def verificar_pendencias(page, cnpj: str, caminho_planilha: str,
 
 # ── Processamento por CNPJ ────────────────────────────────────────────────────
 
-def processar_cnpj(page, cnpj: str, row: pd.Series,
+def processar_cnpj(sessao, cnpj: str, row: pd.Series,
                    caminho_planilha: str) -> str:
     """Executa o fluxo completo para um CNPJ no portal de Serviços RF.
 
@@ -1381,19 +1381,36 @@ def processar_cnpj(page, cnpj: str, row: pd.Series,
         print(f"    → Coluna E já preenchida ('{val_e}'). Fará apenas Débitos DCTFWeb.")
 
     # ── Navegação e processamento ─────────────────────────────────────────────
-    # fazer_login() já autenticou no portal; ir direto para representação
+    # A sessão já está autenticada; ir direto para representação.
     try:
-        trocar_perfil_procurador(page, cnpj)
+        resultado = representacao.representar(
+            sessao, cnpj,
+            executar=trocar_perfil_procurador,
+            recusa_do_portal=FalhaPermanente,
+        )
 
-        status = verificar_pendencias(page, cnpj, caminho_planilha,
+        if resultado.encerra_a_linha:
+            # Registra o motivo na planilha antes de propagar, para que a recusa
+            # fique visível em vez de a linha voltar em branco.
+            if resultado.status_coluna_d:
+                escrever_coluna_d(caminho_planilha, cnpj, resultado.status_coluna_d)
+            # TRANSITIONAL — converte o resultado de volta na exception que o laço
+            # legado espera. A mensagem é CONSTANTE: a antiga carregava o CNPJ e o
+            # texto bruto do portal, e este ponto de `raise` é novo.
+            # Condição de remoção: quando `processar` consumir o resultado.
+            raise FalhaPermanente(
+                "O portal recusou este CNPJ.",
+                status_coluna_d=resultado.status_coluna_d,
+            )
+
+        if not resultado.representado:
+            raise representacao.RepresentacaoNaoConfirmada(
+                f"Representação não concluída ({resultado.situacao})."
+            )
+
+        status = verificar_pendencias(sessao.pagina, cnpj, caminho_planilha,
                                        skip_dctfweb=skip_dctfweb,
                                        skip_processo=skip_processo)
-    except FalhaPermanente as e:
-        # Registra o motivo na planilha antes de propagar, para que a recusa
-        # fique visível em vez de a linha voltar em branco
-        if e.status_coluna_d:
-            escrever_coluna_d(caminho_planilha, cnpj, e.status_coluna_d)
-        raise
     finally:
         # Único toque no disco por CNPJ. No finally para que uma falha no meio
         # do fluxo não descarte o que já foi extraído.
@@ -1507,7 +1524,7 @@ def processar(df: pd.DataFrame, certs: dict[str, dict],
         # ── Processa pendências deste CNPJ ────────────────────────────────────
         _avancar = True
         try:
-            processar_cnpj(page, cnpj, row, caminho_planilha)
+            processar_cnpj(sessao, cnpj, row, caminho_planilha)
 
         except FalhaPermanente as e:
             # Procuração expirada/inválida ou CNPJ não autorizado — não retentar.

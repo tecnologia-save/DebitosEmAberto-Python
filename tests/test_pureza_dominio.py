@@ -404,3 +404,50 @@ def test_main_nao_manipula_mais_a_tupla_do_navegador():
     assert "browser_aberto" not in fonte
     assert "p, context, page = " not in fonte
     assert "sessao.pagina" in fonte, "os recursos passaram a ter nome"
+
+
+# ── Fatia 8A: a fronteira da representacao ───────────────────────────────────
+
+REPRESENTACAO = "representacao.py"
+
+
+def test_a_representacao_nao_conhece_login_nem_policy():
+    """§16: recebe sessao pronta. Nao autentica, nao garante policy, nao toca
+    registro nem UAC."""
+    modulo = RAIZ / "automation" / REPRESENTACAO
+    assert not _importa(modulo, {"winreg", "ctypes", "subprocess", "cert_windows",
+                                 "servicos_rf_login", "resolvedor_captcha",
+                                 "patchright", "playwright", "os"})
+
+    codigo = _codigo_sem_docstrings(modulo)
+    for proibido in ("autenticar", "fazer_login", "garantir_policy",
+                     "ResultadoDaPolicy", "policy_certificado", "SessaoReceita",
+                     "os.environ", "print("):
+        assert proibido not in codigo, f"a representacao conhece {proibido}."
+
+
+def test_a_representacao_nao_e_dona_da_sessao():
+    codigo = _codigo_sem_docstrings(RAIZ / "automation" / REPRESENTACAO)
+
+    for proibido in ("close", "stop", "encerrar", "logout"):
+        assert proibido not in codigo, f"a representacao chama {proibido}."
+
+
+def test_main_nao_passa_mais_page_para_o_fluxo_por_cnpj():
+    """`processar_cnpj` recebe a sessao; quem desce para a navegacao legada e
+    `sessao.pagina`, dentro dela."""
+    fonte = (RAIZ / "main.py").read_text(encoding="utf-8-sig")
+
+    assert "def processar_cnpj(sessao, cnpj" in fonte
+    assert "processar_cnpj(sessao, cnpj, row, caminho_planilha)" in fonte
+
+
+def test_o_legado_sinaliza_desfecho_por_tipo_e_nao_por_exception_nua():
+    """Depois da 8A, nenhum `raise Exception(` sobrou em trocar_perfil_procurador."""
+    fonte = (RAIZ / "main.py").read_text(encoding="utf-8-sig")
+    inicio = fonte.index("def trocar_perfil_procurador")
+    trecho = fonte[inicio:fonte.index("def verificar_pendencias")]
+
+    assert "raise Exception(" not in trecho
+    assert trecho.count("representacao.AntiBotEsgotado") == 2
+    assert trecho.count("representacao.RepresentacaoNaoConfirmada") == 2
