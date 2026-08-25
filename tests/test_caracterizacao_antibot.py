@@ -18,6 +18,7 @@ Nenhum teste abre navegador, portal ou sessao. Mensagens ficticias.
 """
 import ast
 import pathlib
+import textwrap
 
 import pytest
 
@@ -144,11 +145,24 @@ def test_defeito_normalizacao_divergente_entre_as_duas_regras():
 
 # ── Prova de que a transcricao e fiel ao codigo ──────────────────────────────
 
+# Trecho de main.py congelado ANTES da extracao. E contra ELE que a fidelidade da
+# transcricao e provada — assim estes testes continuam valendo depois da extracao,
+# em vez de virarem cadaveres que precisam ser editados.
+FONTE_ORIGINAL = (pathlib.Path(__file__).parent / "fonte_original_antibot.txt").read_text(
+    encoding="utf-8"
+)
+
+
+def _blocos_originais() -> list[str]:
+    """Os dois pontos inline, separados — cada um tem indentacao propria."""
+    partes = FONTE_ORIGINAL.split("# ── ponto ")[1:]
+    return [textwrap.dedent(p.partition(chr(10))[2]) for p in partes]
+
+
 def _condicoes_antibot_no_fonte() -> list[ast.BoolOp]:
-    """Todo `X in Y or Z in Y` de main.py que menciona as duas palavras."""
-    arvore = ast.parse((RAIZ / "main.py").read_text(encoding="utf-8-sig"))
+    """Todo `X in Y or Z in Y` do original que menciona as duas palavras."""
     achados = []
-    for no in ast.walk(arvore):
+    for no in [n for b in _blocos_originais() for n in ast.walk(ast.parse(b))]:
         if not isinstance(no, ast.BoolOp) or not isinstance(no.op, ast.Or):
             continue
         literais = {
@@ -181,8 +195,8 @@ def test_a_transcricao_confere_com_o_codigo():
 
 
 def test_os_dois_pontos_usam_texto_ja_em_minusculas():
-    """A normalizacao acontece uma linha antes, em `.lower()`, nos dois casos."""
-    fonte = (RAIZ / "main.py").read_text(encoding="utf-8-sig")
-
-    assert fonte.count("_err_lower = _err_msg.lower()") == 1
-    assert fonte.count("_epc_lower = _err_pos_captcha.lower()") == 1
+    """A normalizacao acontece uma linha antes, em `.lower()`, nos dois casos —
+    e em nenhum deles ha remocao de acento."""
+    assert FONTE_ORIGINAL.count("_err_lower = _err_msg.lower()") == 1
+    assert FONTE_ORIGINAL.count("_epc_lower = _err_pos_captcha.lower()") == 1
+    assert "remover_acentos" not in FONTE_ORIGINAL

@@ -1,0 +1,32 @@
+# Congelado de main.py em 2180507, ANTES da extracao da fatia 2.1.
+# Nao editar: este arquivo e a evidencia do ANTES.
+
+# ── ponto 1: dentro da espera ativa, antes do captcha ──
+            if _err_msg:
+                _err_lower = _err_msg.lower()
+                if "automatizado" in _err_lower or "bloqueado" in _err_lower:
+                    print(f"    → [!] Erro anti-bot: '{_err_msg}'")
+                    _erro_bloqueado = True
+                    break
+                if _erro_permanente(_err_msg):
+                    raise FalhaPermanente(
+                        f"Portal recusou CNPJ {cnpj}: '{_err_msg}'",
+                        status_coluna_d=_status_erro_permanente(_err_msg),
+                    )
+
+# ── ponto 2: depois de resolver o captcha ──
+        if _err_pos_captcha:
+            _epc_lower = _err_pos_captcha.lower()
+            if "automatizado" in _epc_lower or "bloqueado" in _epc_lower:
+                print(f"    → [!] Erro anti-bot após captcha: '{_err_pos_captcha}'")
+                if _tentativa_repr < _MAX_TENTATIVAS_REPR:
+                    continue
+                raise Exception(
+                    f"Acesso bloqueado por anti-bot após captcha — "
+                    f"{_MAX_TENTATIVAS_REPR} tentativa(s). Reprocessar manualmente."
+                )
+            if _erro_permanente(_err_pos_captcha):
+                raise FalhaPermanente(
+                    f"Portal recusou CNPJ {cnpj}: '{_err_pos_captcha}'",
+                    status_coluna_d=_status_erro_permanente(_err_pos_captcha),
+                )
