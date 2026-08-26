@@ -22,18 +22,69 @@ from planilhas_sinteticas import (
     linhas_de_processo,
 )
 
-import main
 from automation import planilha as planilha_mod
 
 LIMPA = {"caminho": None, "wb": None, "sujo": False, "status": None}
 
+# ── CHARACTERIZATION_TARGET_CHANGE (fatias 9B) ───────────────────────────────
+# Primeiro os wrappers de coluna do `main` sairam; agora saiu tambem a SESSAO de
+# planilha do `main` — o dono dela e o app. Estes testes caracterizam a
+# integracao de planilha, entao passam a fala-la diretamente. Nenhuma afirmacao
+# mudou: as mesmas celulas, as mesmas abas, o mesmo arquivo no disco.
 
-# ── CHARACTERIZATION_TARGET_CHANGE (fatia 9B) ────────────────────────────────
-# `main.escrever_coluna_d/e` e `escrever_aba_*` deixaram de existir: a
-# orquestracao passou a falar por metodos SEMANTICOS da sessao, e nao por
-# coluna fisica. Os helpers abaixo entram pelo caminho novo. A celula gravada, a
-# aba de destino, o print e o efeito no disco continuam os mesmos — o que mudou
-# e por onde a chamada passa.
+_SESSAO = planilha_mod.SessaoPlanilha()
+
+
+def _wb_sessao(caminho):
+    if _SESSAO.precisa_abrir(caminho):
+        fechar_planilha()
+        _SESSAO.abrir(caminho)
+    return _SESSAO.wb
+
+
+def salvar_planilha():
+    """O adapter de gravacao do `main`, agora local ao teste que o caracteriza."""
+    if not _SESSAO.precisa_gravar():
+        return False
+    try:
+        _SESSAO.gravar()
+    except Exception as e:                                        # noqa: BLE001
+        print(f"    [!] Falha ao salvar a planilha: {type(e).__name__}: {e}")
+        return False
+    _SESSAO.marcar_gravado()
+    return True
+
+
+def fechar_planilha():
+    salvar_planilha()
+    _SESSAO.descartar()
+
+
+def mapa_status(caminho):
+    _wb_sessao(caminho)
+    return _SESSAO.mapa_status(caminho)
+
+
+def ler_e_ordenar(caminho):
+    return planilha_mod.ler_e_ordenar(caminho)[0]
+
+
+def filtrar_pendentes(df, caminho):
+    from automation.status_portal import status_encerra_linha
+
+    return planilha_mod.linhas_pendentes(df, mapa_status(caminho), status_encerra_linha)
+
+
+def _relatar_status(cnpj, rotulo, valor, gravou):
+    if gravou:
+        print(f"    [✓] Coluna {rotulo} → '{valor}'  (CNPJ {cnpj})")
+        return
+    print(f"    [!] CNPJ {cnpj} não encontrado na planilha para escrita em {rotulo}.")
+
+
+def _registrar(caminho, cnpj, rotulo, valor, metodo):
+    _wb_sessao(caminho)
+    _relatar_status(cnpj, rotulo, valor, getattr(_SESSAO, metodo)(cnpj))
 
 _METODO_D = {
     planilha_mod.STATUS_CONCLUIDO: "registrar_debitos_concluidos",
@@ -43,40 +94,40 @@ _METODO_D = {
 
 
 def escrever_coluna_d(caminho, cnpj, valor):
-    main._registrar(caminho, cnpj, "D", valor, _METODO_D[valor])
+    _registrar(caminho, cnpj, "D", valor, _METODO_D[valor])
 
 
 def escrever_coluna_e(caminho, cnpj, valor):
     assert valor == planilha_mod.STATUS_SEM_PROCESSOS
-    main._registrar(caminho, cnpj, "E", valor, "registrar_sem_processos")
+    _registrar(caminho, cnpj, "E", valor, "registrar_sem_processos")
 
 
 def escrever_aba_debitos(caminho, dados):
-    main._wb_sessao(caminho)
-    main._SESSAO.anexar_debitos(dados)
+    _wb_sessao(caminho)
+    _SESSAO.anexar_debitos(dados)
 
 
 def escrever_aba_processos_fiscais(caminho, dados):
-    main._wb_sessao(caminho)
-    main._SESSAO.anexar_processos(dados)
+    _wb_sessao(caminho)
+    _SESSAO.anexar_processos(dados)
 
 
 def ler_status_cnpj(caminho, cnpj):
-    return main.mapa_status(caminho).get(cnpj, ("", ""))
+    return mapa_status(caminho).get(cnpj, ("", ""))
 
 
 @pytest.fixture(autouse=True)
 def sessao_limpa():
     """A sessao e um dict global de modulo — cada teste comeca e termina limpo."""
-    main._sessao_planilha.update(LIMPA)
+    _SESSAO.estado.update(LIMPA)
     yield
     try:
-        main.fechar_planilha()
+        fechar_planilha()
     except (OSError, KeyError, ValueError):
         # Um teste pode deixar a sessao apontando para algo que nao grava; a
         # limpeza nao pode contaminar o proximo teste por causa disso.
         pass
-    main._sessao_planilha.update(LIMPA)
+    _SESSAO.estado.update(LIMPA)
 
 
 @pytest.fixture
@@ -87,7 +138,7 @@ def planilha(tmp_path):
 # ── A · B · abertura e leitura ────────────────────────────────────────────────
 
 def test_a_workbook_minimo_valido(planilha):
-    df = main.ler_e_ordenar(planilha)
+    df = ler_e_ordenar(planilha)
 
     assert len(df) == 3
     assert list(df.columns) == ["CNPJ", "EMPRESA", "CERTIFICADO", "DCTFWEB", "PROCESSOS"]
@@ -95,7 +146,7 @@ def test_a_workbook_minimo_valido(planilha):
 
 def test_b_a_aba_empresas_e_lida_por_nome(planilha):
     """pd.read_excel com sheet_name='Empresas' — o nome importa, a posicao nao."""
-    df = main.ler_e_ordenar(planilha)
+    df = ler_e_ordenar(planilha)
     assert set(df["CNPJ"]) == {ALFA[0], BETA[0], GAMA[0]}
 
 
@@ -105,7 +156,7 @@ def test_c_aba_empresas_ausente_na_leitura_pandas(tmp_path):
     caminho = str(criar_planilha(tmp_path / "sem_aba.xlsx", aba="Outra"))
 
     with pytest.raises(ValueError, match="Empresas"):
-        main.ler_e_ordenar(caminho)
+        ler_e_ordenar(caminho)
 
 
 def test_c_aba_empresas_ausente_no_acesso_openpyxl(tmp_path):
@@ -113,12 +164,12 @@ def test_c_aba_empresas_ausente_no_acesso_openpyxl(tmp_path):
     caminho = str(criar_planilha(tmp_path / "sem_aba.xlsx", aba="Outra"))
 
     with pytest.raises(KeyError):
-        main.mapa_status(caminho)
+        mapa_status(caminho)
 
 
 def test_c_arquivo_inexistente(tmp_path):
     with pytest.raises(FileNotFoundError):
-        main.mapa_status(str(tmp_path / "nao_existe.xlsx"))
+        mapa_status(str(tmp_path / "nao_existe.xlsx"))
 
 
 # ── D · colunas ───────────────────────────────────────────────────────────────
@@ -135,7 +186,7 @@ def test_d_as_colunas_sao_posicionais_e_nao_nomeadas(tmp_path):
     wb.save(caminho)
     wb.close()
 
-    df = main.ler_e_ordenar(str(caminho))
+    df = ler_e_ordenar(str(caminho))
     assert df.columns[0] == "ORDEM", "o codigo trataria isto como a coluna do CNPJ"
     assert df.columns[2] == "EMPRESA", "e isto como a coluna do certificado"
 
@@ -151,14 +202,14 @@ def test_d_menos_de_cinco_colunas_nao_quebra_a_leitura_de_status(tmp_path):
     wb.save(caminho)
     wb.close()
 
-    assert main.mapa_status(str(caminho))[ALFA[0]] == ("", "")
+    assert mapa_status(str(caminho))[ALFA[0]] == ("", "")
 
 
 # ── E · F · pendentes e concluidos ────────────────────────────────────────────
 
 def test_e_todas_pendentes_quando_d_e_e_estao_vazias(planilha):
-    df = main.ler_e_ordenar(planilha)
-    pendentes, concluidas = main.filtrar_pendentes(df, planilha)
+    df = ler_e_ordenar(planilha)
+    pendentes, concluidas = filtrar_pendentes(df, planilha)
 
     assert len(pendentes) == 3
     assert concluidas == 0
@@ -168,8 +219,8 @@ def test_f_linha_com_d_e_e_preenchidas_e_concluida(tmp_path):
     caminho = str(criar_planilha(
         tmp_path / "meio.xlsx", status={0: ("Concluído", "Sem Processos")}
     ))
-    df = main.ler_e_ordenar(caminho)
-    pendentes, concluidas = main.filtrar_pendentes(df, caminho)
+    df = ler_e_ordenar(caminho)
+    pendentes, concluidas = filtrar_pendentes(df, caminho)
 
     assert concluidas == 1
     assert ALFA[0] not in set(pendentes["CNPJ"])
@@ -178,8 +229,8 @@ def test_f_linha_com_d_e_e_preenchidas_e_concluida(tmp_path):
 def test_f_so_uma_das_duas_colunas_nao_conclui(tmp_path):
     """D preenchida e E vazia continua pendente — fara so Processos Fiscais."""
     caminho = str(criar_planilha(tmp_path / "parcial.xlsx", status={0: ("Concluído", "")}))
-    df = main.ler_e_ordenar(caminho)
-    pendentes, concluidas = main.filtrar_pendentes(df, caminho)
+    df = ler_e_ordenar(caminho)
+    pendentes, concluidas = filtrar_pendentes(df, caminho)
 
     assert concluidas == 0
     assert ALFA[0] in set(pendentes["CNPJ"])
@@ -190,8 +241,8 @@ def test_f_status_terminal_em_d_conclui_sozinho(tmp_path):
     caminho = str(criar_planilha(
         tmp_path / "recusada.xlsx", status={0: ("Procuração sem autorização", "")}
     ))
-    df = main.ler_e_ordenar(caminho)
-    _, concluidas = main.filtrar_pendentes(df, caminho)
+    df = ler_e_ordenar(caminho)
+    _, concluidas = filtrar_pendentes(df, caminho)
 
     assert concluidas == 1
 
@@ -200,7 +251,7 @@ def test_f_status_terminal_em_d_conclui_sozinho(tmp_path):
 
 def test_g_ordena_pelo_certificado_da_coluna_c(planilha):
     """Agrupar por certificado e o que permite um login servir varios CNPJs."""
-    df = main.ler_e_ordenar(planilha)
+    df = ler_e_ordenar(planilha)
 
     assert list(df["CERTIFICADO"]) == ["CERT ALFA", "CERT ALFA", "CERT BETA"]
     assert list(df["CNPJ"])[:2] == [ALFA[0], GAMA[0]], "estavel dentro do grupo"
@@ -210,20 +261,20 @@ def test_g_ordena_pelo_certificado_da_coluna_c(planilha):
 
 def test_h_escrita_da_coluna_d(planilha):
     escrever_coluna_d(planilha, ALFA[0], "Concluído")
-    main.salvar_planilha()
+    salvar_planilha()
 
     assert ler_aba(planilha, "Empresas")[1][3] == "Concluído"
 
 
 def test_i_escrita_da_coluna_e(planilha):
     escrever_coluna_e(planilha, BETA[0], "Sem Processos")
-    main.salvar_planilha()
+    salvar_planilha()
 
     assert ler_aba(planilha, "Empresas")[2][4] == "Sem Processos"
 
 
 def test_h_a_escrita_sincroniza_o_mapa_em_memoria(planilha):
-    main.mapa_status(planilha)
+    mapa_status(planilha)
     escrever_coluna_d(planilha, ALFA[0], "Concluído")
 
     assert ler_status_cnpj(planilha, ALFA[0]) == ("Concluído", "")
@@ -234,7 +285,7 @@ def test_h_o_cnpj_e_localizado_com_qualquer_formatacao(tmp_path):
         tmp_path / "formatado.xlsx", linhas=[("11.111.111/0001-91", "ALFA", "CERT")]
     ))
     escrever_coluna_d(caminho, ALFA[0], "Concluído")
-    main.salvar_planilha()
+    salvar_planilha()
 
     assert ler_aba(caminho, "Empresas")[1][3] == "Concluído"
 
@@ -245,15 +296,15 @@ def test_h_cnpj_ausente_nao_grava_e_apenas_avisa(planilha, capsys):
     escrever_coluna_d(planilha, "99999999000199", "Concluído")
 
     assert "não encontrado na planilha" in capsys.readouterr().out
-    assert main._sessao_planilha["sujo"] is False
-    assert main.salvar_planilha() is False
+    assert _SESSAO.estado["sujo"] is False
+    assert salvar_planilha() is False
 
 
 # ── J · K · L · M · abas de detalhe ───────────────────────────────────────────
 
 def test_j_a_aba_debitos_e_criada_com_cabecalho(planilha):
     escrever_aba_debitos(planilha, linhas_de_debito(ALFA[0]))
-    main.salvar_planilha()
+    salvar_planilha()
 
     aba = ler_aba(planilha, "Débitos")
     assert aba[0][:3] == ["CNPJ", "TIPO", "TRIBUTO"]
@@ -263,7 +314,7 @@ def test_j_a_aba_debitos_e_criada_com_cabecalho(planilha):
 def test_k_append_preserva_o_que_ja_estava(planilha):
     escrever_aba_debitos(planilha, linhas_de_debito(ALFA[0]))
     escrever_aba_debitos(planilha, linhas_de_debito(BETA[0]))
-    main.salvar_planilha()
+    salvar_planilha()
 
     aba = ler_aba(planilha, "Débitos")
     assert len(aba) == 5, "cabecalho + 2 + 2"
@@ -272,7 +323,7 @@ def test_k_append_preserva_o_que_ja_estava(planilha):
 
 def test_l_a_aba_processos_fiscais_e_criada_com_cabecalho(planilha):
     escrever_aba_processos_fiscais(planilha, linhas_de_processo(ALFA[0]))
-    main.salvar_planilha()
+    salvar_planilha()
 
     aba = ler_aba(planilha, "Processos Fiscais")
     assert aba[0][-1] == "Processo de Crédito"
@@ -282,7 +333,7 @@ def test_l_a_aba_processos_fiscais_e_criada_com_cabecalho(planilha):
 def test_m_append_em_processos_fiscais(planilha):
     escrever_aba_processos_fiscais(planilha, linhas_de_processo(ALFA[0], 1))
     escrever_aba_processos_fiscais(planilha, linhas_de_processo(BETA[0], 3))
-    main.salvar_planilha()
+    salvar_planilha()
 
     assert len(ler_aba(planilha, "Processos Fiscais")) == 5
 
@@ -291,17 +342,17 @@ def test_k_lacunas_no_meio_sao_preenchidas_antes_do_fim(planilha):
     """Documentado no codigo, mas surpreendente: linhas apagadas no meio recebem
     dados novos. As linhas de um CNPJ podem acabar espalhadas."""
     escrever_aba_debitos(planilha, linhas_de_debito(ALFA[0], 3))
-    main.salvar_planilha()
+    salvar_planilha()
 
     wb = openpyxl.load_workbook(planilha)
     for celula in wb["Débitos"][3]:
         celula.value = None
     wb.save(planilha)
     wb.close()
-    main.fechar_planilha()
+    fechar_planilha()
 
     escrever_aba_debitos(planilha, linhas_de_debito(BETA[0], 1))
-    main.salvar_planilha()
+    salvar_planilha()
 
     aba = ler_aba(planilha, "Débitos")
     assert aba[2][0] == BETA[0], "entrou na lacuna, nao no fim"
@@ -311,7 +362,7 @@ def test_k_lacunas_no_meio_sao_preenchidas_antes_do_fim(planilha):
 def test_k_linha_ocupada_nunca_e_sobrescrita(planilha):
     escrever_aba_debitos(planilha, linhas_de_debito(ALFA[0], 2))
     escrever_aba_debitos(planilha, linhas_de_debito(BETA[0], 2))
-    main.salvar_planilha()
+    salvar_planilha()
 
     aba = ler_aba(planilha, "Débitos")
     assert len([linha for linha in aba[1:] if linha[0]]) == 4
@@ -320,30 +371,30 @@ def test_k_linha_ocupada_nunca_e_sobrescrita(planilha):
 # ── N · O · salvamento e fechamento ───────────────────────────────────────────
 
 def test_n_salvar_so_grava_quando_ha_alteracao(planilha):
-    main.mapa_status(planilha)
-    assert main.salvar_planilha() is False, "leitura nao suja a sessao"
+    mapa_status(planilha)
+    assert salvar_planilha() is False, "leitura nao suja a sessao"
 
     escrever_coluna_d(planilha, ALFA[0], "Concluído")
-    assert main.salvar_planilha() is True
-    assert main.salvar_planilha() is False, "ja gravou"
+    assert salvar_planilha() is True
+    assert salvar_planilha() is False, "ja gravou"
 
 
 def test_n_o_mesmo_arquivo_e_sobrescrito(tmp_path):
     """Sem copia temporaria e sem escrita atomica: wb.save(caminho_recebido)."""
     caminho = str(criar_planilha(tmp_path / "base.xlsx"))
     escrever_coluna_d(caminho, ALFA[0], "Concluído")
-    main.salvar_planilha()
+    salvar_planilha()
 
     assert [p.name for p in tmp_path.iterdir()] == ["base.xlsx"]
 
 
 def test_o_fechar_salva_o_que_estava_pendente(planilha):
     escrever_coluna_d(planilha, ALFA[0], "Concluído")
-    main.fechar_planilha()
+    fechar_planilha()
 
     assert ler_aba(planilha, "Empresas")[1][3] == "Concluído"
-    assert main._sessao_planilha["wb"] is None
-    assert main._sessao_planilha["status"] is None
+    assert _SESSAO.estado["wb"] is None
+    assert _SESSAO.estado["status"] is None
 
 
 def test_o_trocar_de_planilha_fecha_a_anterior(tmp_path):
@@ -351,10 +402,10 @@ def test_o_trocar_de_planilha_fecha_a_anterior(tmp_path):
     segunda = str(criar_planilha(tmp_path / "b.xlsx"))
 
     escrever_coluna_d(primeira, ALFA[0], "Concluído")
-    main.mapa_status(segunda)
+    mapa_status(segunda)
 
     assert ler_aba(primeira, "Empresas")[1][3] == "Concluído", "salvou ao trocar"
-    assert main._sessao_planilha["caminho"] == segunda
+    assert _SESSAO.estado["caminho"] == segunda
 
 
 # ── P · falha de salvamento ───────────────────────────────────────────────────
@@ -365,11 +416,10 @@ def test_p_falha_ao_salvar_mantem_a_sessao_suja(planilha, monkeypatch):
     def falhar(*a, **k):
         raise PermissionError("arquivo aberto no Excel")
 
-    monkeypatch.setattr(main._sessao_planilha["wb"], "save", falhar)
-    monkeypatch.setattr(main, "registrar_erro", lambda m: None)
+    monkeypatch.setattr(_SESSAO.estado["wb"], "save", falhar)
 
-    assert main.salvar_planilha() is False
-    assert main._sessao_planilha["sujo"] is True, "o dado nao foi descartado"
+    assert salvar_planilha() is False
+    assert _SESSAO.estado["sujo"] is True, "o dado nao foi descartado"
 
 
 # ── Q · R · retomada e reexecucao ─────────────────────────────────────────────
@@ -387,10 +437,10 @@ def test_q_progresso_parcial_sobrevive_e_orienta_a_retomada(tmp_path):
     escrever_coluna_d(caminho, ALFA[0], "Concluído")
     escrever_coluna_e(caminho, ALFA[0], "Sem Processos")
     escrever_coluna_d(caminho, GAMA[0], "Concluído")
-    main.fechar_planilha()   # queda simulada apos o fechamento do CNPJ
+    fechar_planilha()   # queda simulada apos o fechamento do CNPJ
 
-    df = main.ler_e_ordenar(caminho)
-    pendentes, concluidas = main.filtrar_pendentes(df, caminho)
+    df = ler_e_ordenar(caminho)
+    pendentes, concluidas = filtrar_pendentes(df, caminho)
 
     assert concluidas == 1, "ALFA nao volta"
     assert set(pendentes["CNPJ"]) == {GAMA[0], BETA[0]}
@@ -403,8 +453,8 @@ def test_r_reexecucao_completa_nao_reprocessa_nada(tmp_path):
         tmp_path / "pronta.xlsx",
         status={i: ("Concluído", "Sem Processos") for i in range(3)},
     ))
-    df = main.ler_e_ordenar(caminho)
-    pendentes, concluidas = main.filtrar_pendentes(df, caminho)
+    df = ler_e_ordenar(caminho)
+    pendentes, concluidas = filtrar_pendentes(df, caminho)
 
     assert pendentes.empty
     assert concluidas == 3
@@ -421,14 +471,14 @@ def test_r_retomada_duplica_detalhe_se_o_status_nao_tiver_sido_gravado(tmp_path)
     caminho = str(criar_planilha(tmp_path / "base.xlsx"))
 
     escrever_aba_debitos(caminho, linhas_de_debito(ALFA[0], 2))
-    main.fechar_planilha()   # detalhe no disco, coluna D em branco
+    fechar_planilha()   # detalhe no disco, coluna D em branco
 
-    df = main.ler_e_ordenar(caminho)
-    pendentes, _ = main.filtrar_pendentes(df, caminho)
+    df = ler_e_ordenar(caminho)
+    pendentes, _ = filtrar_pendentes(df, caminho)
     assert ALFA[0] in set(pendentes["CNPJ"]), "volta como pendente"
 
     escrever_aba_debitos(caminho, linhas_de_debito(ALFA[0], 2))
-    main.salvar_planilha()
+    salvar_planilha()
 
     assert len(ler_aba(caminho, "Débitos")) == 5, "as mesmas 2 linhas, duas vezes"
 
@@ -444,12 +494,12 @@ def test_r_cnpj_duplicado_na_aba_empresas(tmp_path):
 
     escrever_coluna_d(caminho, ALFA[0], "Concluído")
     escrever_coluna_e(caminho, ALFA[0], "Sem Processos")
-    main.fechar_planilha()
+    fechar_planilha()
 
     empresas = ler_aba(caminho, "Empresas")
     assert empresas[1][3] == "Concluído", "primeira linha marcada"
     assert empresas[2][3] is None, "segunda linha intocada"
 
-    df = main.ler_e_ordenar(caminho)
-    _, concluidas = main.filtrar_pendentes(df, caminho)
+    df = ler_e_ordenar(caminho)
+    _, concluidas = filtrar_pendentes(df, caminho)
     assert concluidas == 0, "o mapa reflete a ULTIMA linha, que esta vazia"

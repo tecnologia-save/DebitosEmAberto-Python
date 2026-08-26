@@ -22,6 +22,8 @@ import textwrap
 
 import pytest
 
+from automation import status_portal
+
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
 
 
@@ -95,25 +97,21 @@ def test_a_forma_feminina_escapa():
 
 def test_anti_bot_e_recusa_sao_conjuntos_diferentes():
     """A pergunta de sucesso da fatia, em forma de teste."""
-    import main
-
     anti_bot = "Detectamos acesso automatizado a este portal"
     recusa = "Procuração vencida"
 
-    assert _ORIGINAL(anti_bot) and not main._erro_permanente(anti_bot)
-    assert main._erro_permanente(recusa) and not _ORIGINAL(recusa)
+    assert _ORIGINAL(anti_bot) and not status_portal.recusa_permanente(anti_bot)
+    assert status_portal.recusa_permanente(recusa) and not _ORIGINAL(recusa)
 
 
 def test_anti_bot_tem_precedencia_sobre_recusa():
     """No original, o `if` do anti-bot vem ANTES do de recusa. Um texto que casa
     nos dois e tratado como anti-bot — logo retentado, e nada e gravado na
     coluna D. Ver ANTIBOT_CLASSIFICATION_POSSIBLE_DEFECT."""
-    import main
-
     ambos = "Acesso bloqueado: procuração vencida"
 
     assert _ORIGINAL(ambos) is True
-    assert main._erro_permanente(ambos) is True, "casa nas duas regras"
+    assert status_portal.recusa_permanente(ambos) is True, "casa nas duas regras"
     # a ordem no codigo decide: anti-bot ganha.
 
 
@@ -137,9 +135,7 @@ def test_defeito_bloqueio_do_contribuinte_vira_anti_bot(mensagem):
 def test_defeito_normalizacao_divergente_entre_as_duas_regras():
     """ANTIBOT_CLASSIFICATION_POSSIBLE_DEFECT: o MESMO texto passa por duas
     regras com normalizacoes diferentes — recusa remove acento, anti-bot nao."""
-    import main
-
-    assert main._erro_permanente("PROCURAÇÃO VENCIDA") is True, "remove acento"
+    assert status_portal.recusa_permanente("PROCURAÇÃO VENCIDA") is True, "remove acento"
     assert _ORIGINAL("BLOQUEÁDO") is False, "nao remove acento"
 
 

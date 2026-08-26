@@ -1,0 +1,475 @@
+"""A aplicacao: coordena as capacidades, e nao implementa nenhuma.
+
+O que este modulo decide
+------------------------
+Quando abrir e fechar a planilha, quando trocar de certificado, quando relogar,
+o que gravar depois de cada desfecho, quando retentar um CNPJ e quando desistir
+dele. Nada mais.
+
+O que ele NAO sabe
+------------------
+Como falar com o portal, como resolver um captcha, como e uma celula de Excel,
+o que e um DataFrame, qual coluna guarda o status, onde fica o perfil do Chrome,
+qual e a chave do Gemini, o que e uma janela de UAC.
+
+RESUMABILITY_CONTRACT
+---------------------
+A ordem nao e estilo. Para cada CNPJ: o DCTFWeb grava o detalhe e SO ENTAO marca
+a coluna; os Processos comecam depois disso; e o disco e tocado uma vez, no
+`finally` da unidade CNPJ. Se os Processos caem, o DCTFWeb ja esta persistido e
+a proxima tentativa — inclusive uma retentativa dentro desta mesma execucao —
+pula o que ja terminou. Trocar isso por "salva tudo no fim" destroi a retomada.
+
+Por isso a retomada e RELIDA a cada tentativa, em vez de viajar em
+`ItemPendente`: o valor muda durante a propria execucao.
+
+Observabilidade
+---------------
+Um unico seam: `emitir_evento`. O app produz FATOS estruturados
+(`EventoOperacional`); quem os transforma em frase — e decide se vao para o
+console, para um arquivo ou para lugar nenhum — e o adapter de apresentacao.
+
+`emitir_evento=None` e valido e a execucao continua funcionalmente identica:
+observabilidade nao e requisito de dominio. Mas nao ha `try/except` em volta do
+emissor — um bug no adapter e um bug, e sobe.
+"""
+from __future__ import annotations
+
+from collections.abc import Callable
+
+from automation import (
+    certificados_windows,
+    consulta_fiscal,
+    domain,
+    eventos,
+    login,
+    maquina,
+    navegador,
+    planilha,
+    representacao,
+    status_portal,
+)
+from automation.boundary import EntradaDebitosEmAberto
+from automation.captcha import ConfigCaptcha
+from automation.eventos import EventoOperacional
+from automation.planilha import SessaoPlanilha
+
+MAX_TENTATIVAS_POR_ITEM = 2
+
+Emissor = Callable[[EventoOperacional], None] | None
+
+
+class _RecusaDoPortal(Exception):
+    """Sinal INTERNO do app: o portal recusou este CNPJ.
+
+    Nao e desfecho viajando como exception — o desfecho ja foi lido de
+    `ResultadoDaRepresentacao` e persistido antes deste ponto. Isto so desvia o
+    controle para o `finally` que grava, e nunca cruza a fronteira publica.
+    """
+
+
+class _RepresentacaoNaoConcluida(Exception):
+    """Sinal INTERNO do app: a representacao nao confirmou. Mesma natureza."""
+
+
+class _Execucao:
+    """O estado vivo de UMA execucao.
+
+    Existe para que o estado de sessao e certificado deixe de ser variavel solta
+    num laco de 140 linhas. Nao e container, nao e contexto, nao e framework: e o
+    escopo da execucao, e morre com ela.
+    """
+
+    def __init__(self, sessao_planilha: SessaoPlanilha, caminho: str,
+                 config_captcha: ConfigCaptcha, emitir: Emissor) -> None:
+        self.planilha = sessao_planilha
+        self.caminho = caminho
+        self.config_captcha = config_captcha
+        self._emitir = emitir
+        self.certificados: dict[str, dict] = {}
+        self.certificado_atual: str | None = None
+        self.policy_confiavel = True
+        self.sessao = None            # login.SessaoReceita | None
+
+    # ── O seam de eventos ─────────────────────────────────────────────────────
+
+    def emitir(self, codigo: str, **campos) -> None:
+        """Emite um fato. Sem emissor, nao faz nada — e so isso."""
+        if self._emitir is None:
+            return
+        self._emitir(EventoOperacional(codigo, **campos))
+
+    # ── Planilha ──────────────────────────────────────────────────────────────
+
+    def salvar(self) -> None:
+        """Grava o que estiver pendente. Uma falha NAO interrompe a execucao.
+
+        A sessao continua suja de proposito: a proxima gravacao tenta de novo. E
+        por isso que o evento sai AGORA e nao no fim — o operador que libera o
+        arquivo no meio da execucao salva o progresso.
+        """
+        if not self.planilha.precisa_gravar():
+            return
+        try:
+            self.planilha.gravar()
+        except (OSError, ValueError, KeyError) as erro:
+            self.emitir(eventos.SALVAMENTO_PLANILHA_FALHOU,
+                        tipo_da_falha=type(erro).__name__)
+            return
+        self.planilha.marcar_gravado()
+
+    def registrar(self, codigo: str, metodo: str, posicao: int, *args) -> None:
+        """Pede uma gravacao semantica e relata o que aconteceu."""
+        if getattr(self.planilha, metodo)(*args):
+            self.emitir(codigo, posicao=posicao)
+            return
+        self.emitir(eventos.LINHA_NAO_ENCONTRADA_NA_PLANILHA, posicao=posicao)
+
+    # ── Certificado e sessao ──────────────────────────────────────────────────
+
+    def encerrar_sessao(self) -> None:
+        """Logout no portal e depois os recursos do navegador, nesta ordem.
+
+        A ordem e a do legado e importa: depois de `encerrar()` nao ha pagina
+        para clicar em 'Sair'.
+        """
+        if self.sessao is None:
+            return
+        navegador.encerrar_no_portal(self.sessao.pagina)
+        self.sessao.encerrar()
+        self.sessao = None
+
+    def buscar_certificado(self, nome: str):
+        return domain.buscar_certificado(
+            nome, certificados_windows.identidades(self.certificados)
+        )
+
+    def chave_do_certificado(self, nome: str) -> str | None:
+        return self.buscar_certificado(nome).chave
+
+    def subject_cn(self, chave: str) -> str:
+        return str(self.certificados[chave].get("subject_cn") or "").strip()
+
+    def serial(self, chave: str) -> str:
+        return str(self.certificados[chave].get("serial") or "").strip()
+
+    def trocar_certificado(self, item) -> bool:
+        """Prepara a maquina para o certificado do item. False se ele nao existe.
+
+        A policy tem de existir ANTES do login: a flag de auto-selecao entra na
+        linha de comando do Chrome.
+        """
+        self.encerrar_sessao()
+        self.certificado_atual = item.certificado
+        self.emitir(eventos.CERTIFICADO_INICIADO, posicao=item.posicao)
+
+        busca = self.buscar_certificado(item.certificado)
+        if not busca.resolvida:
+            # Nao instalado e ambiguo pedem acoes DIFERENTES do operador: instalar
+            # o certificado, ou reescrever o nome na planilha. Um codigo so
+            # esconderia essa diferenca.
+            self.emitir(
+                eventos.CERTIFICADO_AMBIGUO if busca.ambigua
+                else eventos.CERTIFICADO_NAO_INSTALADO,
+                posicao=item.posicao,
+                quantidade=len(busca.ambiguidade) or None,
+            )
+            return False
+        chave = busca.chave
+
+        resultado = maquina.garantir_policy_do_windows(self.subject_cn(chave))
+        self.policy_confiavel = resultado.confiavel
+        if not self.policy_confiavel:
+            self.emitir(eventos.POLICY_NAO_CONFIAVEL)
+        elif not resultado.sera_limpa:
+            # POLICY_STALE_OWNERSHIP_GAP: a policy ja existia e ninguem desta
+            # execucao vai remove-la.
+            self.emitir(eventos.POLICY_PERMANECERA_NA_MAQUINA)
+        return True
+
+    def autenticar(self, item) -> bool:
+        """Garante uma sessao aberta. False se o login nao autenticou.
+
+        O login recebe UMA coisa sobre a policy: se pode confiar na auto-selecao.
+        Quem limpa a policy e de quem e o registro nao sao assunto dele.
+        """
+        if self.sessao is not None:
+            return True
+
+        chave = self.chave_do_certificado(self.certificado_atual)
+        if chave is None:
+            return False
+
+        resultado = maquina.abrir_sessao(
+            login.Certificado(subject_cn=self.subject_cn(chave), serial=self.serial(chave)),
+            self.policy_confiavel,
+            self.config_captcha.api_key,
+        )
+        if not resultado.autenticado:
+            self.emitir(eventos.LOGIN_FALHOU, posicao=item.posicao)
+            return False
+
+        self.sessao = resultado.sessao
+        self.emitir(eventos.LOGIN_CONCLUIDO)
+        return True
+
+
+# ── A unidade de trabalho: um CNPJ ────────────────────────────────────────────
+
+def _avisos_como_eventos(execucao: _Execucao, extracao) -> None:
+    """Os avisos que SO a integracao observa viram fatos da aplicacao.
+
+    A integracao nao conhece eventos: ela devolve avisos no resultado, e a
+    traducao acontece aqui. `ExtracaoFiscal` ja deduplica os avisos, entao um
+    aviso repetido nao vira dois eventos.
+    """
+    for aviso in extracao.avisos:
+        codigo = eventos.AVISO_PARA_CODIGO.get(aviso)
+        if codigo is not None:
+            execucao.emitir(codigo)
+
+
+def _extrair_debitos(execucao: _Execucao, item) -> None:
+    """Consulta o DCTFWeb e grava: detalhe primeiro, coluna depois.
+
+    A ordem e o RESUMABILITY_CONTRACT — se a gravacao do detalhe cair, a coluna
+    nao e marcada e a proxima execucao refaz o DCTFWeb inteiro.
+    """
+    extracao = consulta_fiscal.consultar_dctfweb(execucao.sessao, item.cnpj)
+    _avisos_como_eventos(execucao, extracao)
+    registro = execucao.planilha.registrar_debitos(item.cnpj, list(extracao.linhas))
+    execucao.emitir(eventos.DEBITOS_REGISTRADOS, posicao=item.posicao,
+                    quantidade=len(extracao), paginas=extracao.paginas)
+    if not registro.marcado:
+        execucao.emitir(eventos.LINHA_NAO_ENCONTRADA_NA_PLANILHA, posicao=item.posicao)
+
+
+def _extrair_processos(execucao: _Execucao, item) -> None:
+    """Consulta os Processos Fiscais e grava, na mesma ordem e pelo mesmo motivo."""
+    extracao = consulta_fiscal.consultar_processos(execucao.sessao, item.cnpj)
+    _avisos_como_eventos(execucao, extracao)
+    registro = execucao.planilha.registrar_processos(item.cnpj, list(extracao.linhas))
+    execucao.emitir(eventos.PROCESSOS_REGISTRADOS, posicao=item.posicao,
+                    quantidade=len(extracao), paginas=extracao.paginas)
+    if not registro.marcado:
+        execucao.emitir(eventos.LINHA_NAO_ENCONTRADA_NA_PLANILHA, posicao=item.posicao)
+
+
+def _consultar_situacao(execucao: _Execucao, item, retomada) -> None:
+    """Le a situacao fiscal e grava o que ela determina.
+
+    FISCAL_UNKNOWN_SEMANTICS preservado: situacao nao reconhecida nao grava
+    NADA, entao a linha volta pendente na proxima execucao — e voltara sempre,
+    enquanto o texto nao for reconhecido. Caracterizado, nao corrigido.
+    """
+    cnpj, posicao = item.cnpj, item.posicao
+    situacao = consulta_fiscal.ler_situacao(execucao.sessao)
+
+    if not situacao.reconhecida:
+        execucao.emitir(eventos.SITUACAO_FISCAL_NAO_RECONHECIDA, posicao=posicao)
+        return
+
+    if not situacao.com_pendencia:
+        if not retomada.dctfweb_feito:
+            execucao.registrar(eventos.SEM_DEBITOS_REGISTRADO,
+                               "registrar_sem_debitos", posicao, cnpj)
+        if not retomada.processos_feitos:
+            execucao.registrar(eventos.SEM_PROCESSOS_REGISTRADO,
+                               "registrar_sem_processos", posicao, cnpj)
+        return
+
+    # Nenhum botao de acao encontrado.
+    if not situacao.tem_dctfweb and not situacao.tem_processo:
+        if not retomada.dctfweb_feito:
+            execucao.registrar(eventos.DEBITOS_NAO_COMPENSAVEIS_REGISTRADO,
+                               "registrar_debitos_nao_compensaveis", posicao, cnpj)
+        if not retomada.processos_feitos:
+            execucao.registrar(eventos.SEM_PROCESSOS_REGISTRADO,
+                               "registrar_sem_processos", posicao, cnpj)
+        return
+
+    # ── Divida DCTFWeb ────────────────────────────────────────────────────────
+    if situacao.tem_dctfweb and not retomada.dctfweb_feito:
+        _extrair_debitos(execucao, item)
+    elif retomada.dctfweb_feito:
+        execucao.emitir(eventos.RETOMADA_PULA_DCTFWEB, posicao=posicao)
+
+    # ── Processo Fiscal ───────────────────────────────────────────────────────
+    if situacao.tem_processo and not retomada.processos_feitos:
+        _extrair_processos(execucao, item)
+        if not situacao.tem_dctfweb and not retomada.dctfweb_feito:
+            # So havia Processo Fiscal: o portal nunca ofereceu a divida DCTFWeb,
+            # e a linha nao pode ficar pendente para sempre por causa disso.
+            execucao.registrar(eventos.DEBITOS_REGISTRADOS,
+                               "registrar_debitos_concluidos", posicao, cnpj)
+    elif situacao.tem_processo and retomada.processos_feitos:
+        execucao.emitir(eventos.RETOMADA_PULA_PROCESSOS, posicao=posicao)
+    elif not retomada.processos_feitos:
+        # Nao existe botao de Processo Fiscal.
+        execucao.registrar(eventos.SEM_PROCESSOS_REGISTRADO,
+                           "registrar_sem_processos", posicao, cnpj)
+
+
+def _processar_item(execucao: _Execucao, item) -> None:
+    """Um CNPJ, do inicio ao `finally` que toca o disco.
+
+    A retomada e lida AQUI, a cada tentativa. Numa retentativa do mesmo item ela
+    ja reflete o que a tentativa anterior gravou — e e isso que faz o DCTFWeb
+    concluido nao ser refeito.
+    """
+    retomada = execucao.planilha.retomada(
+        execucao.caminho, item.cnpj, status_portal.status_encerra_linha
+    )
+
+    if retomada.encerrada:
+        execucao.emitir(eventos.ITEM_JA_ENCERRADO, posicao=item.posicao)
+        return
+    if retomada.concluida:
+        execucao.emitir(eventos.ITEM_JA_CONCLUIDO, posicao=item.posicao)
+        return
+
+    if retomada.dctfweb_feito:
+        execucao.emitir(eventos.RETOMADA_PULA_DCTFWEB, posicao=item.posicao)
+    if retomada.processos_feitos:
+        execucao.emitir(eventos.RETOMADA_PULA_PROCESSOS, posicao=item.posicao)
+
+    try:
+        resultado = representacao.representar(
+            execucao.sessao, item.cnpj, execucao.config_captcha
+        )
+
+        if resultado.encerra_a_linha:
+            # O motivo fica na planilha antes de a linha ser abandonada, senao
+            # ela volta em branco na proxima execucao.
+            if resultado.status_coluna_d:
+                execucao.registrar(eventos.RECUSA_REGISTRADA,
+                                   "registrar_recusa_do_portal", item.posicao,
+                                   item.cnpj, resultado.status_coluna_d)
+            raise _RecusaDoPortal
+
+        if not resultado.representado:
+            # Anti-bot esgotado e nao-confirmado sao da SESSAO, nao do CNPJ: a
+            # linha volta, e quem decide isso e o laco.
+            raise _RepresentacaoNaoConcluida
+
+        _consultar_situacao(execucao, item, retomada)
+    finally:
+        # Unico toque no disco por CNPJ, e ele acontece mesmo em falha.
+        execucao.salvar()
+
+
+# ── O laco ────────────────────────────────────────────────────────────────────
+
+def _percorrer(execucao: _Execucao, itens: list) -> None:
+    total = len(itens)
+    tentativas: dict[str, int] = {}
+    i = 0
+
+    while i < len(itens):
+        item = itens[i]
+
+        if not item.utilizavel:
+            execucao.emitir(eventos.ITEM_IGNORADO_SEM_CNPJ,
+                            posicao=item.posicao, total=total)
+            i += 1
+            continue
+
+        if item.certificado != execucao.certificado_atual:
+            execucao.trocar_certificado(item)
+        if execucao.chave_do_certificado(execucao.certificado_atual) is None:
+            i += 1
+            continue
+
+        execucao.emitir(eventos.ITEM_INICIADO, posicao=item.posicao, total=total)
+
+        if not execucao.autenticar(item):
+            i += 1
+            continue
+
+        avancar = True
+        try:
+            _processar_item(execucao, item)
+
+        except _RecusaDoPortal:
+            # A recusa e do CNPJ, nao da sessao: o certificado segue autenticado
+            # e o proximo CNPJ do grupo reaproveita o navegador. So se a sessao
+            # nao voltar a um estado utilizavel e que ela e fechada. A recusa NAO
+            # consome retentativa.
+            execucao.emitir(eventos.CNPJ_RECUSADO_PELO_PORTAL, posicao=item.posicao)
+            if representacao.recuperar_apos_recusa(execucao.sessao.pagina):
+                execucao.emitir(eventos.SESSAO_RECUPERADA_APOS_RECUSA)
+            else:
+                execucao.emitir(eventos.SESSAO_NAO_RECUPERADA_APOS_RECUSA)
+                execucao.encerrar_sessao()
+
+        except Exception:  # noqa: BLE001 — APP_RETRY_CATCHALL_LEGACY, ver abaixo
+            # APP_RETRY_CATCHALL_LEGACY — o laco original capturava `Exception`
+            # aqui, e estreitar isso agora mudaria quais falhas retentam. Um bug
+            # nosso e retentado como se fosse falha do portal; o preco e duas
+            # tentativas e uma linha pulada, nunca dado corrompido. Divida
+            # registrada, nao paga nesta fatia.
+            tentativas[item.cnpj] = tentativas.get(item.cnpj, 0) + 1
+            n = tentativas[item.cnpj]
+            execucao.emitir(eventos.ITEM_FALHOU, posicao=item.posicao,
+                            tentativa=n, maximo=MAX_TENTATIVAS_POR_ITEM)
+            execucao.encerrar_sessao()
+            if n < MAX_TENTATIVAS_POR_ITEM:
+                avancar = False   # mesma linha de novo, com sessao nova
+            else:
+                execucao.emitir(eventos.ITEM_ESGOTOU_RETENTATIVAS, posicao=item.posicao)
+
+        if avancar:
+            i += 1
+
+    execucao.encerrar_sessao()
+
+
+# ── A fronteira publica ───────────────────────────────────────────────────────
+
+def executar(
+    entrada: EntradaDebitosEmAberto,
+    config_captcha: ConfigCaptcha,
+    emitir_evento: Emissor = None,
+) -> None:
+    """Processa a planilha inteira.
+
+    Devolve `None`, como o fluxo legado sempre devolveu: sucesso e a ausencia de
+    exception, e uma falha fatal sobe. Nao ha resumo final porque nenhum
+    consumidor precisa de um — a necessidade operacional e em TEMPO REAL, e quem
+    a atende e `emitir_evento`.
+    """
+    sessao_planilha = SessaoPlanilha()
+    execucao = _Execucao(sessao_planilha, entrada.planilha, config_captcha, emitir_evento)
+
+    try:
+        try:
+            certificados, _ = certificados_windows.descobrir()
+        except certificados_windows.FalhaAoLerCertificados:
+            # Falha externa CONHECIDA. A fatia 5A separou de proposito "nao deu
+            # para ler" de "nao ha certificado instalado": antes as duas
+            # produziam a mesma saida, e o operador era mandado instalar um
+            # certificado que ja estava la.
+            execucao.emitir(eventos.LEITURA_DE_CERTIFICADOS_FALHOU)
+            return
+
+        execucao.certificados = certificados
+        if not certificados:
+            execucao.emitir(eventos.CERTIFICADOS_INDISPONIVEIS)
+            return
+
+        sessao_planilha.abrir(entrada.planilha)
+        df, _ = planilha.ler_e_ordenar(entrada.planilha)
+        df, _ = planilha.linhas_pendentes(
+            df,
+            sessao_planilha.mapa_status(entrada.planilha),
+            status_portal.status_encerra_linha,
+        )
+        itens = planilha.itens_pendentes(df)
+        if not itens:
+            return
+
+        _percorrer(execucao, itens)
+    finally:
+        execucao.encerrar_sessao()
+        execucao.salvar()
+        sessao_planilha.descartar()

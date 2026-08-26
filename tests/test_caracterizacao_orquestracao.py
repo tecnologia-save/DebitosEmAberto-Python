@@ -11,9 +11,16 @@ CNPJs, empresas e certificados ficticios.
 import pandas as pd
 import pytest
 
-import main
+from automation import app, eventos, planilha
+from automation.captcha import ConfigCaptcha
 from automation.login import AUTENTICADO, NAO_AUTENTICADO, ResultadoDoLogin
 from automation.policy_certificado import ATIVADA, JA_ATIVA, ResultadoDaPolicy
+
+# CHARACTERIZATION_TARGET_CHANGE (fatia 9B): o laco saiu de `main.processar` e
+# foi para `automation/app.py`. As situacoes, a ordem dos eventos e as decisoes
+# observaveis sao as mesmas; o que mudou e quem as executa e onde as capacidades
+# sao substituidas — em `automation.app`, e nao mais nos adapters do `main`.
+CONFIG = ConfigCaptcha(api_key="AIzaSy-SENTINELA-FICTICIA-0000")
 
 CERT_ALFA = "ALFA FICTICIA LTDA:11111111000191"
 CERT_BETA = "BETA FICTICIA SA:22222222000172"
@@ -43,11 +50,20 @@ def planilha_com(*linhas):
 
 
 class SessaoFalsa:
-    def __init__(self, marca="s1"):
+    def __init__(self, marca="s1", registro=None):
         self.marca = marca
         self.playwright = f"pw-{marca}"
         self.contexto = f"ctx-{marca}"
         self.pagina = f"page-{marca}"
+        self.registro = registro
+        self.encerrada = False
+
+    def encerrar(self):
+        """Antes o fechamento era `main._fechar_navegador(pw, ctx, page)`; hoje o
+        app pede a SESSAO que se encerre. O evento registrado e o mesmo."""
+        self.encerrada = True
+        if self.registro is not None:
+            self.registro.anotar("fechar", self.pagina)
 
 
 class Registro:
@@ -63,15 +79,48 @@ class Registro:
         return [e for e in self.eventos if e[0] == nome]
 
 
+class PlanilhaInerte:
+    """A planilha nao participa destes testes: aqui se caracteriza a COORDENACAO.
+
+    `retomada` devolve sempre "nada feito" para que todo item siga o fluxo
+    completo — era o que o `processar_cnpj` substituido fazia antes.
+    """
+
+    def __init__(self):
+        self.estado = {}
+
+    def retomada(self, caminho, cnpj, encerra_linha):
+        return planilha.RetomadaDaLinha(False, False, encerrada=False)
+
+    def precisa_gravar(self):
+        return False
+
+    def abrir(self, caminho):
+        pass
+
+    def descartar(self):
+        pass
+
+    def mapa_status(self, caminho):
+        return {}
+
+
+def executar(df, certs, caminho="planilha.xlsx", emissor=None):
+    """Roda o laco sobre os itens do DataFrame, como `main.processar` fazia."""
+    execucao = app._Execucao(PlanilhaInerte(), caminho, CONFIG, emissor)
+    execucao.certificados = certs
+    app._percorrer(execucao, planilha.itens_pendentes(df))
+
+
 @pytest.fixture
 def diario(monkeypatch):
     """Substitui TODAS as capacidades e registra a coordenacao."""
     reg = Registro()
     sessoes = []
 
-    def autenticar(cn, serial, auto_select):
-        reg.anotar("login", cn, auto_select)
-        sessao = SessaoFalsa(f"s{len(sessoes) + 1}")
+    def abrir_sessao(certificado, auto_select, api_key):
+        reg.anotar("login", certificado.subject_cn, auto_select)
+        sessao = SessaoFalsa(f"s{len(sessoes) + 1}", registro=reg)
         sessoes.append(sessao)
         return ResultadoDoLogin(AUTENTICADO, sessao)
 
@@ -79,17 +128,13 @@ def diario(monkeypatch):
         reg.anotar("policy", cn)
         return ResultadoDaPolicy(ATIVADA, tem_guardiao=True)
 
-    def fechar(pw, ctx, page=None):
-        reg.anotar("fechar", page)
-
-    monkeypatch.setattr(main, "_autenticar", autenticar)
-    monkeypatch.setattr(main.cert_windows, "iniciar_guarda_detalhado", policy)
-    monkeypatch.setattr(main, "_fechar_navegador", fechar)
-    monkeypatch.setattr(main, "atualizar_env_certificado", lambda cn: None)
-    monkeypatch.setattr(main.representacao, "recuperar_apos_recusa", lambda page: True)
+    monkeypatch.setattr(app.maquina, "abrir_sessao", abrir_sessao)
+    monkeypatch.setattr(app.maquina, "garantir_policy_do_windows", policy)
+    monkeypatch.setattr(app.navegador, "encerrar_no_portal", lambda page: None)
+    monkeypatch.setattr(app.representacao, "recuperar_apos_recusa", lambda page: True)
     monkeypatch.setattr(
-        main, "processar_cnpj",
-        lambda sessao, cnpj, caminho: reg.anotar("cnpj", cnpj, sessao.marca) or "concluido",
+        app, "_processar_item",
+        lambda execucao, item: reg.anotar("cnpj", item.cnpj, execucao.sessao.marca),
     )
     reg.sessoes = sessoes
     return reg
@@ -98,7 +143,7 @@ def diario(monkeypatch):
 # ── B · caminho feliz ─────────────────────────────────────────────────────────
 
 def test_b_uma_empresa_um_certificado(diario):
-    main.processar(planilha_com((CNPJ_1, "CERT ALFA")), CERTS, "planilha.xlsx")
+    executar(planilha_com((CNPJ_1, "CERT ALFA")), CERTS)
 
     assert [e[0] for e in diario.eventos] == ["policy", "login", "cnpj", "fechar"]
     assert diario.so("login")[0][1] == CERT_ALFA
@@ -106,9 +151,9 @@ def test_b_uma_empresa_um_certificado(diario):
 
 def test_c_varios_cnpjs_do_mesmo_certificado_reaproveitam_a_sessao(diario):
     """O motivo de existir do agrupamento por certificado: UM login serve todos."""
-    main.processar(
+    executar(
         planilha_com((CNPJ_1, "CERT ALFA"), (CNPJ_2, "CERT ALFA"), (CNPJ_3, "CERT ALFA")),
-        CERTS, "planilha.xlsx",
+        CERTS,
     )
 
     assert len(diario.so("login")) == 1
@@ -118,9 +163,9 @@ def test_c_varios_cnpjs_do_mesmo_certificado_reaproveitam_a_sessao(diario):
 
 
 def test_d_troca_de_certificado_fecha_a_sessao_e_refaz_policy_e_login(diario):
-    main.processar(
+    executar(
         planilha_com((CNPJ_1, "CERT ALFA"), (CNPJ_2, "CERT BETA")),
-        CERTS, "planilha.xlsx",
+        CERTS,
     )
 
     nomes = [e[0] for e in diario.eventos]
@@ -132,7 +177,7 @@ def test_d_troca_de_certificado_fecha_a_sessao_e_refaz_policy_e_login(diario):
 def test_s_a_policy_e_garantida_ANTES_do_login(diario):
     """A ordem importa: a flag de auto-selecao entra na linha de comando do
     Chrome, entao a policy tem de existir antes de o navegador subir."""
-    main.processar(planilha_com((CNPJ_1, "CERT ALFA")), CERTS, "planilha.xlsx")
+    executar(planilha_com((CNPJ_1, "CERT ALFA")), CERTS)
 
     nomes = [e[0] for e in diario.eventos]
     assert nomes.index("policy") < nomes.index("login")
@@ -141,11 +186,11 @@ def test_s_a_policy_e_garantida_ANTES_do_login(diario):
 def test_i_o_resultado_da_policy_chega_ao_login_como_um_bool(diario, monkeypatch):
     """ResultadoDaPolicy fica na orquestracao; o login recebe so `auto_select`."""
     monkeypatch.setattr(
-        main.cert_windows, "iniciar_guarda_detalhado",
+        app.maquina, "garantir_policy_do_windows",
         lambda cn: ResultadoDaPolicy(JA_ATIVA, tem_guardiao=False),
     )
 
-    main.processar(planilha_com((CNPJ_1, "CERT ALFA")), CERTS, "planilha.xlsx")
+    executar(planilha_com((CNPJ_1, "CERT ALFA")), CERTS)
 
     assert diario.so("login")[0][2] is True, "JA_ATIVA tambem e confiavel"
 
@@ -155,11 +200,11 @@ def test_i_policy_indisponivel_ainda_tenta_o_login(diario, monkeypatch):
     from automation.policy_certificado import ELEVACAO_RECUSADA
 
     monkeypatch.setattr(
-        main.cert_windows, "iniciar_guarda_detalhado",
+        app.maquina, "garantir_policy_do_windows",
         lambda cn: ResultadoDaPolicy(ELEVACAO_RECUSADA),
     )
 
-    main.processar(planilha_com((CNPJ_1, "CERT ALFA")), CERTS, "planilha.xlsx")
+    executar(planilha_com((CNPJ_1, "CERT ALFA")), CERTS)
 
     assert diario.so("login")[0][2] is False
     assert len(diario.so("cnpj")) == 1, "o CNPJ foi processado assim mesmo"
@@ -169,14 +214,13 @@ def test_i_policy_indisponivel_ainda_tenta_o_login(diario, monkeypatch):
 
 def test_e_login_que_nao_autentica_pula_o_cnpj_sem_fechar_sessao(diario, monkeypatch):
     monkeypatch.setattr(
-        main, "_autenticar",
-        lambda cn, serial, auto: diario.anotar("login", cn, auto) or ResultadoDoLogin(
-            NAO_AUTENTICADO
-        ),
+        app.maquina, "abrir_sessao",
+        lambda cert, auto, chave: diario.anotar("login", cert.subject_cn, auto)
+        or ResultadoDoLogin(NAO_AUTENTICADO),
     )
 
-    main.processar(
-        planilha_com((CNPJ_1, "CERT ALFA"), (CNPJ_2, "CERT ALFA")), CERTS, "planilha.xlsx"
+    executar(
+        planilha_com((CNPJ_1, "CERT ALFA"), (CNPJ_2, "CERT ALFA")), CERTS
     )
 
     assert len(diario.so("login")) == 2, "tenta de novo no proximo CNPJ"
@@ -188,16 +232,17 @@ def test_e_login_que_nao_autentica_pula_o_cnpj_sem_fechar_sessao(diario, monkeyp
 
 def test_g_recusa_do_cnpj_mantem_a_sessao_para_o_proximo(diario, monkeypatch):
     """A recusa e do CNPJ, nao da sessao: o certificado segue autenticado."""
-    def recusar_o_primeiro(sessao, cnpj, caminho):
+    def recusar_o_primeiro(execucao, item):
+        cnpj, sessao = item.cnpj, execucao.sessao
         diario.anotar("cnpj", cnpj, sessao.marca)
         if cnpj == CNPJ_1:
-            raise main.FalhaPermanente("recusado", status_coluna_d="Procuração sem autorização")
+            raise app._RecusaDoPortal
         return "concluido"
 
-    monkeypatch.setattr(main, "processar_cnpj", recusar_o_primeiro)
+    monkeypatch.setattr(app, "_processar_item", recusar_o_primeiro)
 
-    main.processar(
-        planilha_com((CNPJ_1, "CERT ALFA"), (CNPJ_2, "CERT ALFA")), CERTS, "planilha.xlsx"
+    executar(
+        planilha_com((CNPJ_1, "CERT ALFA"), (CNPJ_2, "CERT ALFA")), CERTS
     )
 
     assert len(diario.so("login")) == 1, "nao relogou"
@@ -206,18 +251,19 @@ def test_g_recusa_do_cnpj_mantem_a_sessao_para_o_proximo(diario, monkeypatch):
 
 
 def test_g_recusa_com_sessao_irrecuperavel_fecha_e_reloga(diario, monkeypatch):
-    monkeypatch.setattr(main.representacao, "recuperar_apos_recusa", lambda page: False)
+    monkeypatch.setattr(app.representacao, "recuperar_apos_recusa", lambda page: False)
 
-    def recusar_o_primeiro(sessao, cnpj, caminho):
+    def recusar_o_primeiro(execucao, item):
+        cnpj, sessao = item.cnpj, execucao.sessao
         diario.anotar("cnpj", cnpj, sessao.marca)
         if cnpj == CNPJ_1:
-            raise main.FalhaPermanente("recusado")
+            raise app._RecusaDoPortal
         return "concluido"
 
-    monkeypatch.setattr(main, "processar_cnpj", recusar_o_primeiro)
+    monkeypatch.setattr(app, "_processar_item", recusar_o_primeiro)
 
-    main.processar(
-        planilha_com((CNPJ_1, "CERT ALFA"), (CNPJ_2, "CERT ALFA")), CERTS, "planilha.xlsx"
+    executar(
+        planilha_com((CNPJ_1, "CERT ALFA"), (CNPJ_2, "CERT ALFA")), CERTS
     )
 
     assert len(diario.so("login")) == 2, "relogou"
@@ -226,13 +272,14 @@ def test_g_recusa_com_sessao_irrecuperavel_fecha_e_reloga(diario, monkeypatch):
 
 def test_g_a_recusa_nao_consome_retentativa(diario, monkeypatch):
     """Contraste com o erro tecnico: o CNPJ recusado e pulado, nao retentado."""
-    def sempre_recusa(sessao, cnpj, caminho):
+    def sempre_recusa(execucao, item):
+        cnpj, sessao = item.cnpj, execucao.sessao
         diario.anotar("cnpj", cnpj, sessao.marca)
-        raise main.FalhaPermanente("recusado")
+        raise app._RecusaDoPortal
 
-    monkeypatch.setattr(main, "processar_cnpj", sempre_recusa)
+    monkeypatch.setattr(app, "_processar_item", sempre_recusa)
 
-    main.processar(planilha_com((CNPJ_1, "CERT ALFA")), CERTS, "planilha.xlsx")
+    executar(planilha_com((CNPJ_1, "CERT ALFA")), CERTS)
 
     assert len(diario.so("cnpj")) == 1, "uma vez so"
 
@@ -246,16 +293,17 @@ def test_h_anti_bot_e_nao_confirmado_entram_no_retry_do_cnpj(diario, monkeypatch
 
     tentativas = []
 
-    def falhar_uma_vez(sessao, cnpj, caminho):
+    def falhar_uma_vez(execucao, item):
+        cnpj, sessao = item.cnpj, execucao.sessao
         diario.anotar("cnpj", cnpj, sessao.marca)
         tentativas.append(cnpj)
         if len(tentativas) == 1:
             raise AntiBotEsgotado("esgotou")
         return "concluido"
 
-    monkeypatch.setattr(main, "processar_cnpj", falhar_uma_vez)
+    monkeypatch.setattr(app, "_processar_item", falhar_uma_vez)
 
-    main.processar(planilha_com((CNPJ_1, "CERT ALFA")), CERTS, "planilha.xlsx")
+    executar(planilha_com((CNPJ_1, "CERT ALFA")), CERTS)
 
     assert len(diario.so("cnpj")) == 2, "retentou o MESMO CNPJ"
     assert len(diario.so("login")) == 2, "com sessao nova"
@@ -267,30 +315,30 @@ def test_h_anti_bot_e_nao_confirmado_entram_no_retry_do_cnpj(diario, monkeypatch
 def test_o_erro_tecnico_fecha_a_sessao_e_retenta_o_mesmo_cnpj(diario, monkeypatch):
     tentativas = []
 
-    def falhar_uma_vez(sessao, cnpj, caminho):
-        tentativas.append(cnpj)
-        diario.anotar("cnpj", cnpj, sessao.marca)
+    def falhar_uma_vez(execucao, item):
+        tentativas.append(item.cnpj)
+        diario.anotar("cnpj", item.cnpj, execucao.sessao.marca)
         if len(tentativas) == 1:
             raise RuntimeError("erro tecnico")
-        return "concluido"
 
-    monkeypatch.setattr(main, "processar_cnpj", falhar_uma_vez)
+    monkeypatch.setattr(app, "_processar_item", falhar_uma_vez)
 
-    main.processar(planilha_com((CNPJ_1, "CERT ALFA")), CERTS, "planilha.xlsx")
+    executar(planilha_com((CNPJ_1, "CERT ALFA")), CERTS)
 
     assert tentativas == [CNPJ_1, CNPJ_1]
     assert len(diario.so("fechar")) == 2, "uma no erro, uma no fim"
 
 
 def test_p_esgotar_o_retry_pula_o_cnpj(diario, monkeypatch):
-    def sempre_falha(sessao, cnpj, caminho):
+    def sempre_falha(execucao, item):
+        cnpj, sessao = item.cnpj, execucao.sessao
         diario.anotar("cnpj", cnpj, sessao.marca)
         raise RuntimeError("erro tecnico")
 
-    monkeypatch.setattr(main, "processar_cnpj", sempre_falha)
+    monkeypatch.setattr(app, "_processar_item", sempre_falha)
 
-    main.processar(
-        planilha_com((CNPJ_1, "CERT ALFA"), (CNPJ_2, "CERT ALFA")), CERTS, "planilha.xlsx"
+    executar(
+        planilha_com((CNPJ_1, "CERT ALFA"), (CNPJ_2, "CERT ALFA")), CERTS
     )
 
     por_cnpj = [e[1] for e in diario.so("cnpj")]
@@ -300,14 +348,15 @@ def test_p_esgotar_o_retry_pula_o_cnpj(diario, monkeypatch):
 
 def test_p_o_contador_de_retentativa_e_por_cnpj(diario, monkeypatch):
     """Dois CNPJs falhando nao somam num contador unico."""
-    def sempre_falha(sessao, cnpj, caminho):
+    def sempre_falha(execucao, item):
+        cnpj, sessao = item.cnpj, execucao.sessao
         diario.anotar("cnpj", cnpj, sessao.marca)
         raise RuntimeError("erro tecnico")
 
-    monkeypatch.setattr(main, "processar_cnpj", sempre_falha)
+    monkeypatch.setattr(app, "_processar_item", sempre_falha)
 
-    main.processar(
-        planilha_com((CNPJ_1, "CERT ALFA"), (CNPJ_2, "CERT ALFA")), CERTS, "planilha.xlsx"
+    executar(
+        planilha_com((CNPJ_1, "CERT ALFA"), (CNPJ_2, "CERT ALFA")), CERTS
     )
 
     por_cnpj = [e[1] for e in diario.so("cnpj")]
@@ -317,14 +366,18 @@ def test_p_o_contador_de_retentativa_e_por_cnpj(diario, monkeypatch):
 # ── Certificado ausente ───────────────────────────────────────────────────────
 
 def test_certificado_nao_instalado_pula_as_linhas_sem_login(diario, capsys):
-    main.processar(planilha_com((CNPJ_1, "CERT INEXISTENTE")), CERTS, "planilha.xlsx")
+    """O aviso era um `print`; hoje e um EVENTO — e o app nao imprime."""
+    codigos = []
+    executar(planilha_com((CNPJ_1, "CERT INEXISTENTE")), CERTS,
+             emissor=lambda e: codigos.append(e.codigo))
 
     assert diario.eventos == [], "nem policy, nem login, nem CNPJ"
-    assert "não está instalado" in capsys.readouterr().out
+    assert eventos.CERTIFICADO_NAO_INSTALADO in codigos
+    assert capsys.readouterr().out == ""
 
 
 def test_cnpj_invalido_e_ignorado_antes_de_qualquer_navegacao(diario):
-    main.processar(planilha_com(("nan", "CERT ALFA")), CERTS, "planilha.xlsx")
+    executar(planilha_com(("nan", "CERT ALFA")), CERTS)
 
     assert diario.so("cnpj") == []
 
@@ -332,44 +385,91 @@ def test_cnpj_invalido_e_ignorado_antes_de_qualquer_navegacao(diario):
 # ── A · R · nada a fazer e cleanup ────────────────────────────────────────────
 
 def test_a_planilha_sem_linhas_nao_faz_nada(diario):
-    main.processar(planilha_com(), CERTS, "planilha.xlsx")
+    executar(planilha_com(), CERTS)
 
     assert diario.eventos == []
 
 
-def test_a_na_pratica_main_nem_chega_a_chamar_processar_sem_pendencias():
-    """O caminho real do "nada a fazer": `main()` fecha a planilha e retorna
-    ANTES de descobrir certificado, policy ou login."""
-    import pathlib
+def test_a_na_pratica_o_app_nem_chega_a_logar_sem_pendencias():
+    """O caminho real do "nada a fazer": sem itens pendentes o app retorna ANTES
+    da policy e do login, e a planilha e fechada no `finally`."""
+    import inspect
 
-    fonte = (pathlib.Path(main.__file__)).read_text(encoding="utf-8-sig")
-    trecho = fonte[fonte.index("if df.empty:"):]
-    trecho = trecho[: trecho.index("resumo = planilha.certificados_dos_itens")]
+    fonte = inspect.getsource(app.executar)
+    trecho = fonte[fonte.index("itens = planilha.itens_pendentes"):]
 
-    assert "fechar_planilha()" in trecho
-    assert "return" in trecho
+    assert "if not itens:" in trecho
+    assert trecho.index("return") < trecho.index("_percorrer")
+    assert "descartar()" in trecho
 
 
 def test_r_o_cleanup_final_fecha_a_sessao_que_sobrou(diario):
-    main.processar(planilha_com((CNPJ_1, "CERT ALFA")), CERTS, "planilha.xlsx")
+    executar(planilha_com((CNPJ_1, "CERT ALFA")), CERTS)
 
     assert diario.so("fechar")[-1] == ("fechar", "page-s1")
 
 
 def test_r_sem_sessao_aberta_nao_ha_cleanup(diario, monkeypatch):
     monkeypatch.setattr(
-        main, "_autenticar", lambda cn, s, a: ResultadoDoLogin(NAO_AUTENTICADO)
+        app.maquina, "abrir_sessao", lambda c, a, k: ResultadoDoLogin(NAO_AUTENTICADO)
     )
 
-    main.processar(planilha_com((CNPJ_1, "CERT ALFA")), CERTS, "planilha.xlsx")
+    executar(planilha_com((CNPJ_1, "CERT ALFA")), CERTS)
 
     assert diario.so("fechar") == []
 
 
 # ── K · L · M · N · a tabela de persistencia ─────────────────────────────────
 
+class PlanilhaEspia(PlanilhaInerte):
+    """As primitivas de celula e aba viram espioes; a camada semantica e a real."""
+
+    def __init__(self, registro, retomada=None):
+        super().__init__()
+        self.registro = registro
+        self._retomada = retomada or planilha.RetomadaDaLinha(False, False, False)
+        self._rotulos = {planilha.COL_STATUS_DCTFWEB: "D",
+                         planilha.COL_STATUS_PROCESSOS: "E"}
+
+    def retomada(self, caminho, cnpj, encerra_linha):
+        return self._retomada
+
+    def escrever_status(self, cnpj, valor, coluna):
+        self.registro.anotar(self._rotulos[coluna], valor)
+        return True
+
+    def anexar_debitos(self, dados):
+        return self._anexar("aba_debitos", dados)
+
+    def anexar_processos(self, dados):
+        return self._anexar("aba_processos", dados)
+
+    def _anexar(self, rotulo, dados):
+        self.registro.anotar(rotulo, len(dados))
+        return list(range(2, 2 + len(dados)))
+
+    def precisa_gravar(self):
+        return True
+
+    def gravar(self):
+        self.registro.anotar("gravar")
+
+    def marcar_gravado(self):
+        pass
+
+    registrar_debitos = planilha.SessaoPlanilha.registrar_debitos
+    registrar_processos = planilha.SessaoPlanilha.registrar_processos
+    registrar_sem_debitos = planilha.SessaoPlanilha.registrar_sem_debitos
+    registrar_sem_processos = planilha.SessaoPlanilha.registrar_sem_processos
+    registrar_debitos_concluidos = planilha.SessaoPlanilha.registrar_debitos_concluidos
+    registrar_recusa_do_portal = planilha.SessaoPlanilha.registrar_recusa_do_portal
+    registrar_debitos_nao_compensaveis = (
+        planilha.SessaoPlanilha.registrar_debitos_nao_compensaveis
+    )
+
+
 @pytest.fixture
-def escritas(monkeypatch):
+def escritas():
     """Registra exatamente o que a orquestracao manda gravar, e quando.
 
     CHARACTERIZATION_TARGET_CHANGE (fatia 9B): a substituicao desceu dos
@@ -377,24 +477,36 @@ def escritas(monkeypatch):
     planilha. As gravacoes registradas, os valores e a ordem sao os mesmos; a
     diferenca e que agora o caminho semantico real e exercitado no meio.
     """
-    from automation import planilha as _planilha
+    return Registro()
 
-    reg = Registro()
-    rotulos = {_planilha.COL_STATUS_DCTFWEB: "D", _planilha.COL_STATUS_PROCESSOS: "E"}
 
-    def anexar(rotulo):
-        def anexar_dados(dados):
-            reg.anotar(rotulo, len(dados))
-            return list(range(2, 2 + len(dados)))
-        return anexar_dados
+def _execucao(escritas, retomada=None, sessao=None):
+    execucao = app._Execucao(PlanilhaEspia(escritas, retomada), "p.xlsx", CONFIG, None)
+    execucao.sessao = sessao or SessaoFalsa()
+    return execucao
 
-    monkeypatch.setattr(main, "_wb_sessao", lambda c: None)
-    monkeypatch.setattr(main._SESSAO, "escrever_status",
-                        lambda cnpj, v, coluna: reg.anotar(rotulos[coluna], v) or True)
-    monkeypatch.setattr(main._SESSAO, "anexar_debitos", anexar("aba_debitos"))
-    monkeypatch.setattr(main._SESSAO, "anexar_processos", anexar("aba_processos"))
-    monkeypatch.setattr(main, "salvar_planilha", lambda: reg.anotar("gravar"))
-    return reg
+
+def verificar_pendencias(sessao, cnpj, caminho, escritas,
+                         skip_dctfweb=False, skip_processo=False):
+    """O antigo `main.verificar_pendencias`. Os `skip_*` nascem da retomada."""
+    execucao = _execucao(escritas, sessao=sessao)
+    app._consultar_situacao(
+        execucao,
+        planilha.ItemPendente(posicao=0, cnpj=cnpj, certificado="CERT"),
+        planilha.RetomadaDaLinha(skip_dctfweb, skip_processo, encerrada=False),
+    )
+
+
+def processar_item(sessao, cnpj, escritas, retomada=None):
+    """O antigo `main.processar_cnpj`. Devolve os codigos emitidos."""
+    codigos = []
+    execucao = app._Execucao(PlanilhaEspia(escritas, retomada), "p.xlsx", CONFIG,
+                             lambda e: codigos.append(e.codigo))
+    execucao.sessao = sessao
+    app._processar_item(
+        execucao, planilha.ItemPendente(posicao=0, cnpj=cnpj, certificado="CERT")
+    )
+    return codigos
 
 
 def _retomada(val_d, val_e):
@@ -424,40 +536,42 @@ def extracao(n):
 def test_k_sem_pendencia_grava_os_dois_status_e_nao_abre_aba(escritas, monkeypatch):
     from automation.consulta_fiscal import SEM_PENDENCIA
 
-    monkeypatch.setattr(main.consulta_fiscal, "ler_situacao",
+    monkeypatch.setattr(app.consulta_fiscal, "ler_situacao",
                         lambda sessao: situacao(situacao=SEM_PENDENCIA))
 
-    assert main.verificar_pendencias(SessaoFalsa(), CNPJ_1, "p.xlsx") == "sem_pendencia"
+    verificar_pendencias(SessaoFalsa(), CNPJ_1, "p.xlsx", escritas)
+
     assert escritas.eventos == [("D", "Sem débitos"), ("E", "Sem Processos")]
 
 
 def test_k_sem_botao_de_acao_e_nao_compensavel(escritas, monkeypatch):
-    monkeypatch.setattr(main.consulta_fiscal, "ler_situacao",
+    monkeypatch.setattr(app.consulta_fiscal, "ler_situacao",
                         lambda sessao: situacao(tem_dctfweb=False, tem_processo=False))
 
-    assert main.verificar_pendencias(SessaoFalsa(), CNPJ_1, "p.xlsx") == "nao_compensavel"
+    verificar_pendencias(SessaoFalsa(), CNPJ_1, "p.xlsx", escritas)
+
     assert escritas.eventos == [("D", "Débitos não compensáveis"), ("E", "Sem Processos")]
 
 
 def test_k_dctfweb_grava_aba_e_depois_a_coluna_d(escritas, monkeypatch):
     """A ORDEM e o contrato: detalhe primeiro, status depois."""
-    monkeypatch.setattr(main.consulta_fiscal, "ler_situacao",
+    monkeypatch.setattr(app.consulta_fiscal, "ler_situacao",
                         lambda sessao: situacao(tem_dctfweb=True, tem_processo=False))
-    monkeypatch.setattr(main.consulta_fiscal, "consultar_dctfweb",
+    monkeypatch.setattr(app.consulta_fiscal, "consultar_dctfweb",
                         lambda sessao, cnpj: extracao(3))
 
-    main.verificar_pendencias(SessaoFalsa(), CNPJ_1, "p.xlsx")
+    verificar_pendencias(SessaoFalsa(), CNPJ_1, "p.xlsx", escritas)
 
     assert escritas.eventos[:2] == [("aba_debitos", 3), ("D", "Concluído")]
 
 
 def test_l_processos_grava_aba_e_depois_a_coluna_e(escritas, monkeypatch):
-    monkeypatch.setattr(main.consulta_fiscal, "ler_situacao",
+    monkeypatch.setattr(app.consulta_fiscal, "ler_situacao",
                         lambda sessao: situacao(tem_dctfweb=False, tem_processo=True))
-    monkeypatch.setattr(main.consulta_fiscal, "consultar_processos",
+    monkeypatch.setattr(app.consulta_fiscal, "consultar_processos",
                         lambda sessao, cnpj: extracao(2))
 
-    main.verificar_pendencias(SessaoFalsa(), CNPJ_1, "p.xlsx")
+    verificar_pendencias(SessaoFalsa(), CNPJ_1, "p.xlsx", escritas)
 
     assert ("aba_processos", 2) in escritas.eventos
     assert ("E", "Concluído") in escritas.eventos
@@ -472,18 +586,18 @@ def test_m_resumability_o_d_e_gravado_ANTES_de_os_processos_comecarem(
     Se os Processos caem depois de o DCTFWeb terminar, a coluna D ja foi
     escrita — e a proxima execucao pula o DCTFWeb.
     """
-    monkeypatch.setattr(main.consulta_fiscal, "ler_situacao",
+    monkeypatch.setattr(app.consulta_fiscal, "ler_situacao",
                         lambda sessao: situacao(tem_dctfweb=True, tem_processo=True))
-    monkeypatch.setattr(main.consulta_fiscal, "consultar_dctfweb",
+    monkeypatch.setattr(app.consulta_fiscal, "consultar_dctfweb",
                         lambda sessao, cnpj: extracao(1))
 
     def processos_caem(sessao, cnpj):
         raise RuntimeError("portal caiu no meio dos processos")
 
-    monkeypatch.setattr(main.consulta_fiscal, "consultar_processos", processos_caem)
+    monkeypatch.setattr(app.consulta_fiscal, "consultar_processos", processos_caem)
 
     with pytest.raises(RuntimeError):
-        main.verificar_pendencias(SessaoFalsa(), CNPJ_1, "p.xlsx")
+        verificar_pendencias(SessaoFalsa(), CNPJ_1, "p.xlsx", escritas)
 
     assert escritas.eventos == [("aba_debitos", 1), ("D", "Concluído")]
     assert not escritas.so("E"), "a coluna E nao foi tocada"
@@ -491,31 +605,30 @@ def test_m_resumability_o_d_e_gravado_ANTES_de_os_processos_comecarem(
 
 def test_m_o_gravar_acontece_uma_vez_por_cnpj_no_finally(escritas, monkeypatch):
     """Unico toque no disco por CNPJ, e ele acontece mesmo em falha."""
-    monkeypatch.setattr(main, "retomada_da_linha", lambda c, cnpj: _retomada("", ""))
     monkeypatch.setattr(
-        main.representacao, "representar",
-        lambda *a, **k: main.representacao.ResultadoDaRepresentacao(
-            main.representacao.REPRESENTADO
+        app.representacao, "representar",
+        lambda *a, **k: app.representacao.ResultadoDaRepresentacao(
+            app.representacao.REPRESENTADO
         ),
     )
-    monkeypatch.setattr(main, "verificar_pendencias",
+    monkeypatch.setattr(app, "_consultar_situacao",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("caiu")))
 
     with pytest.raises(RuntimeError):
-        main.processar_cnpj(SessaoFalsa(), CNPJ_1, "p.xlsx")
+        processar_item(SessaoFalsa(), CNPJ_1, escritas)
 
     assert escritas.so("gravar") == [("gravar",)]
 
 
 def test_l_skip_d_pula_o_dctfweb_e_so_faz_processos(escritas, monkeypatch):
-    monkeypatch.setattr(main.consulta_fiscal, "ler_situacao",
+    monkeypatch.setattr(app.consulta_fiscal, "ler_situacao",
                         lambda sessao: situacao(tem_dctfweb=True, tem_processo=True))
-    monkeypatch.setattr(main.consulta_fiscal, "consultar_dctfweb",
+    monkeypatch.setattr(app.consulta_fiscal, "consultar_dctfweb",
                         lambda *a, **k: pytest.fail("nao devia consultar DCTFWeb"))
-    monkeypatch.setattr(main.consulta_fiscal, "consultar_processos",
+    monkeypatch.setattr(app.consulta_fiscal, "consultar_processos",
                         lambda sessao, cnpj: extracao(1))
 
-    main.verificar_pendencias(SessaoFalsa(), CNPJ_1, "p.xlsx", skip_dctfweb=True)
+    verificar_pendencias(SessaoFalsa(), CNPJ_1, "p.xlsx", escritas, skip_dctfweb=True)
 
     assert not escritas.so("aba_debitos")
     assert ("E", "Concluído") in escritas.eventos
@@ -523,14 +636,14 @@ def test_l_skip_d_pula_o_dctfweb_e_so_faz_processos(escritas, monkeypatch):
 
 
 def test_l_skip_e_pula_os_processos(escritas, monkeypatch):
-    monkeypatch.setattr(main.consulta_fiscal, "ler_situacao",
+    monkeypatch.setattr(app.consulta_fiscal, "ler_situacao",
                         lambda sessao: situacao(tem_dctfweb=True, tem_processo=True))
-    monkeypatch.setattr(main.consulta_fiscal, "consultar_dctfweb",
+    monkeypatch.setattr(app.consulta_fiscal, "consultar_dctfweb",
                         lambda sessao, cnpj: extracao(2))
-    monkeypatch.setattr(main.consulta_fiscal, "consultar_processos",
+    monkeypatch.setattr(app.consulta_fiscal, "consultar_processos",
                         lambda *a, **k: pytest.fail("nao devia consultar Processos"))
 
-    main.verificar_pendencias(SessaoFalsa(), CNPJ_1, "p.xlsx", skip_processo=True)
+    verificar_pendencias(SessaoFalsa(), CNPJ_1, "p.xlsx", escritas, skip_processo=True)
 
     assert ("D", "Concluído") in escritas.eventos
     assert not escritas.so("E")
@@ -544,31 +657,32 @@ def test_q_situacao_nao_reconhecida_nao_grava_nada(escritas, monkeypatch):
     reconhecido. Caracterizado, nao corrigido."""
     from automation.consulta_fiscal import NAO_RECONHECIDA
 
-    monkeypatch.setattr(main.consulta_fiscal, "ler_situacao",
+    monkeypatch.setattr(app.consulta_fiscal, "ler_situacao",
                         lambda sessao: situacao(situacao=NAO_RECONHECIDA))
 
-    assert main.verificar_pendencias(SessaoFalsa(), CNPJ_1, "p.xlsx") == "desconhecido"
-    assert escritas.eventos == []
+    verificar_pendencias(SessaoFalsa(), CNPJ_1, "p.xlsx", escritas)
+
+    assert escritas.eventos == [], "nada gravado — a linha volta"
 
 
 # ── Skip pela leitura da planilha ────────────────────────────────────────────
 
 def test_l_linha_ja_concluida_nao_navega(escritas, monkeypatch):
-    monkeypatch.setattr(main, "retomada_da_linha",
-                        lambda c, cnpj: _retomada("Concluído", "Concluído"))
-    monkeypatch.setattr(main.representacao, "representar",
+    monkeypatch.setattr(app.representacao, "representar",
                         lambda *a, **k: pytest.fail("nao devia representar"))
 
-    assert main.processar_cnpj(SessaoFalsa(), CNPJ_1, "p.xlsx") == "ja_processado"
+    codigos = processar_item(SessaoFalsa(), CNPJ_1, escritas,
+                             _retomada("Concluído", "Concluído"))
+
+    assert codigos == [eventos.ITEM_JA_CONCLUIDO]
     assert escritas.eventos == [], "nem gravar"
 
 
 def test_l_status_terminal_em_d_encerra_sem_navegar(escritas, monkeypatch):
-    monkeypatch.setattr(
-        main, "retomada_da_linha",
-        lambda c, cnpj: _retomada("Procuração sem autorização", ""),
-    )
-    monkeypatch.setattr(main.representacao, "representar",
+    monkeypatch.setattr(app.representacao, "representar",
                         lambda *a, **k: pytest.fail("nao devia representar"))
 
-    assert main.processar_cnpj(SessaoFalsa(), CNPJ_1, "p.xlsx") == "ja_processado"
+    codigos = processar_item(SessaoFalsa(), CNPJ_1, escritas,
+                             _retomada("Procuração sem autorização", ""))
+
+    assert codigos == [eventos.ITEM_JA_ENCERRADO]

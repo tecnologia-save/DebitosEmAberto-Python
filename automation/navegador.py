@@ -61,3 +61,41 @@ def aguardar_rede(page, timeout: int = TIMEOUT_REDE_MS) -> str | None:
     except ErroDoNavegador:
         return REDE_NAO_ESTABILIZOU
     return None
+
+
+def encerrar_no_portal(page) -> None:
+    """Faz logout no portal antes de o navegador ser descartado.
+
+    TRANSITIONAL_SESSION_LIFECYCLE. Vinha de `_fazer_logout` em `main.py`, e
+    NAO foi para `SessaoReceita`: encerrar a sessao no portal e encerrar os
+    recursos do navegador sao coisas diferentes, e juntar as duas e decisao da
+    fatia que reabrir o login. Esta aqui, e nao no app, porque e navegacao —
+    seletor de portal nao sobe para a aplicacao.
+
+    Sequencia preservada do legado:
+        1. avatar (#avatar-dropdown-trigger) abre o menu;
+        2. 'Sair' (#btn-sair);
+        3. confirmacao no botao primario.
+
+    BEHAVIOR_CHANGE declarada: o legado engolia QUALQUER exception aqui. Passa a
+    engolir so falha do navegador — pagina ja fechada, sessao morta, timeout. Um
+    bug nosso sobe, como em todo o resto de `automation/`.
+    """
+    try:
+        avatar = page.locator("#avatar-dropdown-trigger").first
+        avatar.wait_for(state="visible", timeout=8_000)
+        avatar.click()
+        page.wait_for_timeout(600)
+
+        botao_sair = page.locator("#btn-sair").first
+        botao_sair.wait_for(state="visible", timeout=5_000)
+        botao_sair.click()
+        page.wait_for_timeout(600)
+
+        confirmar = page.locator("button.br-button.is-primary").first
+        confirmar.wait_for(state="visible", timeout=5_000)
+        confirmar.click()
+        page.wait_for_timeout(1_500)
+    except ErroDoNavegador:
+        # A sessao esta sendo descartada de qualquer forma; nao ha o que decidir.
+        return

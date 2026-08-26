@@ -17,15 +17,22 @@ import pytest
 from casos_certificado import CERTS, CERTS_UM_SO
 
 import main
+from automation import certificados_windows, eventos
+from automation.domain import buscar_certificado
 
 
 def resolver(nome, certs=CERTS):
-    """Devolve (identidade_do_certificado, saida_impressa). None se nao resolveu."""
-    saida = io.StringIO()
-    with redirect_stdout(saida):
-        chave = main._buscar_certificado(nome, certs)
-    identidade = certs[chave]["subject_cn"] if chave else None
-    return identidade, " ".join(saida.getvalue().split())
+    """Devolve (identidade_do_certificado, resultado da regra).
+
+    CHARACTERIZATION_TARGET_CHANGE (fatia 9B): `main._buscar_certificado` era um
+    adapter que chamava a regra e IMPRIMIA o criterio e os candidatos ambiguos.
+    Ele saiu com a orquestracao. As mesmas afirmacoes passam a ser feitas sobre o
+    RESULTADO — que ja carregava tudo o que o print carregava, e de forma
+    estruturada.
+    """
+    resultado = buscar_certificado(nome, certificados_windows.identidades(certs))
+    identidade = certs[resultado.chave]["subject_cn"] if resultado.resolvida else None
+    return identidade, resultado
 
 
 ALVORADA = "ALVORADA COMERCIO:00000000000001"
@@ -54,8 +61,8 @@ def test_os_seis_criterios(criterio, nome, esperado):
 
 def test_o_criterio_usado_e_reportado():
     """A mensagem diz QUAL criterio resolveu — util quando o match surpreende."""
-    _, saida = resolver("Montenegro")
-    assert "palavras inteiras" in saida
+    _, r = resolver("Montenegro")
+    assert "palavras inteiras" in r.criterio
 
 
 # ── Normalizacao ──────────────────────────────────────────────────────────────
@@ -114,15 +121,18 @@ def test_lista_de_certificados_vazia():
 
 def test_ambiguidade_recusa_em_vez_de_escolher():
     """'D' e o inicio de dois certificados diferentes. A regra NAO escolhe."""
-    identidade, saida = resolver("D")
+    identidade, r = resolver("D")
     assert identidade is None
-    assert "ambíguo" in saida
+    assert r.ambigua is True
 
 
 def test_a_mensagem_de_ambiguidade_lista_os_candidatos():
-    _, saida = resolver("D")
-    assert "corresponde a 2" in saida
-    assert "Escreva na planilha um nome que identifique só um deles" in saida
+    _, r = resolver("D")
+    assert len(r.ambiguidade) == 2
+    assert "identifique só um deles" in main._frase(
+        eventos.EventoOperacional(eventos.CERTIFICADO_AMBIGUO, posicao=0,
+                                  quantidade=len(r.ambiguidade))
+    ), "a orientação ao operador sobreviveu, agora no adapter de apresentação"
 
 
 def test_o_mesmo_certificado_em_varias_chaves_nao_e_ambiguidade():
@@ -150,11 +160,11 @@ def test_ambiguidade_no_criterio_aproximado_corrigida_na_fatia_1_1():
     O que ele afirma DEPOIS: a duvida levantada pelo criterio mais preciso vale, e
     a regra recusa em vez de escolher.
     """
-    identidade, saida = resolver("ASSESSORIA")
+    identidade, r = resolver("ASSESSORIA")
 
     assert identidade is None, "recusar e o comportamento seguro"
-    assert "ambíguo" in saida
-    assert "corresponde a 2" in saida
+    assert r.ambigua is True
+    assert len(r.ambiguidade) == 2
 
 
 def test_defeito_nome_com_ponto_e_truncado():
@@ -181,18 +191,24 @@ def test_a_chave_devolvida_depende_da_ordem():
     chaves_do_bernardo = {k for k, v in CERTS.items() if v["subject_cn"] == BERNARDO}
     assert len(chaves_do_bernardo) >= 2
 
+    _, r = resolver("Bernardo")
+    assert r.chave in chaves_do_bernardo
+
+
+def test_o_defeito_do_diagnostico_que_imprimia_a_identidade_sumiu():
+    """CERTIFICATE_MATCH_POSSIBLE_DEFECT #4 — RESOLVIDO pela migracao da 9B.
+
+    O adapter antigo imprimia "Certificado 'X' resolvido para 'Y'", e o nome de
+    um certificado carrega o nome da empresa ou da pessoa. Ele nao existe mais:
+    o app le o RESULTADO, e o evento que chega ao console leva posicao e
+    quantidade — nunca identidade.
+    """
     saida = io.StringIO()
     with redirect_stdout(saida):
-        chave = main._buscar_certificado("Bernardo", CERTS)
-    assert chave in chaves_do_bernardo
+        _, r = resolver("Bernardo")
 
+    assert saida.getvalue() == "", "a regra nao imprime, e ninguem imprime por ela"
+    assert r.chave is not None or r.ambigua
 
-def test_defeito_a_regra_imprime():
-    """CERTIFICATE_MATCH_POSSIBLE_DEFECT (menor): a regra escreve em stdout.
-
-    O nome do certificado carrega o nome da empresa ou da pessoa. Uma regra pura
-    nao deveria decidir o que vai para o log.
-    """
-    _, saida = resolver("Bernardo")
-    assert saida != "", "hoje a regra imprime"
-    assert "BERNARDO" in saida.upper()
+    evento = eventos.EventoOperacional(eventos.CERTIFICADO_AMBIGUO, posicao=0, quantidade=2)
+    assert "BERNARDO" not in (main._frase(evento) or "").upper()

@@ -30,7 +30,13 @@ CAPTCHA = "captcha.py"
 FISCAL = "consulta_fiscal.py"
 NAVEGADOR = "navegador.py"
 REPRESENTACAO = "representacao.py"
-INTEGRACOES = {PLANILHA, CERTIFICADOS, CAPTCHA, FISCAL, NAVEGADOR, REPRESENTACAO}
+# `maquina.py` e a FIACAO legada (fatia 9B): perfil do Chrome, .env que o fork
+# le, registro do Windows. Ela existe exatamente para que login.py e
+# policy_certificado.py continuem nucleo — este teste recusou a primeira
+# tentativa de colocar a fiacao dentro delas, e estava certo.
+MAQUINA = "maquina.py"
+INTEGRACOES = {PLANILHA, CERTIFICADOS, CAPTCHA, FISCAL, NAVEGADOR, REPRESENTACAO,
+               MAQUINA}
 NUCLEO = [m for m in AUTOMATION if m.name not in INTEGRACOES]
 
 # Nada disso pode aparecer no nucleo.
@@ -401,10 +407,15 @@ def test_a_sessao_nao_vaza_para_o_nucleo():
             assert proibido not in codigo, f"{modulo} conhece {proibido}."
 
 
-def test_main_nao_manipula_mais_a_tupla_do_navegador():
+def test_ninguem_manipula_mais_a_tupla_do_navegador():
+    """CHARACTERIZATION_TARGET_CHANGE (9B): o `main` nao toca mais em sessao —
+    quem a possui e o app. A afirmacao vale onde o codigo esta."""
     fonte = (RAIZ / "main.py").read_text(encoding="utf-8-sig")
-
     assert "browser_aberto" not in fonte
+    assert "p, context, page = " not in fonte
+    assert "sessao" not in fonte, "o main deixou de conhecer sessao"
+
+    fonte = (RAIZ / "automation" / "app.py").read_text(encoding="utf-8")
     assert "p, context, page = " not in fonte
     assert "sessao.pagina" in fonte, "os recursos passaram a ter nome"
 
@@ -462,13 +473,17 @@ def test_o_intervalo_de_troca_mora_na_representacao():
     assert "marcar_troca" not in fonte
 
 
-def test_main_nao_passa_mais_page_para_o_fluxo_por_cnpj():
-    """`processar_cnpj` recebe a sessao; quem desce para a navegacao legada e
-    `sessao.pagina`, dentro dela."""
-    fonte = (RAIZ / "main.py").read_text(encoding="utf-8-sig")
+def test_o_fluxo_por_cnpj_recebe_a_sessao_e_nao_a_pagina():
+    """A unidade de trabalho recebe a SESSAO; quem desce para a navegacao legada
+    e `sessao.pagina`, dentro das integracoes.
 
-    assert "def processar_cnpj(sessao, cnpj" in fonte
-    assert "processar_cnpj(sessao, cnpj, caminho_planilha)" in fonte
+    CHARACTERIZATION_TARGET_CHANGE (9B): era `main.processar_cnpj`, hoje e
+    `app._processar_item` — que nem sequer recebe cnpj solto, e sim o item.
+    """
+    fonte = (RAIZ / "automation" / "app.py").read_text(encoding="utf-8")
+
+    assert "def _processar_item(execucao: _Execucao, item)" in fonte
+    assert "execucao.sessao, item.cnpj, execucao.config_captcha" in fonte
 
 
 def test_desfecho_esperado_nao_viaja_como_exception_no_codigo_novo():

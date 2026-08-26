@@ -12,7 +12,8 @@ import subprocess
 
 import pytest
 
-import main
+from automation import certificados_windows
+from automation.domain import buscar_certificado
 
 # ── Corpus ficticio ───────────────────────────────────────────────────────────
 
@@ -80,14 +81,35 @@ def responder(powershell, certificados):
     powershell.resposta = Saida(stdout=json.dumps(dados))
 
 
+# ── CHARACTERIZATION_TARGET_CHANGE (fatia 9B) ─────────────────────────────────
+# `main._listar_certs_windows` e `main.carregar_certificados` eram adapters do
+# laco legado: chamavam a integracao, transformavam falha conhecida em lista
+# vazia e imprimiam. O laco foi para automation/app.py, e a decisao de tratar a
+# falha subiu para la — onde ela vira um EVENTO, e nao um print.
+#
+# Os helpers abaixo exercitam o mesmo caminho pela integracao. Onde o adapter
+# devolvia `[]` e imprimia, os testes passam a afirmar sobre a EXCEPTION que a
+# fatia 5A ja levantava e sobre a frase que o adapter de apresentacao produz —
+# as mesmas garantias, sem intermediario.
+
+def listar_certs():
+    return certificados_windows.interpretar_saida(
+        certificados_windows.executar_powershell(certificados_windows.COMANDO_POWERSHELL)
+    )
+
+
+def carregar_certificados():
+    return certificados_windows.descobrir()[0]
+
+
 # ── E · o comando PowerShell ──────────────────────────────────────────────────
 
 def test_e_o_comando_e_constante_e_nao_interpola_nada(powershell):
     """SECURITY: nenhum dado da planilha, do usuario ou do ambiente entra no
     comando. Ele e literal no codigo e nao muda entre execucoes."""
     responder(powershell, [ALFA])
-    main._listar_certs_windows()
-    main._listar_certs_windows()
+    listar_certs()
+    listar_certs()
 
     (args1, _), (args2, _) = powershell.chamadas
     assert args1 == args2, "o comando nao varia"
@@ -99,7 +121,7 @@ def test_e_o_comando_e_constante_e_nao_interpola_nada(powershell):
 
 def test_e_o_comando_vai_como_lista_e_nao_por_shell(powershell):
     responder(powershell, [ALFA])
-    main._listar_certs_windows()
+    listar_certs()
 
     (args, kwargs) = powershell.chamadas[0]
     assert isinstance(args[0], list), "argv em lista, nao string"
@@ -109,7 +131,7 @@ def test_e_o_comando_vai_como_lista_e_nao_por_shell(powershell):
 def test_f_o_store_consultado_e_o_do_usuario_atual(powershell):
     """Decodifica o -EncodedCommand para ver o que realmente e executado."""
     responder(powershell, [ALFA])
-    main._listar_certs_windows()
+    listar_certs()
 
     argv = powershell.chamadas[0][0][0]
     script = base64.b64decode(argv[argv.index("-EncodedCommand") + 1]).decode("utf-16-le")
@@ -122,7 +144,7 @@ def test_f_o_store_consultado_e_o_do_usuario_atual(powershell):
 
 def test_g_os_campos_pedidos_ao_powershell(powershell):
     responder(powershell, [ALFA])
-    main._listar_certs_windows()
+    listar_certs()
 
     argv = powershell.chamadas[0][0][0]
     script = base64.b64decode(argv[argv.index("-EncodedCommand") + 1]).decode("utf-16-le")
@@ -133,7 +155,7 @@ def test_g_os_campos_pedidos_ao_powershell(powershell):
 
 def test_e_o_timeout_e_a_janela_escondida(powershell):
     responder(powershell, [ALFA])
-    main._listar_certs_windows()
+    listar_certs()
 
     kwargs = powershell.chamadas[0][1]
     assert kwargs["timeout"] == 30
@@ -145,38 +167,42 @@ def test_e_o_timeout_e_a_janela_escondida(powershell):
 
 def test_h_zero_certificados(powershell):
     powershell.resposta = Saida(stdout="")
-    assert main._listar_certs_windows() == []
+    assert listar_certs() == []
 
 
 @pytest.mark.parametrize("stdout", ["", "   ", "\n\n"])
 def test_h_saida_em_branco(powershell, stdout):
     powershell.resposta = Saida(stdout=stdout)
-    assert main._listar_certs_windows() == []
+    assert listar_certs() == []
 
 
 def test_h_um_certificado_vem_como_objeto_e_vira_lista(powershell):
     """`ConvertTo-Json` de um item so devolve OBJETO, nao array. O codigo embrulha."""
     powershell.resposta = Saida(stdout=json.dumps(ALFA))
 
-    assert main._listar_certs_windows() == [ALFA]
+    assert listar_certs() == [ALFA]
 
 
 def test_h_varios_certificados(powershell):
     responder(powershell, [ALFA, BETA, PESSOA])
-    assert main._listar_certs_windows() == [ALFA, BETA, PESSOA]
+    assert listar_certs() == [ALFA, BETA, PESSOA]
 
 
 def test_h_a_ordem_do_powershell_e_preservada(powershell):
     responder(powershell, [BETA, ALFA])
-    assert [c["serial"] for c in main._listar_certs_windows()] == ["0B02", "0A01"]
+    assert [c["serial"] for c in listar_certs()] == ["0B02", "0A01"]
 
 
-def test_h_saida_que_nao_e_json(powershell, capsys):
-    """CERT_WINDOWS_POSSIBLE_DEFECT: erro de parsing vira lista vazia."""
+def test_h_saida_que_nao_e_json(powershell):
+    """CERT_WINDOWS_POSSIBLE_DEFECT: erro de parsing NAO vira lista vazia.
+
+    Era `[]` mais um print — indistinguivel de "nao ha certificado instalado".
+    Desde a 5A e uma exception, e desde a 9B o app a traduz num evento proprio.
+    """
     powershell.resposta = Saida(stdout="isto nao e json")
 
-    assert main._listar_certs_windows() == []
-    assert "Falha ao ler o repositório" in capsys.readouterr().out
+    with pytest.raises(certificados_windows.FalhaAoLerCertificados, match="ilegível"):
+        listar_certs()
 
 
 def test_h_codigo_de_saida_nao_zero_e_ignorado(powershell):
@@ -184,7 +210,7 @@ def test_h_codigo_de_saida_nao_zero_e_ignorado(powershell):
     JSON no stdout, ele e aceito mesmo com o PowerShell reportando erro."""
     powershell.resposta = Saida(stdout=json.dumps(ALFA), stderr="erro qualquer", returncode=1)
 
-    assert main._listar_certs_windows() == [ALFA]
+    assert listar_certs() == [ALFA]
 
 
 # Os quatro testes abaixo afirmavam o `except Exception` ate o commit d8c4881.
@@ -192,20 +218,21 @@ def test_h_codigo_de_saida_nao_zero_e_ignorado(powershell):
 # regra "falha externa conhecida vira erro nosso e seguro; bug inesperado sobe".
 # O comportamento antigo continua legivel no historico.
 
-def test_h_powershell_ausente(powershell, capsys):
+def test_h_powershell_ausente(powershell):
     """ANTES: imprimia "FileNotFoundError". DEPOIS: mensagem nossa e acionavel."""
     powershell.resposta = FileNotFoundError("powershell nao encontrado")
 
-    assert main._listar_certs_windows() == []
-    assert "PowerShell não foi encontrado" in capsys.readouterr().out
+    with pytest.raises(certificados_windows.FalhaAoLerCertificados,
+                       match="PowerShell não foi encontrado"):
+        listar_certs()
 
 
-def test_h_timeout(powershell, capsys):
+def test_h_timeout(powershell):
     """ANTES: imprimia "TimeoutExpired"."""
     powershell.resposta = subprocess.TimeoutExpired(cmd="powershell", timeout=30)
 
-    assert main._listar_certs_windows() == []
-    assert "demorou demais" in capsys.readouterr().out
+    with pytest.raises(certificados_windows.FalhaAoLerCertificados, match="demorou demais"):
+        listar_certs()
 
 
 def test_h_bug_nosso_sobe_em_vez_de_virar_lista_vazia(powershell):
@@ -222,7 +249,7 @@ def test_h_bug_nosso_sobe_em_vez_de_virar_lista_vazia(powershell):
     powershell.resposta = TypeError("bug nosso, nao falha do Windows")
 
     with pytest.raises(TypeError):
-        main._listar_certs_windows()
+        listar_certs()
 
 
 def test_h_o_diagnostico_nao_ecoa_mais_a_excecao_crua(powershell, capsys):
@@ -230,12 +257,12 @@ def test_h_o_diagnostico_nao_ecoa_mais_a_excecao_crua(powershell, capsys):
     CN ou serial. DEPOIS: so mensagens constantes nossas."""
     powershell.resposta = Saida(stdout="SENTINELA-CN-ALFA:11111111000191 nao e json")
 
-    main._listar_certs_windows()
+    with pytest.raises(certificados_windows.FalhaAoLerCertificados) as erro:
+        listar_certs()
 
-    saida = capsys.readouterr().out
-    assert "Falha ao ler o repositório" in saida
-    assert "SENTINELA-CN-ALFA" not in saida
-    assert "11111111000191" not in saida
+    assert "SENTINELA-CN-ALFA" not in str(erro.value)
+    assert "11111111000191" not in str(erro.value)
+    assert capsys.readouterr().out == "", "a integração não imprime"
 
 
 # ── I · indexacao e deduplicacao ──────────────────────────────────────────────
@@ -244,7 +271,7 @@ def test_i_chaves_por_certificado(powershell):
     """display, CN completo e CN sem o documento — a planilha pode trazer qualquer
     um. Aqui display e o CN sem documento coincidem, entao sobram duas chaves."""
     responder(powershell, [ALFA])
-    mapa = main.carregar_certificados()
+    mapa = carregar_certificados()
 
     assert set(mapa) == {
         "alfa ficticia ltda",
@@ -257,7 +284,7 @@ def test_i_chaves_por_certificado(powershell):
 def test_i_display_diferente_do_cn_gera_chave_a_mais(powershell):
     cert = dict(ALFA, display="APELIDO DA ALFA")
     responder(powershell, [cert])
-    mapa = main.carregar_certificados()
+    mapa = carregar_certificados()
 
     assert "apelido da alfa" in mapa
     assert "alfa ficticia ltda" in mapa
@@ -266,7 +293,7 @@ def test_i_display_diferente_do_cn_gera_chave_a_mais(powershell):
 
 def test_i_acentos_sao_removidos_da_chave(powershell):
     responder(powershell, [BETA])
-    mapa = main.carregar_certificados()
+    mapa = carregar_certificados()
 
     assert "beta comercio ficticio" in mapa
     assert "beta comércio fictício" not in mapa
@@ -274,24 +301,25 @@ def test_i_acentos_sao_removidos_da_chave(powershell):
 
 def test_i_cpf_de_onze_digitos_tambem_e_icp(powershell):
     responder(powershell, [PESSOA])
-    assert "fulano de tal ficticio" in main.carregar_certificados()
+    assert "fulano de tal ficticio" in carregar_certificados()
 
 
 def test_i_certificado_de_sistema_e_descartado(powershell, capsys):
     """CN em GUID nao serve ao gov.br. Apontar a policy para um deles faz o
     Chrome desistir e abrir a janela de escolha manual."""
     responder(powershell, [ALFA, SISTEMA])
-    mapa = main.carregar_certificados()
+    mapa, ignorados = certificados_windows.descobrir()
 
     assert not any("microsoft" in k for k in mapa)
-    assert "1 certificado(s) de sistema ignorado(s)" in capsys.readouterr().out
+    assert ignorados == 1, "a contagem volta no resultado; antes so existia como print"
+    assert capsys.readouterr().out == ""
 
 
 def test_i_o_primeiro_vence_em_colisao_de_chave(powershell):
     """`setdefault`: dois certificados com o mesmo nome — o primeiro fica."""
     gemeo = dict(ALFA, serial="0Z99", thumbprint="ZZZZ9999")
     responder(powershell, [ALFA, gemeo])
-    mapa = main.carregar_certificados()
+    mapa = carregar_certificados()
 
     assert mapa["alfa ficticia ltda"]["serial"] == "0A01"
 
@@ -299,7 +327,7 @@ def test_i_o_primeiro_vence_em_colisao_de_chave(powershell):
 def test_i_display_ausente_nao_gera_chave_vazia(powershell):
     cert = dict(ALFA, display="")
     responder(powershell, [cert])
-    mapa = main.carregar_certificados()
+    mapa = carregar_certificados()
 
     assert "" not in mapa
     assert len(mapa) == 2
@@ -307,21 +335,21 @@ def test_i_display_ausente_nao_gera_chave_vazia(powershell):
 
 def test_i_cn_ausente_descarta_o_certificado(powershell):
     responder(powershell, [dict(ALFA, subject_cn="")])
-    assert main.carregar_certificados() == {}
+    assert carregar_certificados() == {}
 
 
 def test_i_saida_incompleta_sem_serial_nao_quebra_a_indexacao(powershell):
     """Campos ausentes so aparecem quando alguem os le — a indexacao nao os toca."""
     incompleto = {"display": "GAMA FICTICIA", "subject_cn": "GAMA FICTICIA:33333333000153"}
     responder(powershell, [incompleto])
-    mapa = main.carregar_certificados()
+    mapa = carregar_certificados()
 
     assert mapa["gama ficticia"] == incompleto
 
 
 def test_i_repositorio_vazio_devolve_mapa_vazio(powershell):
     powershell.resposta = Saida(stdout="")
-    assert main.carregar_certificados() == {}
+    assert carregar_certificados() == {}
 
 
 # ── R · o circuito completo: descoberta → match ───────────────────────────────
@@ -330,11 +358,11 @@ def test_r_do_powershell_ate_o_resultado_da_busca(powershell):
     """A prova que mais importa: a saida sintetica do Windows alimenta o match
     puro da fatia 1 e produz o certificado certo. Sem Windows nenhum."""
     responder(powershell, [ALFA, BETA, PESSOA])
-    certs = main.carregar_certificados()
+    certs = carregar_certificados()
 
     def identidade(nome):
-        chave = main._buscar_certificado(nome, certs)
-        return certs[chave]["subject_cn"] if chave else None
+        resultado = buscar_certificado(nome, certificados_windows.identidades(certs))
+        return certs[resultado.chave]["subject_cn"] if resultado.resolvida else None
 
     # Afirma IDENTIDADE, e nao chave: qual das chaves do mesmo certificado volta
     # depende da ordem de iteracao de um `set`. E o CERTIFICATE_MATCH_POSSIBLE_
@@ -345,7 +373,7 @@ def test_r_do_powershell_ate_o_resultado_da_busca(powershell):
     assert identidade("nao existe") is None
 
 
-def test_r_ambiguidade_atravessa_o_circuito_inteiro(powershell, capsys):
+def test_r_ambiguidade_atravessa_o_circuito_inteiro(powershell):
     """A propriedade de seguranca da fatia 1.1 continua valendo com dados vindos
     da descoberta: dois certificados plausiveis, nenhum escolhido."""
     outra = {
@@ -354,7 +382,9 @@ def test_r_ambiguidade_atravessa_o_circuito_inteiro(powershell, capsys):
         "serial": "0E05",
     }
     responder(powershell, [ALFA, outra])
-    certs = main.carregar_certificados()
+    certs = carregar_certificados()
 
-    assert main._buscar_certificado("ALFA", certs) is None
-    assert "ambíguo" in capsys.readouterr().out
+    resultado = buscar_certificado("ALFA", certificados_windows.identidades(certs))
+
+    assert resultado.chave is None
+    assert resultado.ambigua is True

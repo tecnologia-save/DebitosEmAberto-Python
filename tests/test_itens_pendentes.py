@@ -140,14 +140,17 @@ def test_resumo_de_lista_vazia():
 # ── O corte, provado na fonte ─────────────────────────────────────────────────
 
 def _corpo_de(nome: str) -> str:
-    arvore = ast.parse((RAIZ / "main.py").read_text(encoding="utf-8-sig"))
+    """CHARACTERIZATION_TARGET_CHANGE (9B): a orquestracao saiu de `main.py` e
+    foi para `automation/app.py`. As afirmacoes seguem o codigo."""
+    arvore = ast.parse((RAIZ / "automation" / "app.py").read_text(encoding="utf-8"))
     for no in ast.walk(arvore):
         if isinstance(no, ast.FunctionDef) and no.name == nome:
             return ast.unparse(no)
-    raise AssertionError(f"{nome} nao existe em main.py")
+    raise AssertionError(f"{nome} nao existe em automation/app.py")
 
 
-@pytest.mark.parametrize("funcao", ["processar", "processar_cnpj", "verificar_pendencias"])
+@pytest.mark.parametrize("funcao", ["_percorrer", "_processar_item",
+                                    "_consultar_situacao", "executar"])
 @pytest.mark.parametrize("proibido", [
     "iterrows", "df.columns", "pd.Series", "col_cnpj", "col_cert", "dropna", "unique",
 ])
@@ -155,22 +158,24 @@ def test_a_orquestracao_nao_toca_mais_em_pandas(funcao, proibido):
     assert proibido not in _corpo_de(funcao)
 
 
-def test_o_que_ainda_falta_para_o_pandas_sumir_do_fluxo():
-    """MIGRATION_SPECIFIC, registrado em vez de escondido.
+def test_o_dataframe_morre_dentro_do_app_e_nao_atravessa_o_laco():
+    """A conversao acontece em `executar`, e o laco so ve itens.
 
-    O CORPO de `processar` nao ve mais pandas, mas a ASSINATURA ainda recebe o
-    DataFrame e converte na primeira linha. So sai quando quem le a planilha e
-    quem percorre os itens forem a mesma camada — ou seja, quando o app assumir
-    a leitura. Ate la, esta e a fronteira honesta.
+    Na primeira metade da 9B isto era uma divida: `main.processar` ainda recebia
+    o DataFrame na assinatura. Com a leitura da planilha dentro do app, o pandas
+    deixou de atravessar qualquer fronteira.
     """
-    corpo = _corpo_de("processar")
+    fora = _corpo_de("executar")
+    assert "planilha.itens_pendentes(df)" in fora
+    assert "_percorrer(execucao, itens)" in fora
 
-    assert "df: pd.DataFrame" in corpo, "a conversao ainda acontece dentro de main"
-    assert "planilha.itens_pendentes(df)" in corpo
-    assert corpo.index("itens_pendentes") < corpo.index("while"), "converte antes do laco"
+    dentro = _corpo_de("_percorrer")
+    for proibido in ("df", "DataFrame", "pd."):
+        assert proibido not in dentro.replace("itens", "")
 
 
-@pytest.mark.parametrize("funcao", ["processar", "processar_cnpj", "verificar_pendencias"])
+@pytest.mark.parametrize("funcao", ["_percorrer", "_processar_item",
+                                    "_consultar_situacao", "executar"])
 @pytest.mark.parametrize("proibido", [
     "COL_STATUS_DCTFWEB", "COL_STATUS_PROCESSOS", "ABA_DEBITOS", "ABA_PROCESSOS",
     "escrever_status", "anexar_debitos", "anexar_processos",
@@ -189,7 +194,8 @@ def test_a_orquestracao_nao_conhece_o_schema_fisico(funcao, proibido):
 
 def test_os_textos_de_status_ficam_na_planilha():
     """A orquestracao pede "registre que nao ha debitos"; o texto e da planilha."""
-    for funcao in ("verificar_pendencias", "processar_cnpj"):
+    for funcao in ("_consultar_situacao", "_processar_item", "_extrair_debitos",
+                   "_extrair_processos"):
         corpo = _corpo_de(funcao)
         for texto in (planilha.STATUS_SEM_DEBITOS, planilha.STATUS_SEM_PROCESSOS,
                       planilha.STATUS_DEBITOS_NAO_COMPENSAVEIS):

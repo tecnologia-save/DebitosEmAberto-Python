@@ -72,13 +72,13 @@ def test_b_debitosemaberto_usa_somente_o_modo_windows_store():
     import pathlib
 
     arvore = ast.parse(
-        (pathlib.Path(__file__).resolve().parents[1] / "main.py").read_text(
-            encoding="utf-8-sig"
-        )
+        (pathlib.Path(__file__).resolve().parents[1] / "automation" / "maquina.py")
+        .read_text(encoding="utf-8")
     )
-    # Ate a fatia 7B a chamada estava em main.py; agora main INJETA `fazer_login`
-    # na fronteira, e quem monta os argumentos e automation/login.py. O fato
-    # caracterizado — so o modo Windows Store e usado — continua valendo.
+    # Ate a 7B a chamada estava em main.py; na 7B o main passou a INJETAR
+    # `fazer_login` na fronteira; na 9B a injecao desceu para a fiacao, porque o
+    # app nao conhece o fork. O fato caracterizado — so o modo Windows Store e
+    # usado — continua valendo, e o ponto de injecao continua sendo UM.
     injecoes = [
         kw for no in ast.walk(arvore)
         if isinstance(no, ast.Call)
