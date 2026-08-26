@@ -1,0 +1,8 @@
+# O marcador NUNCA entra no repositorio. Commitado, ele desarmaria metade da
+# trava em toda maquina que clonasse o projeto — e a trava existe justamente
+# para que o harness nunca rode fora de uma VM descartavel.
+CONFIRMO_VM_DESCARTAVEL
+
+# A evidencia de uma rodada e sanitizada, mas continua sendo saida de maquina.
+# Commitar e decisao de quem rodou, e nao efeito colateral.
+evidencias/
