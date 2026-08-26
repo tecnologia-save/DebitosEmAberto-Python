@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 
 from patchright.sync_api import Error as ErroDoNavegador
 
+from . import navegador
 from .navegador import PAGINACAO_NAO_ALTERADA, aguardar_rede, navegar
 
 # O que o portal diz no span de status.
@@ -134,6 +135,16 @@ def _anotar(avisos: list, aviso: str | None) -> None:
 # ── Leitura da situação ───────────────────────────────────────────────────────
 
 def ler_situacao(sessao, esperar_visivel_ms: int = 30_000) -> SituacaoFiscal:
+    """Lê o status de pendências e quais ações o portal oferece.
+
+    Falha do navegador atravessa como `FalhaDoNavegador`: a aplicação decide
+    sobre a sessão sem conhecer o tipo do fornecedor.
+    """
+    with navegador.falhas_traduzidas():
+        return _ler_situacao(sessao, esperar_visivel_ms)
+
+
+def _ler_situacao(sessao, esperar_visivel_ms: int = 30_000) -> SituacaoFiscal:
     """Lê o status de pendências e quais ações o portal oferece."""
     pagina = sessao.pagina
     span = pagina.locator(XPATH_STATUS).first
@@ -401,6 +412,12 @@ def _linhas_do_card(page, cnpj: str, avisos: list) -> list[dict]:
 # ── DCTFWeb ───────────────────────────────────────────────────────────────────
 
 def consultar_dctfweb(sessao, cnpj: str) -> ExtracaoFiscal:
+    """Consulta a dívida DCTFWeb. Falha do navegador vira `FalhaDoNavegador`."""
+    with navegador.falhas_traduzidas():
+        return _consultar_dctfweb(sessao, cnpj)
+
+
+def _consultar_dctfweb(sessao, cnpj: str) -> ExtracaoFiscal:
     """Abre a dívida DCTFWeb e extrai todas as páginas da tabela.
 
     Nenhum parâmetro externo: a navegação é detalhe desta integração, e não
@@ -432,6 +449,12 @@ def consultar_dctfweb(sessao, cnpj: str) -> ExtracaoFiscal:
 # ── Processos Fiscais ─────────────────────────────────────────────────────────
 
 def consultar_processos(sessao, cnpj: str) -> ExtracaoFiscal:
+    """Consulta os Processos Fiscais. Mesma tradução do DCTFWeb."""
+    with navegador.falhas_traduzidas():
+        return _consultar_processos(sessao, cnpj)
+
+
+def _consultar_processos(sessao, cnpj: str) -> ExtracaoFiscal:
     """Abre os processos fiscais e percorre todos os cards de todas as páginas."""
     pagina = sessao.pagina
     avisos: list[str] = []

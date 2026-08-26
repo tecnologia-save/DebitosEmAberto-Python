@@ -53,9 +53,6 @@ from automation.domain import remover_acentos as _remover_acentos          # noq
 # Os certificados vêm do Windows Certificate Store (Cert:\CurrentUser\My), não
 # mais de uma pasta com .pfx e um senhas.json ao lado.
 
-# Chave Gemini — configure via .env (GEMINI_API_KEY=sua_chave) ou variável de ambiente
-_GEMINI_API_KEY_PADRAO = os.environ.get("GEMINI_API_KEY", "")
-
 # Nome do arquivo com a chave embutida no exe pelo debitos_em_aberto.spec
 _CHAVE_EMBUTIDA = "chave_gemini.env"
 

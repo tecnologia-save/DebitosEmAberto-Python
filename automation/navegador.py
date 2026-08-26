@@ -24,6 +24,8 @@ CNPJ, empresa ou valor.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 from patchright.sync_api import Error as ErroDoNavegador
 
 REDE_NAO_ESTABILIZOU = "rede não estabilizou dentro do tempo"
@@ -99,3 +101,36 @@ def encerrar_no_portal(page) -> None:
     except ErroDoNavegador:
         # A sessao esta sendo descartada de qualquer forma; nao ha o que decidir.
         return
+
+
+# ── A fronteira do erro tecnico ───────────────────────────────────────────────
+
+class FalhaDoNavegador(Exception):
+    """O navegador falhou durante uma operacao no portal.
+
+    Existe para que a APLICACAO nao precise conhecer `patchright.Error`. Antes da
+    fatia 11 o tipo do fornecedor atravessava tres integracoes e chegava inteiro
+    ao laco de CNPJ — INTEGRATION_EXCEPTION_LEAK, confirmado por sonda.
+
+    A mensagem e CONSTANTE. A do patchright embute URL da pagina autenticada e
+    seletor, e este erro atravessa ate o adapter, que pode escreve-lo num log.
+    """
+
+
+@contextmanager
+def falhas_traduzidas():
+    """Converte falha conhecida do navegador na nossa, no limite da integracao.
+
+    So o tipo do fornecedor e traduzido. Bug nosso continua subindo como o que e
+    — e essa distincao e exatamente o que o laco de CNPJ passou a usar para
+    decidir entre retentar e deixar aparecer.
+
+    `from None` corta o encadeamento: sem isso a mensagem original reapareceria
+    no traceback, e com ela a URL.
+    """
+    try:
+        yield
+    except ErroDoNavegador:
+        raise FalhaDoNavegador(
+            "O navegador falhou durante uma operação no portal."
+        ) from None

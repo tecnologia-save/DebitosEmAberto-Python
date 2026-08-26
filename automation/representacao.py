@@ -451,6 +451,12 @@ def _executar_representacao(page, cnpj: str,
 
 
 def recuperar_apos_recusa(page) -> bool:
+    """Tenta devolver a sessão a um estado utilizável depois de uma recusa."""
+    with navegador.falhas_traduzidas():
+        return _recuperar_apos_recusa(page)
+
+
+def _recuperar_apos_recusa(page) -> bool:
     """Devolve o portal a um estado utilizável depois de uma recusa de representação.
 
     A recusa é do CNPJ, não da sessão: o certificado segue autenticado e o portal
@@ -481,6 +487,16 @@ def recuperar_apos_recusa(page) -> bool:
 
 
 def representar(sessao, cnpj: str, config_captcha) -> ResultadoDaRepresentacao:
+    """Representa `cnpj` na sessão e devolve o desfecho.
+
+    Os quatro desfechos saem por `ResultadoDaRepresentacao`. Falha técnica do
+    navegador atravessa como `FalhaDoNavegador`, e bug nosso sobe.
+    """
+    with navegador.falhas_traduzidas():
+        return _representar(sessao, cnpj, config_captcha)
+
+
+def _representar(sessao, cnpj: str, config_captcha) -> ResultadoDaRepresentacao:
     """Representa `cnpj` na sessão e devolve o desfecho.
 
     Esta é a capacidade inteira: navegação, captcha, classificação e retry

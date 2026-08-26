@@ -479,7 +479,8 @@ def test_bug_de_teardown_no_retry_nao_aborta_a_execucao(monkeypatch):
     monkeypatch.setattr(app.maquina, "abrir_sessao",
                         lambda c, a, k: ResultadoDoLogin(AUTENTICADO, SessaoFalsa()))
     monkeypatch.setattr(app, "_processar_item",
-                        lambda ex, it: (_ for _ in ()).throw(RuntimeError("falha do CNPJ")))
+                        lambda ex, it: (_ for _ in ()).throw(
+                            navegador.FalhaDoNavegador("falha do navegador")))
 
     codigos = []
     ex = app._Execucao(PlanilhaInerte(), "p.xlsx", CONFIG, lambda e: codigos.append(e.codigo))
@@ -503,7 +504,8 @@ def test_o_teardown_falho_nao_conta_como_falha_do_cnpj(monkeypatch):
     monkeypatch.setattr(app.maquina, "abrir_sessao",
                         lambda c, a, k: ResultadoDoLogin(AUTENTICADO, SessaoFalsa()))
     monkeypatch.setattr(app, "_processar_item",
-                        lambda ex, it: (_ for _ in ()).throw(RuntimeError("falha")))
+                        lambda ex, it: (_ for _ in ()).throw(
+                            navegador.FalhaDoNavegador("falha do navegador")))
 
     eventos_vistos = []
     ex = app._Execucao(PlanilhaInerte(), "p.xlsx", CONFIG, eventos_vistos.append)
@@ -612,10 +614,9 @@ def test_fora_da_preservacao_o_emissor_continua_propagando(monkeypatch):
 def test_a_supressao_do_emissor_existe_num_ponto_so():
     """Nao ha supressao generalizada.
 
-    O modulo tem tres capturas largas, e cada uma esta documentada:
-    APP_RETRY_CATCHALL_LEGACY, o teardown que nao apaga a causa, e o relato
-    desse teardown. SO a ultima nao faz nada com o erro — e e a unica que nao
-    tem para onde contar.
+    Depois da fatia 11 sobraram DUAS capturas largas, ambas de cleanup: o
+    teardown que nao apaga a causa, e o relato desse teardown. SO a segunda nao
+    faz nada com o erro — e e a unica que nao tem para onde contar.
     """
     arvore = ast.parse((RAIZ / "automation" / "app.py").read_text(encoding="utf-8"))
     largas = [
@@ -623,7 +624,9 @@ def test_a_supressao_do_emissor_existe_num_ponto_so():
         if isinstance(no, ast.ExceptHandler)
         and isinstance(no.type, ast.Name) and no.type.id == "Exception"
     ]
-    assert len(largas) == 3
+    # Eram tres ate a fatia 11; o APP_RETRY_CATCHALL_LEGACY foi embora e sobraram
+    # as duas do cleanup, cada uma documentada no proprio corpo.
+    assert len(largas) == 2
 
     mudos = [h for h in largas
              if all(isinstance(c, (ast.Return, ast.Pass)) for c in h.body)]

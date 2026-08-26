@@ -446,12 +446,24 @@ def _percorrer(execucao: _Execucao, itens: list) -> None:
                 execucao.emitir(eventos.SESSAO_NAO_RECUPERADA_APOS_RECUSA)
                 execucao.encerrar_sessao()
 
-        except Exception:  # noqa: BLE001 — APP_RETRY_CATCHALL_LEGACY, ver abaixo
-            # APP_RETRY_CATCHALL_LEGACY — o laco original capturava `Exception`
-            # aqui, e estreitar isso agora mudaria quais falhas retentam. Um bug
-            # nosso e retentado como se fosse falha do portal; o preco e duas
-            # tentativas e uma linha pulada, nunca dado corrompido. Divida
-            # registrada, nao paga nesta fatia.
+        except (_RepresentacaoNaoConcluida, navegador.FalhaDoNavegador):
+            # RETRY_SEMANTIC_CHANGE (fatia 11). Ate aqui isto era
+            # `except Exception`: um TypeError nosso era retentado como se fosse
+            # o portal fora do ar, e nunca chegava a ninguem. O comportamento
+            # antigo esta caracterizado em tests/test_caracterizacao_retry.py.
+            #
+            # Duas familias, e so elas, tem motivo para uma segunda tentativa:
+            #
+            #   _RepresentacaoNaoConcluida  anti-bot esgotado ou representacao
+            #                               nao confirmada — condicao da SESSAO,
+            #                               que um login novo pode resolver;
+            #   FalhaDoNavegador            falha tecnica do navegador, ja
+            #                               traduzida na fronteira da integracao.
+            #
+            # O que NAO retenta mais, e por que: bug nosso (nao melhora na
+            # segunda vez, e some), falha do adapter de eventos (custaria login,
+            # representacao e captcha por um erro de apresentacao) e configuracao
+            # invalida (uma chave ausente continua ausente).
             tentativas[item.cnpj] = tentativas.get(item.cnpj, 0) + 1
             n = tentativas[item.cnpj]
             execucao.emitir(eventos.ITEM_FALHOU, posicao=item.posicao,

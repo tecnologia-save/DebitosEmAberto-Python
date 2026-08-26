@@ -385,8 +385,10 @@ def test_j_o_laco_retenta_o_mesmo_item_e_a_retomada_acompanha(capacidades):
                         lambda s, c: consultas.append("dctfweb") or ExtracaoFiscal())
     capacidades.setattr(
         app.consulta_fiscal, "consultar_processos",
+        # RETRY_SEMANTIC_CHANGE (fatia 11): era `RuntimeError`. A falha que faz o
+        # CNPJ voltar tem nome desde a 11, e um RuntimeError qualquer nao retenta.
         lambda s, c: consultas.append("processos") or (_ for _ in ()).throw(
-            RuntimeError("caiu")
+            app.navegador.FalhaDoNavegador("falha do navegador")
         ),
     )
     codigos = []

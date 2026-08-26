@@ -11,7 +11,7 @@ CNPJs, empresas e certificados ficticios.
 import pandas as pd
 import pytest
 
-from automation import app, eventos, planilha
+from automation import app, eventos, navegador, planilha
 from automation.captcha import ConfigCaptcha
 from automation.login import AUTENTICADO, NAO_AUTENTICADO, ResultadoDoLogin
 from automation.policy_certificado import ATIVADA, JA_ATIVA, ResultadoDaPolicy
@@ -287,10 +287,13 @@ def test_g_a_recusa_nao_consome_retentativa(diario, monkeypatch):
 # ── H · I · anti-bot e nao-confirmado chegam como erro tecnico ────────────────
 
 def test_h_anti_bot_e_nao_confirmado_entram_no_retry_do_cnpj(diario, monkeypatch):
-    """Os dois desfechos viram exception no adapter e caem no `except Exception`
-    do laco: fecham a sessao, relogam e consomem retentativa."""
-    from automation.representacao import AntiBotEsgotado
+    """Os dois desfechos fecham a sessao, relogam e consomem retentativa.
 
+    RETRY_SEMANTIC_CHANGE (fatia 11): o sinal era `AntiBotEsgotado` caindo num
+    `except Exception`; hoje e `_RepresentacaoNaoConcluida`, que `_processar_item`
+    levanta quando o resultado nao representa. A decisao observavel e a MESMA — o
+    que mudou e que agora ela e uma familia nomeada, e nao "qualquer exception".
+    """
     tentativas = []
 
     def falhar_uma_vez(execucao, item):
@@ -298,7 +301,7 @@ def test_h_anti_bot_e_nao_confirmado_entram_no_retry_do_cnpj(diario, monkeypatch
         diario.anotar("cnpj", cnpj, sessao.marca)
         tentativas.append(cnpj)
         if len(tentativas) == 1:
-            raise AntiBotEsgotado("esgotou")
+            raise app._RepresentacaoNaoConcluida
         return "concluido"
 
     monkeypatch.setattr(app, "_processar_item", falhar_uma_vez)
@@ -319,7 +322,10 @@ def test_o_erro_tecnico_fecha_a_sessao_e_retenta_o_mesmo_cnpj(diario, monkeypatc
         tentativas.append(item.cnpj)
         diario.anotar("cnpj", item.cnpj, execucao.sessao.marca)
         if len(tentativas) == 1:
-            raise RuntimeError("erro tecnico")
+            # RETRY_SEMANTIC_CHANGE (fatia 11): "erro tecnico" era um
+            # `RuntimeError` qualquer. Hoje tem nome — e um `RuntimeError`
+            # qualquer e bug nosso, que NAO retenta mais.
+            raise navegador.FalhaDoNavegador("falha do navegador")
 
     monkeypatch.setattr(app, "_processar_item", falhar_uma_vez)
 
@@ -333,7 +339,7 @@ def test_p_esgotar_o_retry_pula_o_cnpj(diario, monkeypatch):
     def sempre_falha(execucao, item):
         cnpj, sessao = item.cnpj, execucao.sessao
         diario.anotar("cnpj", cnpj, sessao.marca)
-        raise RuntimeError("erro tecnico")
+        raise navegador.FalhaDoNavegador("falha do navegador")
 
     monkeypatch.setattr(app, "_processar_item", sempre_falha)
 
@@ -351,7 +357,7 @@ def test_p_o_contador_de_retentativa_e_por_cnpj(diario, monkeypatch):
     def sempre_falha(execucao, item):
         cnpj, sessao = item.cnpj, execucao.sessao
         diario.anotar("cnpj", cnpj, sessao.marca)
-        raise RuntimeError("erro tecnico")
+        raise navegador.FalhaDoNavegador("falha do navegador")
 
     monkeypatch.setattr(app, "_processar_item", sempre_falha)
 
