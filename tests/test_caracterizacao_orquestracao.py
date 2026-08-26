@@ -419,7 +419,7 @@ def test_k_dctfweb_grava_aba_e_depois_a_coluna_d(escritas, monkeypatch):
     monkeypatch.setattr(main.consulta_fiscal, "ler_situacao",
                         lambda sessao: situacao(tem_dctfweb=True, tem_processo=False))
     monkeypatch.setattr(main.consulta_fiscal, "consultar_dctfweb",
-                        lambda sessao, cnpj, aguardar_rede: extracao(3))
+                        lambda sessao, cnpj: extracao(3))
 
     main.verificar_pendencias(SessaoFalsa(), CNPJ_1, "p.xlsx")
 
@@ -430,7 +430,7 @@ def test_l_processos_grava_aba_e_depois_a_coluna_e(escritas, monkeypatch):
     monkeypatch.setattr(main.consulta_fiscal, "ler_situacao",
                         lambda sessao: situacao(tem_dctfweb=False, tem_processo=True))
     monkeypatch.setattr(main.consulta_fiscal, "consultar_processos",
-                        lambda sessao, cnpj, aguardar_rede, navegar: extracao(2))
+                        lambda sessao, cnpj: extracao(2))
 
     main.verificar_pendencias(SessaoFalsa(), CNPJ_1, "p.xlsx")
 
@@ -450,9 +450,9 @@ def test_m_resumability_o_d_e_gravado_ANTES_de_os_processos_comecarem(
     monkeypatch.setattr(main.consulta_fiscal, "ler_situacao",
                         lambda sessao: situacao(tem_dctfweb=True, tem_processo=True))
     monkeypatch.setattr(main.consulta_fiscal, "consultar_dctfweb",
-                        lambda sessao, cnpj, aguardar_rede: extracao(1))
+                        lambda sessao, cnpj: extracao(1))
 
-    def processos_caem(sessao, cnpj, aguardar_rede, navegar):
+    def processos_caem(sessao, cnpj):
         raise RuntimeError("portal caiu no meio dos processos")
 
     monkeypatch.setattr(main.consulta_fiscal, "consultar_processos", processos_caem)
@@ -489,7 +489,7 @@ def test_l_skip_d_pula_o_dctfweb_e_so_faz_processos(escritas, monkeypatch):
     monkeypatch.setattr(main.consulta_fiscal, "consultar_dctfweb",
                         lambda *a, **k: pytest.fail("nao devia consultar DCTFWeb"))
     monkeypatch.setattr(main.consulta_fiscal, "consultar_processos",
-                        lambda sessao, cnpj, aguardar_rede, navegar: extracao(1))
+                        lambda sessao, cnpj: extracao(1))
 
     main.verificar_pendencias(SessaoFalsa(), CNPJ_1, "p.xlsx", skip_dctfweb=True)
 
@@ -502,7 +502,7 @@ def test_l_skip_e_pula_os_processos(escritas, monkeypatch):
     monkeypatch.setattr(main.consulta_fiscal, "ler_situacao",
                         lambda sessao: situacao(tem_dctfweb=True, tem_processo=True))
     monkeypatch.setattr(main.consulta_fiscal, "consultar_dctfweb",
-                        lambda sessao, cnpj, aguardar_rede: extracao(2))
+                        lambda sessao, cnpj: extracao(2))
     monkeypatch.setattr(main.consulta_fiscal, "consultar_processos",
                         lambda *a, **k: pytest.fail("nao devia consultar Processos"))
 

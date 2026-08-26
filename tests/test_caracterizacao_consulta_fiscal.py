@@ -213,7 +213,7 @@ def test_h_processos_sem_cards_ainda_grava_concluido(escritas):
 
 def test_h_processos_percorre_cada_card_e_volta(escritas, monkeypatch):
     usar_leitor(monkeypatch, "_linhas_do_card",
-                lambda page, cnpj, aguardar: linhas_ficticias(2))
+                lambda page, cnpj, avisos: linhas_ficticias(2))
     pagina = PaginaFiscal(cards=3)
 
     main.extrair_processo_fiscal(sessao_de(pagina), CNPJ, PLANILHA)
@@ -239,7 +239,7 @@ def test_p_a_ida_para_analise_fiscal_acompanhou_os_processos(escritas, monkeypat
     """A navegacao para a URL de analise saiu de `verificar_pendencias` e entrou
     em `consultar_processos` — mesma sequencia, outra funcao. Ela acontece
     imediatamente antes de clicar no botao, como antes."""
-    usar_leitor(monkeypatch, "_linhas_do_card", lambda page, cnpj, aguardar: [])
+    usar_leitor(monkeypatch, "_linhas_do_card", lambda page, cnpj, avisos: [])
     pagina = PaginaFiscal(cards=0)
 
     main.extrair_processo_fiscal(sessao_de(pagina), CNPJ, PLANILHA)

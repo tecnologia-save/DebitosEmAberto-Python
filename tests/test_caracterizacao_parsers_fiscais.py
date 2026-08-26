@@ -49,6 +49,9 @@ class PaginaDeParsing:
     def wait_for_timeout(self, ms):
         self.esperas.append(ms)
 
+    def wait_for_load_state(self, *a, **k):
+        """A espera de rede deixou de ser injetada na 8A2 — a integracao a importa."""
+
 
 class LocatorDeParsing:
     def __init__(self, pagina, seletor):
@@ -151,7 +154,7 @@ def test_d_o_processo_de_credito_atravessa_junto_do_cnpj():
 def test_e_card_sem_processo_de_credito(capsys):
     pagina = PaginaDeParsing(payloads=[linhas(2)])
 
-    resultado = fiscal._linhas_do_card(pagina, CNPJ, lambda page, **k: None)
+    resultado = fiscal._linhas_do_card(pagina, CNPJ, [])
 
     assert len(resultado) == 2
     assert pagina.argumentos[-1] == [CNPJ, ""], "credito vazio ainda atravessa"
@@ -162,7 +165,7 @@ def test_e_card_com_processo_de_credito_expande_e_propaga():
         payloads=[linhas(1)], credito_visivel=True, credito="PROC-FICTICIO-9"
     )
 
-    fiscal._linhas_do_card(pagina, CNPJ, lambda page, **k: None)
+    fiscal._linhas_do_card(pagina, CNPJ, [])
 
     assert any("processo de crédito" in c.lower() for c in pagina.cliques)
     assert pagina.argumentos[-1] == [CNPJ, "PROC-FICTICIO-9"]
@@ -173,7 +176,7 @@ def test_j_o_card_pagina_e_acumula_tudo_antes_de_devolver():
     pagina = PaginaDeParsing(payloads=[linhas(2), linhas(3)])
     pagina.paginas_restantes = 1
 
-    resultado = fiscal._linhas_do_card(pagina, CNPJ, lambda page, **k: None)
+    resultado = fiscal._linhas_do_card(pagina, CNPJ, [])
 
     assert len(resultado) == 5, "duas paginas somadas"
 
@@ -192,7 +195,7 @@ def test_j_falha_na_segunda_pagina_descarta_a_primeira():
     pagina.evaluate = quebrar_na_extracao
 
     with pytest.raises(KeyError):
-        fiscal._linhas_do_card(pagina, CNPJ, lambda page, **k: None)
+        fiscal._linhas_do_card(pagina, CNPJ, [])
 
 
 # ── K · duplicacao ────────────────────────────────────────────────────────────
@@ -204,7 +207,7 @@ def test_k_nao_ha_deduplicacao_em_lugar_nenhum():
     pagina = PaginaDeParsing(payloads=[list(iguais), list(iguais)])
     pagina.paginas_restantes = 1
 
-    resultado = fiscal._linhas_do_card(pagina, CNPJ, lambda page, **k: None)
+    resultado = fiscal._linhas_do_card(pagina, CNPJ, [])
 
     assert len(resultado) == 2, "as duas iguais sobrevivem"
 
@@ -269,7 +272,7 @@ def test_m_o_processo_de_credito_ausente_e_engolido_de_proposito():
 
     pagina = SemBotao(payloads=[linhas(1)])
 
-    assert len(fiscal._linhas_do_card(pagina, CNPJ, lambda page, **k: None)) == 1
+    assert len(fiscal._linhas_do_card(pagina, CNPJ, [])) == 1
     assert pagina.argumentos[-1] == [CNPJ, ""], "segue sem processo de credito"
 
 
@@ -299,8 +302,10 @@ def test_o_selecionar_itens_por_pagina_e_best_effort(capsys):
         def locator(self, seletor):
             raise ErroDoNavegador("ng-select não apareceu")
 
-    assert fiscal.selecionar_itens_por_pagina(SemNgSelect(), 50) is None
-    assert capsys.readouterr().out == ""
+    from automation.navegador import PAGINACAO_NAO_ALTERADA
+
+    assert fiscal.selecionar_itens_por_pagina(SemNgSelect(), 50) == PAGINACAO_NAO_ALTERADA
+    assert capsys.readouterr().out == "", "reporta pelo retorno, nao por print"
 
 
 def test_o_um_bug_nosso_no_seletor_de_paginacao_sobe():

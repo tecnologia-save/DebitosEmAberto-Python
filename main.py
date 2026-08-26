@@ -455,7 +455,7 @@ def extrair_debitos_dctfweb(sessao, cnpj: str, caminho_planilha: str) -> None:
     """
     print("    → Aguardando tabela DCTFWeb carregar...")
     extracao = consulta_fiscal.consultar_dctfweb(
-        sessao, cnpj, aguardar_rede=_aguardar_networkidle
+        sessao, cnpj
     )
 
     print(f"    [✓] Total: {len(extracao)} linha(s) de débito DCTFWeb "
@@ -478,7 +478,7 @@ def extrair_processo_fiscal(sessao, cnpj: str, caminho_planilha: str) -> None:
     """TRANSITIONAL_PERSISTENCE_ADAPTER — mesma divisão do DCTFWeb."""
     print("    → Aguardando página de processos fiscais carregar...")
     extracao = consulta_fiscal.consultar_processos(
-        sessao, cnpj, aguardar_rede=_aguardar_networkidle, navegar=_goto_seguro
+        sessao, cnpj
     )
 
     print(f"    [✓] Total: {len(extracao)} linha(s) de processo fiscal "

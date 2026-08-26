@@ -28,7 +28,8 @@ PLANILHA = "planilha.py"
 CERTIFICADOS = "certificados_windows.py"
 CAPTCHA = "captcha.py"
 FISCAL = "consulta_fiscal.py"
-INTEGRACOES = {PLANILHA, CERTIFICADOS, CAPTCHA, FISCAL}
+NAVEGADOR = "navegador.py"
+INTEGRACOES = {PLANILHA, CERTIFICADOS, CAPTCHA, FISCAL, NAVEGADOR}
 NUCLEO = [m for m in AUTOMATION if m.name not in INTEGRACOES]
 
 # Nada disso pode aparecer no nucleo.
@@ -122,7 +123,7 @@ def test_so_as_integracoes_de_browser_conhecem_o_navegador():
     """Page e Locator atravessam as duas fronteiras que falam com o navegador —
     captcha e consulta fiscal. Nao passam dali."""
     culpados = {m.name for m in AUTOMATION if _importa(m, {"patchright", "playwright"})}
-    assert culpados == {CAPTCHA, FISCAL}, f"encontrado {culpados}"
+    assert culpados == {CAPTCHA, FISCAL, NAVEGADOR}, f"encontrado {culpados}"
 
 
 def test_a_fronteira_do_captcha_nao_le_o_ambiente_nem_o_fork():
@@ -521,8 +522,9 @@ def test_a_consulta_fiscal_nao_recebe_callback_de_parsing():
     dctfweb = set(inspect.signature(consulta_fiscal.consultar_dctfweb).parameters)
     processos = set(inspect.signature(consulta_fiscal.consultar_processos).parameters)
 
-    assert dctfweb == {"sessao", "cnpj", "aguardar_rede"}
-    assert processos == {"sessao", "cnpj", "aguardar_rede", "navegar"}
+    # A 8A2 fechou TRANSITIONAL_NAVIGATION_CALLBACK: nao ha mais parametro externo.
+    assert dctfweb == {"sessao", "cnpj"}
+    assert processos == {"sessao", "cnpj"}
 
 
 def test_a_consulta_fiscal_expoe_tres_operacoes_e_nao_uma():
@@ -532,3 +534,51 @@ def test_a_consulta_fiscal_expoe_tres_operacoes_e_nao_uma():
 
     for operacao in ("ler_situacao", "consultar_dctfweb", "consultar_processos"):
         assert callable(getattr(consulta_fiscal, operacao))
+
+
+# ── Fatia 8A2: navegacao compartilhada e avisos ──────────────────────────────
+
+def test_o_navegador_e_o_unico_lugar_com_politica_de_espera():
+    """`_goto_seguro` e `_aguardar_networkidle` sairam de main: as integracoes de
+    browser importam, o app nao fornece nada."""
+    fonte = (RAIZ / "main.py").read_text(encoding="utf-8-sig")
+
+    assert "aguardar_rede=" not in fonte
+    assert "navegar=" not in fonte
+
+
+def test_o_navegador_nao_imprime_e_nao_carrega_url_em_mensagem():
+    """SENSITIVE_OUTPUT: a URL de uma sessao autenticada carrega identificadores.
+    A falha de navegacao sobe como veio, sem mensagem nossa."""
+    codigo = _codigo_sem_docstrings(RAIZ / "automation" / NAVEGADOR)
+
+    assert "print(" not in codigo
+    assert "page.url" not in codigo
+    assert "page.title" not in codigo
+
+
+def test_os_avisos_sao_constantes_de_um_conjunto_fechado():
+    """Nenhum aviso carrega URL, CNPJ, empresa, valor ou texto do portal."""
+    from automation import navegador
+
+    avisos = [
+        v for k, v in vars(navegador).items()
+        if k.isupper() and isinstance(v, str) and not k.startswith("TIMEOUT")
+    ]
+    assert len(avisos) == 2
+    for aviso in avisos:
+        assert "{" not in aviso, "sem interpolação"
+        assert "http" not in aviso
+
+
+def test_so_a_extracao_fiscal_transporta_aviso():
+    """§9: aviso so onde ha informacao operacional comprovadamente perdida.
+    ResultadoDaRepresentacao nao tem — entao nao ganhou o campo."""
+    import dataclasses
+
+    from automation.consulta_fiscal import ExtracaoFiscal, SituacaoFiscal
+    from automation.representacao import ResultadoDaRepresentacao
+
+    assert "avisos" in {c.name for c in dataclasses.fields(ExtracaoFiscal)}
+    for sem_aviso in (SituacaoFiscal, ResultadoDaRepresentacao):
+        assert "avisos" not in {c.name for c in dataclasses.fields(sem_aviso)}

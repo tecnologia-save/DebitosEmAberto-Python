@@ -35,6 +35,8 @@ from dataclasses import dataclass, field
 
 from patchright.sync_api import Error as ErroDoNavegador
 
+from .navegador import PAGINACAO_NAO_ALTERADA, aguardar_rede, navegar
+
 # O que o portal diz no span de status.
 SEM_PENDENCIA = "sem pendência"
 COM_PENDENCIA = "com pendência"
@@ -115,9 +117,18 @@ class ExtracaoFiscal:
 
     linhas: tuple[dict, ...] = field(default_factory=tuple)
     paginas: int = 1
+    avisos: tuple[str, ...] = field(default_factory=tuple)
 
     def __len__(self) -> int:
         return len(self.linhas)
+
+
+def _anotar(avisos: list, aviso: str | None) -> None:
+    """Guarda o aviso, sem repetir: o operador precisa saber que aconteceu, e
+    não quantas vezes."""
+    if aviso is not None and aviso not in avisos:
+        avisos.append(aviso)
+
 
 
 # ── Leitura da situação ───────────────────────────────────────────────────────
@@ -145,7 +156,7 @@ def ler_situacao(sessao, esperar_visivel_ms: int = 30_000) -> SituacaoFiscal:
 
 # ── Leitores do conteúdo do portal ──────────────────────────────────────────
 
-def selecionar_itens_por_pagina(page, n: int) -> None:
+def selecionar_itens_por_pagina(page, n: int) -> str | None:
     """Seleciona N itens por página no ng-select de paginação (div.pagination-per-page).
 
     O ng-dropdown-panel é renderizado fora do container (appendTo body), por isso a
@@ -163,8 +174,10 @@ def selecionar_itens_por_pagina(page, n: int) -> None:
         page.wait_for_timeout(1_500)
     except ErroDoNavegador:
         # Best-effort, preservado: não conseguir mudar a paginação não interrompe
-        # a extração — só muda quantas páginas serão percorridas.
-        pass
+        # a extração — só muda quantas páginas serão percorridas. Mas o fato
+        # precisa chegar a alguém: no legado virava um print e morria ali.
+        return PAGINACAO_NAO_ALTERADA
+    return None
 
 
 def expandir_linhas(page) -> None:
@@ -333,12 +346,12 @@ def _linhas_da_tabela_do_card(page, cnpj: str,
 
 
 
-def _linhas_do_card(page, cnpj: str, aguardar_rede) -> list[dict]:
+def _linhas_do_card(page, cnpj: str, avisos: list) -> list[dict]:
     """Extrai dados de um card de processo fiscal já aberto (nova página).
 
     Retorna lista de dicts com as linhas da tabela de débitos do card.
     """
-    aguardar_rede(page, label="card")
+    _anotar(avisos, aguardar_rede(page))
     page.wait_for_timeout(1_000)
 
     # ── "Processo de crédito" (expande se existir) ────────────────────────────
@@ -367,7 +380,7 @@ def _linhas_do_card(page, cnpj: str, aguardar_rede) -> list[dict]:
         pass
 
     # ── Tabela de débitos do card ─────────────────────────────────────────────
-    selecionar_itens_por_pagina(page, 50)
+    _anotar(avisos, selecionar_itens_por_pagina(page, 50))
 
     todos_dados: list[dict] = []
     pagina = 1
@@ -378,7 +391,7 @@ def _linhas_do_card(page, cnpj: str, aguardar_rede) -> list[dict]:
 
         todos_dados.extend(_linhas_da_tabela_do_card(page, cnpj, processo_credito))
 
-        if not _ir_para_proxima(page, aguardar_rede, "card pág."):
+        if not _ir_para_proxima(page, avisos):
             break
         pagina += 1
 
@@ -387,18 +400,19 @@ def _linhas_do_card(page, cnpj: str, aguardar_rede) -> list[dict]:
 
 # ── DCTFWeb ───────────────────────────────────────────────────────────────────
 
-def consultar_dctfweb(sessao, cnpj: str, aguardar_rede) -> ExtracaoFiscal:
+def consultar_dctfweb(sessao, cnpj: str) -> ExtracaoFiscal:
     """Abre a dívida DCTFWeb e extrai todas as páginas da tabela.
 
-    `aguardar_rede` é o único parâmetro externo: espera genérica de navegação, e
-    a única coisa aqui que não é conhecimento do portal fiscal.
+    Nenhum parâmetro externo: a navegação é detalhe desta integração, e não
+    algo que o chamador precise fornecer.
     """
     pagina = sessao.pagina
     pagina.locator(BOTAO_DCTFWEB).first.click()
 
-    aguardar_rede(pagina, label="DCTFWeb")
+    avisos: list[str] = []
+    _anotar(avisos, aguardar_rede(pagina))
     pagina.wait_for_timeout(1_000)
-    selecionar_itens_por_pagina(pagina, 50)
+    _anotar(avisos, selecionar_itens_por_pagina(pagina, 50))
 
     linhas: list[dict] = []
     numero = 1
@@ -408,28 +422,29 @@ def consultar_dctfweb(sessao, cnpj: str, aguardar_rede) -> ExtracaoFiscal:
         expandir_linhas(pagina)
         linhas.extend(_linhas_da_tabela_dctfweb(pagina, cnpj))
 
-        if not _ir_para_proxima(pagina, aguardar_rede, "DCTFWeb pág."):
+        if not _ir_para_proxima(pagina, avisos):
             break
         numero += 1
 
-    return ExtracaoFiscal(tuple(linhas), paginas=numero)
+    return ExtracaoFiscal(tuple(linhas), paginas=numero, avisos=tuple(avisos))
 
 
 # ── Processos Fiscais ─────────────────────────────────────────────────────────
 
-def consultar_processos(sessao, cnpj: str, aguardar_rede, navegar) -> ExtracaoFiscal:
+def consultar_processos(sessao, cnpj: str) -> ExtracaoFiscal:
     """Abre os processos fiscais e percorre todos os cards de todas as páginas."""
     pagina = sessao.pagina
-    navegar(pagina, URL_ANALISE_PENDENCIAS, label="análise fiscal")
+    avisos: list[str] = []
+    navegar(pagina, URL_ANALISE_PENDENCIAS)
     pagina.wait_for_timeout(1_000)
 
     botao = pagina.locator(BOTAO_PROCESSO).first
     botao.wait_for(state="visible", timeout=10_000)
     botao.click()
 
-    aguardar_rede(pagina, label="proc.fiscal")
+    _anotar(avisos, aguardar_rede(pagina))
     pagina.wait_for_timeout(1_000)
-    selecionar_itens_por_pagina(pagina, 20)
+    _anotar(avisos, selecionar_itens_por_pagina(pagina, 20))
 
     linhas: list[dict] = []
     numero = 1
@@ -444,20 +459,20 @@ def consultar_processos(sessao, cnpj: str, aguardar_rede, navegar) -> ExtracaoFi
             card.scroll_into_view_if_needed()
             card.click()
 
-            linhas.extend(_linhas_do_card(pagina, cnpj, aguardar_rede))
+            linhas.extend(_linhas_do_card(pagina, cnpj, avisos))
 
             pagina.go_back()
-            aguardar_rede(pagina, label="voltar")
+            _anotar(avisos, aguardar_rede(pagina))
             pagina.wait_for_timeout(1_000)
 
-        if not _ir_para_proxima(pagina, aguardar_rede, "cards pág."):
+        if not _ir_para_proxima(pagina, avisos):
             break
         numero += 1
 
-    return ExtracaoFiscal(tuple(linhas), paginas=numero)
+    return ExtracaoFiscal(tuple(linhas), paginas=numero, avisos=tuple(avisos))
 
 
-def _ir_para_proxima(pagina, aguardar_rede, rotulo: str) -> bool:
+def _ir_para_proxima(pagina, avisos: list) -> bool:
     """True se havia próxima página e ela foi aberta.
 
     O `except` largo do original está preservado: o botão pode nem existir, e a
@@ -471,5 +486,5 @@ def _ir_para_proxima(pagina, aguardar_rede, rotulo: str) -> bool:
     except Exception:  # noqa: BLE001 — preservado: ausência do botão = fim da paginação
         return False
 
-    aguardar_rede(pagina, label=rotulo)
+    _anotar(avisos, aguardar_rede(pagina))
     return True
