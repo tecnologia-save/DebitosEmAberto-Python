@@ -127,14 +127,19 @@ def test_o_evento_de_falha_passou_a_ser_alcancavel():
     assert "POLICY_NAO_REMOVIDA" in fonte
 
 
-def test_a_confirmacao_seria_possivel_com_o_que_ja_existe():
-    """`policy_existe()` le as DUAS colmeias. A informacao para confirmar o
-    cleanup ja esta na maquina; ela so nao e consultada."""
+def test_a_confirmacao_le_as_duas_colmeias_inteiras():
+    """ANTES (12B.1): `policy_existe()` percorria `_COLMEIAS` com `any(...)`, e o
+    que se afirmava aqui era que a informacao ja estava na maquina, apenas nao
+    consultada.
+
+    AGORA ela consome `inventario_da_policy`, que continua lendo as duas — e le
+    cada uma por INTEIRO, em vez de extrair um CN do valor "1" (fatia 12D.1).
+    """
     import cert_windows
 
     fonte = inspect.getsource(cert_windows.policy_existe)
 
-    assert "_COLMEIAS" in fonte and "any(" in fonte
+    assert "inventario_da_policy()" in fonte and "any(" in fonte
 
 
 def test_o_app_deixa_de_fingir_que_limpou(monkeypatch):

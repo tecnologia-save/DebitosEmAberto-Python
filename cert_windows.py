@@ -124,8 +124,34 @@ def _ler_cn(raiz) -> str:
 
 
 def policy_existe() -> bool:
-    """True se a policy está escrita em pelo menos uma das colmeias."""
-    return any(_ler_cn(raiz) for _, raiz in _COLMEIAS)
+    """True se RESTOU estado da policy em alguma colmeia.
+
+    Esta é a pergunta da LIMPEZA, e ela não é a mesma da decisão de startup:
+
+        startup   "posso usar, criar, ou preciso recusar?"  → interpreta regras
+        limpeza   "sobrou estado que deveria ter saído?"    → só precisa vê-las
+
+    Até a fatia 12D.1 as duas eram respondidas pela mesma leitura: `_ler_cn`,
+    que extrai um CN do valor "1". Isso fazia estado ILEGÍVEL responder
+    "limpo" — um payload malformado, um valor com outro nome, um tipo
+    inesperado. `DeleteKey` falhando numa colmeia com resíduo desse tipo
+    produzia limpeza CONFIRMADA sem nada ter sido removido
+    (CLEANUP_CONFIRMATION_FALSE_NEGATIVE), e sobre essa confirmação repousam o
+    fim do guardião e a devolução do host.
+
+    Estado ilegível é estado existente. Uma colmeia que não pôde ser lida também
+    conta: ignorância não é ausência.
+
+    ASSIMETRIA DELIBERADA com `avaliar_estado_inicial`: uma chave que existe e
+    está VAZIA é "host limpo" para o startup — sem regras o Chrome não seleciona
+    nada — e é "restou estado" aqui, porque a chave é coisa que a nossa escrita
+    cria e a nossa limpeza tem de remover. Perguntas diferentes, respostas
+    diferentes.
+    """
+    return any(
+        colmeia.existe or not colmeia.legivel
+        for colmeia in inventario_da_policy()
+    )
 
 
 def policy_cn() -> str:

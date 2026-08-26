@@ -56,17 +56,22 @@ def semear(registro, colmeia, cn):
 
 # ── §1 · o que `policy_existe` faz hoje ───────────────────────────────────────
 
-def test_1_policy_existe_pergunta_por_um_CN_e_nao_por_estado(registro):
-    """Ela chama `_ler_cn` em cada colmeia: valor "1", `json.loads`, e o campo
-    filter.SUBJECT.CN. Nao usa `inventario_da_policy`, nao enumera valores e nao
-    olha a existencia da chave."""
+def test_1_policy_existe_pergunta_por_ESTADO_e_nao_por_um_CN(registro):
+    """ANTES: chamava `_ler_cn` em cada colmeia — valor "1", `json.loads`, campo
+    filter.SUBJECT.CN. Nao enumerava valores e nao olhava a existencia da chave.
+    Quem nao conseguisse interpretar um CN respondia "limpo".
+
+    AGORA consome `inventario_da_policy`, que e a mesma leitura completa que a
+    decisao de startup usa. Nenhum parser novo foi criado.
+    """
     import inspect
 
     fonte = inspect.getsource(cert_windows.policy_existe)
 
-    assert "_ler_cn" in fonte
-    assert "inventario_da_policy" not in fonte
-    assert "OpenKeyEx" not in fonte, "nao pergunta se a chave existe"
+    corpo = fonte[fonte.rindex('"""') + 3:]
+
+    assert "inventario_da_policy()" in corpo
+    assert "_ler_cn(" not in corpo, "a leitura por CN saiu do caminho da limpeza"
 
 
 def test_1_e_os_dois_confirmadores_de_limpeza_dependem_dela(registro):
@@ -81,35 +86,66 @@ def test_1_e_os_dois_confirmadores_de_limpeza_dependem_dela(registro):
 
 # ── §3 · os falsos "limpo" ────────────────────────────────────────────────────
 
-def test_3a_valor_fora_do_indice_um_e_lido_como_ausencia(registro):
-    """A: HKCU tem so o valor "2". Ha estado, e a confirmacao diz vazio."""
+def test_3a_valor_fora_do_indice_um_conta_como_estado(registro):
+    """A. ANTES: `policy_existe()` devolvia False — havia estado, e a limpeza
+    seria confirmada."""
     registro.dados["HKCU"][CAMINHO] = {"2": entrada(CN_A)}
 
     assert registro.tem("HKCU", CAMINHO), "o estado esta la"
-    assert cert_windows.policy_existe() is False, "e a limpeza seria confirmada"
+    assert cert_windows.policy_existe() is True, "e a limpeza NAO e confirmada"
 
 
-def test_3b_payload_malformado_e_lido_como_ausencia(registro):
-    """B: JSON quebrado."""
+def test_3b_payload_malformado_conta_como_estado(registro):
+    """B: JSON quebrado. ANTES devolvia False."""
     registro.dados["HKCU"][CAMINHO] = {"1": "{isto nao fecha"}
 
-    assert cert_windows.policy_existe() is False
+    assert cert_windows.policy_existe() is True
 
 
-def test_3c_payload_desconhecido_e_lido_como_ausencia(registro):
-    """C: REG_SZ com outra forma — nem pattern nem filter."""
+def test_3c_payload_desconhecido_conta_como_estado(registro):
+    """C: REG_SZ com outra forma — nem pattern nem filter. ANTES: False."""
     registro.dados["HKLM"][CAMINHO] = {"1": json.dumps({"regra": "outra coisa"})}
 
-    assert cert_windows.policy_existe() is False
+    assert cert_windows.policy_existe() is True
 
 
 def test_3d_uma_colmeia_vazia_e_a_outra_com_residuo_ilegivel(registro):
-    """D: HKCU realmente removida, HKLM com estado que nao sabemos ler."""
+    """D: HKCU realmente removida, HKLM com estado que nao sabemos ler.
+
+    ANTES a colmeia limpa mandava na resposta e a confirmacao dizia vazio."""
     registro.dados["HKLM"][CAMINHO] = {"1": "residuo ilegivel"}
 
     assert not registro.tem("HKCU", CAMINHO)
     assert registro.tem("HKLM", CAMINHO)
-    assert cert_windows.policy_existe() is False, "confirma vazio com residuo"
+    assert cert_windows.policy_existe() is True, "uma basta para nao confirmar"
+
+
+def test_3d_colmeia_ILEGIVEL_tambem_impede_a_confirmacao(registro, monkeypatch):
+    """Ignorancia nao e ausencia. Se nao conseguimos ler a colmeia, nao podemos
+    afirmar que ela esta vazia."""
+    def negar(colmeia, caminho, reservado, acesso):
+        if colmeia == "HKLM":
+            raise PermissionError("acesso negado")
+        raise FileNotFoundError(caminho)
+
+    monkeypatch.setattr(registro, "OpenKeyEx", negar)
+
+    assert cert_windows.policy_existe() is True
+
+
+def test_3d_chave_vazia_ainda_e_estado_a_remover(registro):
+    """ASSIMETRIA DELIBERADA com o startup: sem regras o Chrome nao seleciona
+    nada, entao para a decisao inicial isto e "host limpo". Para a limpeza nao
+    e: a chave e coisa que a nossa escrita cria e a nossa limpeza tem de tirar.
+    """
+    from automation import policy_certificado
+
+    registro.dados["HKCU"][CAMINHO] = {}
+
+    assert cert_windows.policy_existe() is True
+    assert policy_certificado.avaliar_estado_inicial(
+        cert_windows.inventario_da_policy(), CN_A, tuple(cert_windows.CERT_URLS)
+    ).decisao == policy_certificado.CRIAR
 
 
 def test_3d_com_residuo_LEGIVEL_a_confirmacao_ja_funciona_hoje(registro):
@@ -141,29 +177,41 @@ def test_3f_deletekey_que_falha_numa_colmeia_e_detectado(registro, monkeypatch):
     assert cert_windows.policy_existe() is True, "mas a confirmacao pega"
 
 
-def test_3f_a_mesma_falha_com_payload_ilegivel_passa_batida(registro, monkeypatch):
-    """E aqui as duas fraquezas se somam: `DeleteKey` falha em HKLM, o que ficou
-    nao e interpretavel, e a limpeza e dada como confirmada."""
+def test_3f_a_mesma_falha_com_payload_ilegivel_tambem_e_detectada(
+    registro, monkeypatch
+):
+    """O caso que dava nome ao finding: `DeleteKey` falha em HKLM e o que ficou
+    nao e interpretavel.
+
+    ANTES as duas fraquezas se somavam e a limpeza era dada como confirmada —
+    CLEANUP_CONFIRMATION_FALSE_NEGATIVE. AGORA a existencia basta.
+    """
     falso = registro_com(monkeypatch, protegidas=("HKLM",))
     falso.dados["HKLM"][CAMINHO] = {"1": "residuo ilegivel"}
 
     cert_windows.limpar_autoselect()
 
     assert falso.tem("HKLM", CAMINHO)
-    assert cert_windows.policy_existe() is False, "CLEANUP_CONFIRMATION_FALSE_NEGATIVE"
+    assert cert_windows.policy_existe() is True
 
 
 # ── §5 · o que isso custa aos invariantes da 12B.2 / 12C ──────────────────────
 
-def test_5_o_processo_principal_declara_a_policy_removida(registro, monkeypatch):
-    """`liberar_policy` devolve True e o app larga o controle — a policy deixa
-    de ser de alguem, com estado ainda escrito."""
+def test_5_o_processo_principal_NAO_declara_removida_o_que_ficou(
+    registro, monkeypatch
+):
+    """ANTES: `liberar_policy` devolvia True e o app largava o controle — a
+    policy deixava de ser de alguem, com estado ainda escrito.
+
+    AGORA devolve False, e o app mantem a posse: quem ficou com estado instalado
+    continua responsavel por ele.
+    """
     monkeypatch.setattr("time.sleep", lambda _s: None)
     registro.dados["HKCU"][CAMINHO] = {"2": entrada(CN_A)}
     monkeypatch.setattr(cert_windows, "pedir_limpeza", lambda controle: None)
 
-    assert maquina.liberar_policy_do_windows(object()) is True
-    assert registro.tem("HKCU", CAMINHO), "e o estado continua la"
+    assert maquina.liberar_policy_do_windows(object()) is False
+    assert registro.tem("HKCU", CAMINHO)
 
 
 def test_5_o_guardiao_encerra_o_lifecycle_como_sucesso(monkeypatch):
@@ -180,8 +228,8 @@ def test_5_o_guardiao_encerra_o_lifecycle_como_sucesso(monkeypatch):
     falso = registro_com(monkeypatch, protegidas=("HKCU",))
     falso.dados["HKCU"][CAMINHO] = {"2": entrada(CN_A)}
 
-    assert cert_windows._limpar_confirmando(lambda _m: None) is True
-    assert falso.tem("HKCU", CAMINHO), "confirmou, e o estado ficou"
+    assert cert_windows._limpar_confirmando(lambda _m: None) is False
+    assert falso.tem("HKCU", CAMINHO), "o estado ficou, e ele NAO confirmou"
 
 
 # ── §6 · §8 · BORROWED e a troca de certificado ───────────────────────────────
@@ -384,3 +432,75 @@ def test_10_e_sem_elevacao_ele_nao_alcanca_hklm(monkeypatch):
 
     assert not falso.tem("HKCU", CAMINHO)
     assert falso.tem("HKLM", CAMINHO), "HKLM sobrevive"
+
+
+# ── §5 · a cadeia inteira, do residuo ate o lease ─────────────────────────────
+
+def test_5_cadeia_o_app_mantem_a_posse_quando_sobrou_estado(registro, monkeypatch):
+    """Elo 1: limpeza pedida -> residuo existe -> `liberar_policy` devolve False
+    -> o app NAO larga o controle. A policy continua sendo desta execucao."""
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    registro.dados["HKCU"][CAMINHO] = {"2": entrada(CN_A)}
+    monkeypatch.setattr(cert_windows, "pedir_limpeza", lambda controle: None)
+
+    ex = execucao(monkeypatch)
+    ex.controle_da_policy = _Controle(CN_A)
+    ex.liberar_policy()
+
+    assert ex.controle_da_policy is not None, "continua nossa"
+
+
+def test_5_cadeia_o_guardiao_nao_sai_do_laco(registro, monkeypatch):
+    """Elo 2: `_limpar_confirmando` devolve False, e o `break` que leva ao
+    `finally` — onde o lease e fechado por ultimo — esta atras dele."""
+    import inspect
+
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    falso = registro_com(monkeypatch, protegidas=("HKCU",))
+    falso.dados["HKCU"][CAMINHO] = {"1": "residuo ilegivel"}
+
+    assert cert_windows._limpar_confirmando(lambda _m: None) is False
+
+    fonte = inspect.getsource(cert_windows.guardiao)
+    assert "if _limpar_confirmando(_log):" in fonte
+    assert fonte.index("if _limpar_confirmando(_log):") < fonte.index("break")
+    assert fonte.index("break") < fonte.index("finally:")
+
+
+def test_5_cadeia_HOST_RELEASE_SAFE_continua_valendo(registro, monkeypatch):
+    """Elo 3, e o invariante da 12C: o host so e devolvido depois de limpeza
+    CONFIRMADA — e a confirmacao agora exige ausencia real, nao ausencia de CN
+    interpretavel. A fatia 12D.1 fortalece o predicado sem mexer no lease.
+    """
+    import inspect
+
+    from automation import exclusividade_host
+
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    falso = registro_com(monkeypatch, protegidas=("HKCU",))
+    falso.dados["HKCU"][CAMINHO] = {"2": entrada(CN_A)}
+
+    assert cert_windows._limpar_confirmando(lambda _m: None) is False
+
+    # E o lease continua sem saber nada de policy: nada nele mudou.
+    fonte = inspect.getsource(exclusividade_host)
+    for chamada in ("policy_existe(", "limpar_autoselect(", "inventario_da_policy(",
+                    "import winreg", "import cert_windows"):
+        assert chamada not in fonte, f"o lease passou a depender de {chamada}"
+
+
+def test_5_com_o_host_realmente_limpo_a_cadeia_fecha(registro, monkeypatch):
+    """O outro lado: sem residuo, a limpeza confirma, o app larga o controle e o
+    guardiao pode encerrar. O caminho normal nao regrediu."""
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    semear(registro, "HKCU", CN_A)
+    monkeypatch.setattr(
+        cert_windows, "pedir_limpeza", lambda controle: cert_windows.limpar_autoselect()
+    )
+
+    ex = execucao(monkeypatch)
+    ex.controle_da_policy = _Controle(CN_A)
+    ex.liberar_policy()
+
+    assert ex.controle_da_policy is None
+    assert cert_windows.policy_existe() is False

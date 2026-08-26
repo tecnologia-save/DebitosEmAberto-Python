@@ -284,13 +284,19 @@ def test_g_a_escrita_parcial_real_produz_exatamente_esse_estado(monkeypatch):
 
 # ── H · payload malformado: RECUSAR ───────────────────────────────────────────
 
-def test_h_payload_malformado_continua_invisivel_para_a_leitura_antiga(registro):
-    """`_ler_cn` nao mudou, e continua tratando o ilegivel como ausente. O que
-    mudou e que a DECISAO deixou de nascer dela."""
+def test_h_payload_malformado_continua_invisivel_para_a_leitura_por_CN(registro):
+    """`_ler_cn` nao mudou, e continua tratando o ilegivel como ausente — ele
+    responde "qual CN o Chrome vai aplicar", e a essa pergunta "nenhum" e a
+    resposta certa.
+
+    O que mudou e quem depende dele: a DECISAO de startup (12D) e a CONFIRMACAO
+    de limpeza (12D.1) sairam as duas de cima dessa leitura.
+    """
     registro.dados["HKCU"][CAMINHO] = {"1": "isto nao e json"}
 
     assert cert_windows._ler_cn("HKCU") == ""
-    assert cert_windows.policy_existe() is False
+    assert cert_windows.policy_cn() == ""
+    assert cert_windows.policy_existe() is True, "mas o estado esta la"
 
 
 def test_h_malformado_agora_RECUSA_em_vez_de_sobrescrever(registro):
