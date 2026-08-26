@@ -62,6 +62,7 @@ LOGIN_CONCLUIDO = "login_concluido"
 LOGIN_FALHOU = "login_falhou"
 SESSAO_RECUPERADA_APOS_RECUSA = "sessao_recuperada_apos_recusa"
 SESSAO_NAO_RECUPERADA_APOS_RECUSA = "sessao_nao_recuperada_apos_recusa"
+FALHA_AO_ENCERRAR_SESSAO = "falha_ao_encerrar_sessao"
 
 # ── Desfechos do CNPJ ─────────────────────────────────────────────────────────
 CNPJ_RECUSADO_PELO_PORTAL = "cnpj_recusado_pelo_portal"
@@ -93,6 +94,7 @@ CODIGOS = frozenset({
     POLICY_NAO_CONFIAVEL, POLICY_PERMANECERA_NA_MAQUINA,
     LOGIN_CONCLUIDO, LOGIN_FALHOU,
     SESSAO_RECUPERADA_APOS_RECUSA, SESSAO_NAO_RECUPERADA_APOS_RECUSA,
+    FALHA_AO_ENCERRAR_SESSAO,
     CNPJ_RECUSADO_PELO_PORTAL, ITEM_FALHOU, ITEM_ESGOTOU_RETENTATIVAS,
     SITUACAO_FISCAL_NAO_RECONHECIDA,
     DEBITOS_REGISTRADOS, PROCESSOS_REGISTRADOS,
@@ -121,6 +123,16 @@ class EventoOperacional:
     Todos os campos sao opcionais porque nenhum evento usa todos — e nenhum
     campo existe "por padrao": cada um entrou porque um evento real perderia
     informacao operacional sem ele.
+
+    EVENT_SCHEMA_LOOSE_SHAPE — registrado, nao corrigido
+    ----------------------------------------------------
+    Varios codigos compartilham o mesmo conjunto de campos opcionais, e nada no
+    tipo impede um codigo de vir sem o campo que a sua frase usa. Um modelo por
+    evento fecharia isso; hoje quem fecha e o adapter de apresentacao, que tem um
+    teste por codigo.
+
+    Nao e defeito nem blocker. Fica como evidencia para uma futura decisao de
+    esquema — se e quando houver mais de um consumidor de eventos.
     """
 
     codigo: str

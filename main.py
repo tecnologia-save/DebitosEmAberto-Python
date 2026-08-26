@@ -188,6 +188,9 @@ def _frase(e) -> str | None:
         return "    [✓] Sessão mantida — seguindo para o próximo CNPJ deste certificado."
     if e.codigo == E.SESSAO_NAO_RECUPERADA_APOS_RECUSA:
         return "    [!] Sessão não recuperada após a recusa. Fechando o navegador."
+    if e.codigo == E.FALHA_AO_ENCERRAR_SESSAO:
+        return (f"    [!] O encerramento da sessão falhou ({e.tipo_da_falha}). "
+                "A falha original acima é a que importa.")
     if e.codigo == E.ITEM_FALHOU:
         resta = "Reabrindo sessão e retentando" if e.tentativa < e.maximo else "Pulando"
         return (f"    [!] Falha ao processar a {onde} "

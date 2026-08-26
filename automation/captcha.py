@@ -12,13 +12,17 @@ O que este modulo acrescenta sobre isso:
     - falha externa conhecida virando desfecho nomeado, bug nosso subindo;
     - o retry num lugar so, explicito e testavel.
 
-CAPTCHA_INTEGRATION_COUPLING — a limitacao que nao da para esconder
------------------------------------------------------------------
-`solve_hcaptcha` le `os.environ["GEMINI_API_KEY"]` por conta propria; nao ha
-parametro para a chave. Enquanto o fork nao mudar, alguem PRECISA por a chave no
-ambiente do processo antes de chamar. Este modulo nao faz isso — quem faz e o
-adapter, e esta marcado la. Fechar essa costura de verdade exige alterar o fork,
-o que esta fora do escopo desta fatia.
+O transporte do segredo — fechado na 9B.1
+-----------------------------------------
+Este texto descrevia `CAPTCHA_INTEGRATION_COUPLING`: `solve_hcaptcha` lia
+`os.environ["GEMINI_API_KEY"]` por conta propria e alguem PRECISAVA por a chave
+no ambiente antes de chamar.
+
+Nao e mais verdade. O seam foi aberto no fork (`api_key=None` significa "nao
+informei"; qualquer outro valor e usado tal qual, inclusive `""`), e desde a
+9B.1 este modulo o USA: a chave que chega em `ConfigCaptcha` desce ate o solver
+sem passar pelo ambiente. O fallback do fork continua existindo para o caller
+legado, e so para ele.
 
 O objeto `Page` do navegador atravessa esta fronteira, e isso e deliberado: e
 uma integracao stateful com o browser. Ele nao passa daqui — domain,
@@ -119,7 +123,17 @@ def resolver(
     if resolver_bruto is None:
         from resolvedor_captcha import solve_hcaptcha
 
-        resolver_bruto = solve_hcaptcha
+        # A chave viaja EXPLICITAMENTE ate o solver. Sem esta linha ele recebia
+        # `api_key=None`, caia no fallback de ambiente do fork, e o caminho novo
+        # so funcionava porque o adapter legado ainda populava `os.environ` —
+        # dependencia invisivel, provada por sonda na fatia 9B.1.
+        #
+        # Fica embutida no callable para nao mudar o contrato
+        # `Callable[[object], bool]` da fronteira externa.
+        chave = config.api_key
+
+        def resolver_bruto(alvo):
+            return solve_hcaptcha(alvo, api_key=chave)
 
     houve_falha_externa = False
 

@@ -132,12 +132,41 @@ class _Execucao:
 
         A ordem e a do legado e importa: depois de `encerrar()` nao ha pagina
         para clicar em 'Sair'.
+
+        O `finally` nao e decoracao. Sem ele, um bug nosso no logout pulava
+        `encerrar()` e o contexto do Chrome e o Playwright ficavam abertos —
+        o legado sempre os fechava, e piorar LOGIN_RESOURCE_CLEANUP_GAP nao
+        estava em questao. O bug continua subindo; o que muda e que os recursos
+        vao embora antes.
         """
         if self.sessao is None:
             return
-        navegador.encerrar_no_portal(self.sessao.pagina)
-        self.sessao.encerrar()
-        self.sessao = None
+        sessao, self.sessao = self.sessao, None
+        try:
+            navegador.encerrar_no_portal(sessao.pagina)
+        finally:
+            sessao.encerrar()
+
+    def encerrar_sessao_sem_apagar_a_causa(self) -> None:
+        """Encerra a sessao quando JA existe uma falha em curso.
+
+        CLEANUP_PRIMARY_ERROR_MASKING: um bug no teardown aqui SUBSTITUI a falha
+        que obrigou o teardown. O operador passa a ver o sintoma e perde o
+        diagnostico — e, dentro do laco, a execucao inteira aborta em vez de
+        retentar o CNPJ.
+
+        Isto nao e `except Exception: pass`. A falha do teardown nao desaparece:
+        ela vira um EVENTO, com o nome da classe, no mesmo instante. O que ela
+        deixa de fazer e apagar a causa.
+
+        Usado SO nos dois pontos onde ha falha em voo. No caminho normal quem
+        vale e `encerrar_sessao`, e la um bug de teardown sobe.
+        """
+        try:
+            self.encerrar_sessao()
+        except Exception as erro:  # noqa: BLE001 — ver docstring
+            self.emitir(eventos.FALHA_AO_ENCERRAR_SESSAO,
+                        tipo_da_falha=type(erro).__name__)
 
     def buscar_certificado(self, nome: str):
         return domain.buscar_certificado(
@@ -412,7 +441,7 @@ def _percorrer(execucao: _Execucao, itens: list) -> None:
             n = tentativas[item.cnpj]
             execucao.emitir(eventos.ITEM_FALHOU, posicao=item.posicao,
                             tentativa=n, maximo=MAX_TENTATIVAS_POR_ITEM)
-            execucao.encerrar_sessao()
+            execucao.encerrar_sessao_sem_apagar_a_causa()
             if n < MAX_TENTATIVAS_POR_ITEM:
                 avancar = False   # mesma linha de novo, com sessao nova
             else:
@@ -469,7 +498,15 @@ def executar(
             return
 
         _percorrer(execucao, itens)
-    finally:
+    except BaseException:
+        # Ha falha em voo — inclusive Ctrl+C. O teardown acontece, e um bug nele
+        # nao pode tomar o lugar da causa.
+        execucao.encerrar_sessao_sem_apagar_a_causa()
+        raise
+    else:
+        # Caminho normal: se o teardown tiver um bug nosso, ele aparece como o
+        # que e. Nao ha causa para proteger.
         execucao.encerrar_sessao()
+    finally:
         execucao.salvar()
         sessao_planilha.descartar()

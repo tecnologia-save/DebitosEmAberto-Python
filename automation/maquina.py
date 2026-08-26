@@ -43,9 +43,19 @@ def preparar_ambiente_do_certificado(cert_subject_cn: str, api_key: str) -> None
     disfarcada de limpeza.
 
     A chave do Gemini entra por PARAMETRO, e nao mais de `os.environ`: e o mesmo
-    valor que o chamador ja resolveu, com uma leitura de ambiente a menos.
+    valor que o chamador ja resolveu, com uma leitura de ambiente a menos. O
+    caminho novo NAO depende deste arquivo — desde a 9B.1 a chave desce ate o
+    solver por parametro, e este `.env` so alimenta o `load_dotenv` da PROXIMA
+    execucao.
 
-    Condicao de remocao: quando o fork deixar de ler o ambiente.
+    SECRET_PERSISTED_TO_DISK — registrado, nao corrigido
+    ----------------------------------------------------
+    Quando o arquivo ainda nao tem `GEMINI_API_KEY`, ela e gravada nele em texto
+    puro. E comportamento do legado, preservado: e o que faz a chave sobreviver
+    entre execucoes quando ela veio so por variavel de ambiente. Remover isso
+    seria mudanca funcional disfarcada de limpeza, e nao e desta microfatia.
+
+    Condicao de remocao: quando o runner assumir o transporte do segredo.
     """
     env_path = Path(diretorio_de_perfil()) / ".env"
     existentes: dict[str, str] = {}
