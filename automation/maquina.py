@@ -36,19 +36,26 @@ def diretorio_de_perfil() -> str:
 def preparar_ambiente_do_certificado(cert_subject_cn: str) -> None:
     """LEGACY_RUNTIME_STATE_TRANSPORT — leva CERT_SUBJECT_CN ate o fork.
 
-    Nao e segredo: e qual certificado esta execucao usa. Vai para dois lugares
-    porque o fork le dos dois, e nesta ordem:
+    Nao e segredo: e qual certificado esta execucao usa.
 
-        1. `os.environ`, que o fork consulta ao montar a flag
-           --auto-select-certificate-for-urls do Chrome;
-        2. o ARQUIVO `.env`, porque `fazer_login` chama
-           `load_dotenv(..., override=True)` e SOBRESCREVE o ambiente do processo
-           com o conteudo do arquivo. Sem a linha no arquivo, o valor que
-           acabamos de por no ambiente seria apagado no meio da propria
-           execucao.
+    `os.environ` e onde ele importa. O fork o le em dois pontos: como fallback ao
+    montar a flag --auto-select-certificate-for-urls (o parametro vence, entao na
+    pratica nao e usado), e na thread que resolve a janela nativa de certificado
+    quando a policy nao esta ativa — esta SEM parametro, so pelo ambiente.
 
-    Este segundo motivo foi verificado no fork, e nao suposto: escrever so no
-    ambiente nao basta.
+    O ARQUIVO `.env` recebe o mesmo valor por PRESERVACAO DO LEGADO, e nao por
+    necessidade demonstrada.
+
+    CORRECAO (fatia 12A). Ate aqui este docstring dizia que o arquivo era
+    necessario porque `fazer_login` chamava `load_dotenv(..., override=True)` e
+    sobrescreveria o ambiente no meio da execucao. A chamada existe, mas dentro
+    de `_resolver_certificado` — que so roda no ramo `.pfx`. No modo Windows
+    Store, o unico usado, ela NAO e alcancada. Eu tinha lido a chamada e nao o
+    ramo em que ela vive.
+
+    A escrita fica: remove-la seria mudanca funcional sem pedido, e o valor em
+    disco alimenta o `load_dotenv()` de import do fork numa proxima execucao.
+    Mas o motivo registrado agora e o certo.
 
     O SEGREDO NAO PASSA POR AQUI
     ----------------------------

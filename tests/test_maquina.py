@@ -144,11 +144,13 @@ def test_a_funcao_nem_recebe_mais_o_segredo():
 
 
 def test_o_cert_subject_cn_vai_para_os_DOIS_lugares(monkeypatch, tmp_path):
-    """LEGACY_RUNTIME_STATE_TRANSPORT, e o motivo foi verificado no fork.
+    """LEGACY_RUNTIME_STATE_TRANSPORT.
 
-    `fazer_login` chama `load_dotenv(..., override=True)`: escrever so no
-    ambiente do processo nao basta, porque o arquivo sobrescreve o ambiente no
-    meio da propria execucao.
+    O ambiente e o que importa no caminho vivo; o arquivo e preservacao do
+    legado. A fatia 12A corrigiu o motivo que este teste documentava: o
+    `load_dotenv(..., override=True)` do fork existe, mas so no ramo `.pfx`, e
+    nunca e alcancado no modo Windows Store. Ver
+    tests/test_concorrencia.py::test_modelo_a_o_override_do_dotenv_nao_alcanca_o_caminho_vivo.
     """
     import os
 
@@ -162,7 +164,7 @@ def test_o_cert_subject_cn_vai_para_os_DOIS_lugares(monkeypatch, tmp_path):
     ).read_text(encoding="utf-8")
 
     fonte_do_fork = (RAIZ / "servicos_rf_login" / "login.py").read_text(encoding="utf-8")
-    assert 'load_dotenv(dotenv_path=project_dir / ".env", override=True)' in fonte_do_fork
+    assert 'os.environ["CERT_SUBJECT_CN"] = cert_subject_cn' in fonte_do_fork
 
 
 def test_o_residuo_do_modo_pfx_continua_sendo_removido(monkeypatch, tmp_path):
