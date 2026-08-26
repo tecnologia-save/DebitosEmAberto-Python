@@ -468,7 +468,7 @@ def test_main_nao_passa_mais_page_para_o_fluxo_por_cnpj():
     fonte = (RAIZ / "main.py").read_text(encoding="utf-8-sig")
 
     assert "def processar_cnpj(sessao, cnpj" in fonte
-    assert "processar_cnpj(sessao, cnpj, row, caminho_planilha)" in fonte
+    assert "processar_cnpj(sessao, cnpj, caminho_planilha)" in fonte
 
 
 def test_desfecho_esperado_nao_viaja_como_exception_no_codigo_novo():

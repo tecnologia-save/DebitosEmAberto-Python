@@ -37,6 +37,7 @@ from __future__ import annotations
 import pathlib
 import re
 import zipfile
+from dataclasses import dataclass
 from typing import Any
 
 import openpyxl
@@ -55,6 +56,13 @@ COL_CNPJ = 0
 COL_CERTIFICADO = 2
 COL_STATUS_DCTFWEB = 3
 COL_STATUS_PROCESSOS = 4
+
+# Os valores gravados nas colunas de status. Ficam aqui porque sao conteudo da
+# planilha: a aplicacao pede "registre que nao ha debitos", nao escreve o texto.
+STATUS_CONCLUIDO = "Concluído"
+STATUS_SEM_DEBITOS = "Sem débitos"
+STATUS_DEBITOS_NAO_COMPENSAVEIS = "Débitos não compensáveis"
+STATUS_SEM_PROCESSOS = "Sem Processos"
 
 CABECALHO_DEBITOS = [
     "CNPJ", "TIPO", "TRIBUTO", "Rec.", "PA/Ex.",
@@ -182,7 +190,94 @@ def linhas_pendentes(df: pd.DataFrame, mapa: dict, encerra_linha) -> tuple[pd.Da
     return df[mask].reset_index(drop=True), int((~mask).sum())
 
 
+# ── O item que a aplicacao consome ────────────────────────────────────────────
+# A orquestracao lia `df.iterrows()`, `df.columns[0]` e `df.columns[2]` direto.
+# Isso obrigava quem coordena a automacao a conhecer pandas e a posicao fisica
+# das colunas. O item abaixo e a MENOR travessia possivel: o que o laco de fato
+# usa, e nada mais.
+
+# Valores que aparecem na celula de CNPJ e nao sao CNPJ. Preservados como estao:
+# "nan"/"None" sao o que `str()` produz sobre uma celula vazia lida pelo pandas.
+CNPJS_IGNORADOS = ("", "nan", "None", "00000000000000")
+
+
+@dataclass(frozen=True)
+class ItemPendente:
+    """Uma linha da aba 'Empresas' a processar.
+
+    `posicao` e OPACA: serve so para dizer ao operador em que ponto da lista a
+    execucao esta. A identidade continua sendo o CNPJ, exatamente como hoje —
+    inclusive com o PLANILHA_POSSIBLE_DEFECT do CNPJ duplicado, que uma
+    identidade por linha consertaria por acidente. Nao e desta fatia.
+
+    O que NAO esta aqui, de proposito: o estado das colunas D e E. Ele muda
+    DURANTE a execucao — o DCTFWeb grava D antes de os Processos comecarem — e
+    uma retentativa do mesmo CNPJ precisa ler o valor novo, nao o do inicio da
+    lista. Congelar D/E no item quebraria a retomada dentro da propria execucao.
+    """
+
+    posicao: int
+    cnpj: str
+    certificado: str
+
+    @property
+    def utilizavel(self) -> bool:
+        """False quando a celula de CNPJ nao trazia um CNPJ."""
+        return self.cnpj not in CNPJS_IGNORADOS
+
+
+def itens_pendentes(df: pd.DataFrame) -> list[ItemPendente]:
+    """Converte o DataFrame ja filtrado na lista que a aplicacao percorre.
+
+    Aqui morre o pandas do fluxo: daqui para cima ninguem ve DataFrame, Series,
+    indice ou numero de coluna.
+    """
+    col_cnpj = df.columns[COL_CNPJ]
+    col_cert = df.columns[COL_CERTIFICADO]
+    return [
+        ItemPendente(
+            posicao=int(idx),
+            cnpj=normalizar_cnpj(re.sub(r"\.0+$", "", str(linha[col_cnpj]).strip())),
+            certificado=str(linha[col_cert]).strip(),
+        )
+        for idx, linha in df.iterrows()
+    ]
+
+
+def certificados_dos_itens(itens: list[ItemPendente]) -> list[tuple[str, int]]:
+    """(certificado, quantidade de itens), na ordem de primeira aparicao."""
+    contagem: dict[str, int] = {}
+    for item in itens:
+        contagem[item.certificado] = contagem.get(item.certificado, 0) + 1
+    return list(contagem.items())
+
+
 # ── O recurso stateful ────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class RetomadaDaLinha:
+    """O progresso ja gravado para um CNPJ, sem os textos que o produziram."""
+
+    dctfweb_feito: bool
+    processos_feitos: bool
+    encerrada: bool
+
+    @property
+    def concluida(self) -> bool:
+        return self.dctfweb_feito and self.processos_feitos
+
+
+@dataclass(frozen=True)
+class RegistroDeDetalhe:
+    """O que uma gravacao de detalhe produziu, para quem quiser relatar."""
+
+    destinos: list[int]
+    marcado: bool
+
+    @property
+    def linhas(self) -> int:
+        return len(self.destinos)
+
 
 class SessaoPlanilha:
     """O workbook aberto uma vez e mantido em memoria.
@@ -307,6 +402,79 @@ class SessaoPlanilha:
                 return True
 
         return False
+
+    # ── API application-facing ────────────────────────────────────────────────
+    # Acima ficam as primitivas (coluna, aba, celula). Daqui para baixo, o
+    # vocabulario de quem coordena a automacao. Quem chama nao soletra "coluna
+    # D", nem o texto do status, nem em que aba o detalhe vai parar.
+    #
+    # Cada metodo devolve o que aconteceu, em vez de imprimir: o diagnostico
+    # continua sendo de quem chama.
+
+    def retomada(self, caminho: str, cnpj: str, encerra_linha) -> RetomadaDaLinha:
+        """O que ja foi feito por esta linha em execucoes anteriores.
+
+        `encerra_linha` entra por parametro pelo mesmo motivo de
+        `linhas_pendentes`: quais status terminam uma linha e regra do portal,
+        nao da planilha.
+
+        Lida a cada consulta de proposito. Dentro de uma mesma execucao o valor
+        muda — o DCTFWeb grava D antes de os Processos comecarem, e uma
+        retentativa do mesmo CNPJ tem de enxergar o D novo.
+        """
+        val_d, val_e = self.mapa_status(caminho).get(cnpj, ("", ""))
+        return RetomadaDaLinha(
+            dctfweb_feito=bool(val_d),
+            processos_feitos=bool(val_e),
+            encerrada=bool(encerra_linha(val_d)),
+        )
+
+    def registrar_sem_debitos(self, cnpj: str) -> bool:
+        return self.escrever_status(cnpj, STATUS_SEM_DEBITOS, COL_STATUS_DCTFWEB)
+
+    def registrar_debitos_nao_compensaveis(self, cnpj: str) -> bool:
+        return self.escrever_status(
+            cnpj, STATUS_DEBITOS_NAO_COMPENSAVEIS, COL_STATUS_DCTFWEB
+        )
+
+    def registrar_sem_processos(self, cnpj: str) -> bool:
+        return self.escrever_status(cnpj, STATUS_SEM_PROCESSOS, COL_STATUS_PROCESSOS)
+
+    def registrar_debitos_concluidos(self, cnpj: str) -> bool:
+        """Fecha a coluna do DCTFWeb sem ter havido tabela de DCTFWeb.
+
+        Acontece quando so existe Processo Fiscal: o portal nao oferece a divida
+        DCTFWeb, e a linha nao pode ficar pendente para sempre por causa disso.
+        """
+        return self.escrever_status(cnpj, STATUS_CONCLUIDO, COL_STATUS_DCTFWEB)
+
+    def registrar_recusa_do_portal(self, cnpj: str, status: str) -> bool:
+        """Grava o motivo pelo qual o portal recusou o CNPJ.
+
+        O texto vem da classificacao da recusa, nao da mensagem bruta do portal.
+        """
+        return self.escrever_status(cnpj, status, COL_STATUS_DCTFWEB)
+
+    def registrar_debitos(self, cnpj: str, linhas: list[dict]) -> RegistroDeDetalhe:
+        """Detalhe primeiro, status depois — nesta ordem, e ela e o contrato.
+
+        Se a gravacao do detalhe cair, a coluna nao e marcada e a proxima
+        execucao refaz o DCTFWeb inteiro. O inverso perderia os dados em
+        silencio. RESUMABILITY_CONTRACT.
+        """
+        destinos = self.anexar_debitos(linhas)
+        return RegistroDeDetalhe(
+            destinos=destinos,
+            marcado=self.escrever_status(cnpj, STATUS_CONCLUIDO, COL_STATUS_DCTFWEB),
+        )
+
+    def registrar_processos(self, cnpj: str, linhas: list[dict]) -> RegistroDeDetalhe:
+        """Mesma ordem e mesmo motivo do DCTFWeb, na coluna dos Processos."""
+        destinos = self.anexar_processos(linhas)
+        return RegistroDeDetalhe(
+            destinos=destinos,
+            marcado=self.escrever_status(cnpj, STATUS_CONCLUIDO, COL_STATUS_PROCESSOS),
+        )
 
     # ── Abas de detalhe ───────────────────────────────────────────────────────
 

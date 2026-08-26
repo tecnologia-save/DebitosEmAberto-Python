@@ -33,25 +33,33 @@ def sessao_de(pagina):
 
 @pytest.fixture
 def escritas(monkeypatch):
-    """Registra toda gravacao que o fluxo fiscal dispara, na ordem."""
-    registro = []
+    """Registra toda gravacao que o fluxo fiscal dispara, na ordem.
 
-    monkeypatch.setattr(
-        main, "escrever_coluna_d",
-        lambda caminho, cnpj, valor: registro.append(("D", valor)),
-    )
-    monkeypatch.setattr(
-        main, "escrever_coluna_e",
-        lambda caminho, cnpj, valor: registro.append(("E", valor)),
-    )
-    monkeypatch.setattr(
-        main, "escrever_aba_debitos",
-        lambda caminho, dados: registro.append(("aba Débitos", len(dados))),
-    )
-    monkeypatch.setattr(
-        main, "escrever_aba_processos_fiscais",
-        lambda caminho, dados: registro.append(("aba Processos", len(dados))),
-    )
+    CHARACTERIZATION_TARGET_CHANGE (fatia 9B): antes a substituicao era nos
+    wrappers de coluna do `main`, que sumiram. Agora e nas PRIMITIVAS da sessao
+    de planilha — celula e aba. A troca fortalece o teste em vez de enfraquece-lo:
+    a ordem "detalhe primeiro, status depois" passou a ser exercitada no codigo
+    de verdade (`registrar_debitos`), e nao mais no dublê.
+    """
+    from automation import planilha as _planilha
+
+    registro = []
+    rotulos = {_planilha.COL_STATUS_DCTFWEB: "D", _planilha.COL_STATUS_PROCESSOS: "E"}
+
+    def escrever_status(cnpj, valor, coluna):
+        registro.append((rotulos[coluna], valor))
+        return True
+
+    def anexar(rotulo):
+        def anexar_dados(dados):
+            registro.append((rotulo, len(dados)))
+            return list(range(2, 2 + len(dados)))
+        return anexar_dados
+
+    monkeypatch.setattr(main, "_wb_sessao", lambda caminho: None)
+    monkeypatch.setattr(main._SESSAO, "escrever_status", escrever_status)
+    monkeypatch.setattr(main._SESSAO, "anexar_debitos", anexar("aba Débitos"))
+    monkeypatch.setattr(main._SESSAO, "anexar_processos", anexar("aba Processos"))
     return registro
 
 
@@ -150,9 +158,9 @@ def test_i_os_skips_vem_da_planilha_e_nao_do_portal():
 
     fonte = inspect.getsource(main.processar_cnpj)
 
-    assert "skip_dctfweb  = bool(val_d)" in fonte
-    assert "skip_processo = bool(val_e)" in fonte
-    assert "ler_status_cnpj" in fonte
+    assert "skip_dctfweb  = retomada.dctfweb_feito" in fonte
+    assert "skip_processo = retomada.processos_feitos" in fonte
+    assert "retomada_da_linha" in fonte
 
 
 # ── G · DCTFWeb ───────────────────────────────────────────────────────────────

@@ -22,7 +22,6 @@ import argparse
 import base64
 import logging
 import os
-import re
 import sys
 import time
 from pathlib import Path
@@ -320,32 +319,30 @@ def mapa_status(caminho_planilha: str) -> dict[str, tuple[str, str]]:
     return _SESSAO.mapa_status(caminho_planilha)
 
 
-def _escrever_status(caminho_planilha: str, cnpj: str, valor: str,
-                     coluna: int, rotulo: str) -> None:
-    """Escreve `valor` na coluna indicada da linha do CNPJ na aba 'Empresas'."""
-    _wb_sessao(caminho_planilha)
-    if _SESSAO.escrever_status(cnpj, valor, coluna):
+def _relatar_status(cnpj: str, rotulo: str, valor: str, gravou: bool) -> None:
+    """Apresenta o que a gravacao de status produziu.
+
+    A integração devolve `gravou`; a decisão de imprimir — e o que — continua
+    sendo do adapter local. É o mesmo corte usado no certificado e no portal.
+    """
+    if gravou:
         print(f"    [✓] Coluna {rotulo} → '{valor}'  (CNPJ {cnpj})")
         return
 
     print(f"    [!] CNPJ {cnpj} não encontrado na planilha para escrita em {rotulo}.")
 
 
-def escrever_coluna_d(caminho_planilha: str, cnpj: str, valor: str) -> None:
-    """Escreve o status do DCTFWeb na coluna D da aba 'Empresas'."""
-    _escrever_status(caminho_planilha, cnpj, valor,
-                     coluna=planilha.COL_STATUS_DCTFWEB, rotulo="D")
+def _registrar(caminho_planilha: str, cnpj: str, rotulo: str, valor: str,
+               metodo: str) -> None:
+    """Chama um método semântico da sessão e relata o resultado."""
+    _wb_sessao(caminho_planilha)
+    _relatar_status(cnpj, rotulo, valor, getattr(_SESSAO, metodo)(cnpj))
 
 
-def escrever_coluna_e(caminho_planilha: str, cnpj: str, valor: str) -> None:
-    """Escreve o status dos Processos Fiscais na coluna E da aba 'Empresas'."""
-    _escrever_status(caminho_planilha, cnpj, valor,
-                     coluna=planilha.COL_STATUS_PROCESSOS, rotulo="E")
-
-
-def ler_status_cnpj(caminho_planilha: str, cnpj: str) -> tuple[str, str]:
-    """Lê os valores das colunas D e E da aba 'Empresas' para o CNPJ dado."""
-    return mapa_status(caminho_planilha).get(cnpj, ("", ""))
+def retomada_da_linha(caminho_planilha: str, cnpj: str):
+    """O progresso já gravado para o CNPJ, sem os textos que o produziram."""
+    _wb_sessao(caminho_planilha)
+    return _SESSAO.retomada(caminho_planilha, cnpj, _status_encerra_linha)
 
 
 def filtrar_pendentes(df: pd.DataFrame, caminho_planilha: str) -> tuple[pd.DataFrame, int]:
@@ -353,14 +350,6 @@ def filtrar_pendentes(df: pd.DataFrame, caminho_planilha: str) -> tuple[pd.DataF
     return planilha.linhas_pendentes(
         df, mapa_status(caminho_planilha), _status_encerra_linha
     )
-
-
-def escrever_aba_debitos(caminho_planilha: str, dados: list[dict]) -> None:
-    """Adiciona os dados extraídos da tabela DCTFWeb na aba 'Débitos' da planilha."""
-    _wb_sessao(caminho_planilha)
-    destinos = _SESSAO.anexar_debitos(dados)
-    print(f"    [✓] Aba 'Débitos': {len(dados)} linha(s) gravada(s) em "
-          f"{planilha.descrever_destinos(destinos)}.")
 
 
 # ── DCTFWeb: extração da tabela ────────────────────────────────────────────────
@@ -381,19 +370,14 @@ def extrair_debitos_dctfweb(sessao, cnpj: str, caminho_planilha: str) -> None:
 
     print(f"    [✓] Total: {len(extracao)} linha(s) de débito DCTFWeb "
           f"em {extracao.paginas} página(s).")
-    escrever_aba_debitos(caminho_planilha, list(extracao.linhas))
-    escrever_coluna_d(caminho_planilha, cnpj, "Concluído")
+    _wb_sessao(caminho_planilha)
+    registro = _SESSAO.registrar_debitos(cnpj, list(extracao.linhas))
+    print(f"    [✓] Aba 'Débitos': {registro.linhas} linha(s) gravada(s) em "
+          f"{planilha.descrever_destinos(registro.destinos)}.")
+    _relatar_status(cnpj, "D", planilha.STATUS_CONCLUIDO, registro.marcado)
 
 
 # ── Processo Fiscal: extração de cards ────────────────────────────────────────
-
-def escrever_aba_processos_fiscais(caminho_planilha: str, dados: list[dict]) -> None:
-    """Adiciona linhas na aba 'Processos Fiscais' (cria se não existir)."""
-    _wb_sessao(caminho_planilha)
-    destinos = _SESSAO.anexar_processos(dados)
-    print(f"    [✓] Aba 'Processos Fiscais': {len(dados)} linha(s) gravada(s) em "
-          f"{planilha.descrever_destinos(destinos)}.")
-
 
 def extrair_processo_fiscal(sessao, cnpj: str, caminho_planilha: str) -> None:
     """TRANSITIONAL_PERSISTENCE_ADAPTER — mesma divisão do DCTFWeb."""
@@ -404,8 +388,11 @@ def extrair_processo_fiscal(sessao, cnpj: str, caminho_planilha: str) -> None:
 
     print(f"    [✓] Total: {len(extracao)} linha(s) de processo fiscal "
           f"em {extracao.paginas} página(s).")
-    escrever_aba_processos_fiscais(caminho_planilha, list(extracao.linhas))
-    escrever_coluna_e(caminho_planilha, cnpj, "Concluído")
+    _wb_sessao(caminho_planilha)
+    registro = _SESSAO.registrar_processos(cnpj, list(extracao.linhas))
+    print(f"    [✓] Aba 'Processos Fiscais': {registro.linhas} linha(s) gravada(s) em "
+          f"{planilha.descrever_destinos(registro.destinos)}.")
+    _relatar_status(cnpj, "E", planilha.STATUS_CONCLUIDO, registro.marcado)
 
 
 # ── Navegação — Portal ────────────────────────────────────────────────────────
@@ -483,17 +470,22 @@ def verificar_pendencias(sessao, cnpj: str, caminho_planilha: str,
 
     if not situacao.com_pendencia:
         if not skip_dctfweb:
-            escrever_coluna_d(caminho_planilha, cnpj, "Sem débitos")
+            _registrar(caminho_planilha, cnpj, "D", planilha.STATUS_SEM_DEBITOS,
+                       "registrar_sem_debitos")
         if not skip_processo:
-            escrever_coluna_e(caminho_planilha, cnpj, "Sem Processos")
+            _registrar(caminho_planilha, cnpj, "E", planilha.STATUS_SEM_PROCESSOS,
+                       "registrar_sem_processos")
         return "sem_pendencia"
 
     # Nenhum botão de ação encontrado
     if not situacao.tem_dctfweb and not situacao.tem_processo:
         if not skip_dctfweb:
-            escrever_coluna_d(caminho_planilha, cnpj, "Débitos não compensáveis")
+            _registrar(caminho_planilha, cnpj, "D",
+                       planilha.STATUS_DEBITOS_NAO_COMPENSAVEIS,
+                       "registrar_debitos_nao_compensaveis")
         if not skip_processo:
-            escrever_coluna_e(caminho_planilha, cnpj, "Sem Processos")
+            _registrar(caminho_planilha, cnpj, "E", planilha.STATUS_SEM_PROCESSOS,
+                       "registrar_sem_processos")
         return "nao_compensavel"
 
     # ── Dívida DCTFWeb ────────────────────────────────────────────────────────
@@ -508,21 +500,22 @@ def verificar_pendencias(sessao, cnpj: str, caminho_planilha: str,
         extrair_processo_fiscal(sessao, cnpj, caminho_planilha)
         if not situacao.tem_dctfweb and not skip_dctfweb:
             # Sem DCTFWeb e sem skip → marca D como concluído via Fiscal
-            escrever_coluna_d(caminho_planilha, cnpj, "Concluído")
+            _registrar(caminho_planilha, cnpj, "D", planilha.STATUS_CONCLUIDO,
+                       "registrar_debitos_concluidos")
     elif situacao.tem_processo and skip_processo:
         print("    → Processos Fiscais já processados anteriormente. Pulando...")
     else:
         # Não existe botão de Processo Fiscal
         if not skip_processo:
-            escrever_coluna_e(caminho_planilha, cnpj, "Sem Processos")
+            _registrar(caminho_planilha, cnpj, "E", planilha.STATUS_SEM_PROCESSOS,
+                       "registrar_sem_processos")
 
     return "concluido"
 
 
 # ── Processamento por CNPJ ────────────────────────────────────────────────────
 
-def processar_cnpj(sessao, cnpj: str, row: pd.Series,
-                   caminho_planilha: str) -> str:
+def processar_cnpj(sessao, cnpj: str, caminho_planilha: str) -> str:
     """Executa o fluxo completo para um CNPJ no portal de Serviços RF.
 
     Antes de qualquer navegação, lê as colunas D e E da planilha para
@@ -539,23 +532,23 @@ def processar_cnpj(sessao, cnpj: str, row: pd.Series,
     print(f"    → Processando CNPJ {cnpj}...")
 
     # ── Verifica o que já foi processado ─────────────────────────────────────
-    val_d, val_e = ler_status_cnpj(caminho_planilha, cnpj)
+    retomada = retomada_da_linha(caminho_planilha, cnpj)
 
-    if _status_encerra_linha(val_d):
-        print(f"    → Coluna D = '{val_d}'. Não há o que processar. Pulando.")
+    if retomada.encerrada:
+        print("    → Coluna D tem status terminal. Não há o que processar. Pulando.")
         return "ja_processado"
 
-    if val_d and val_e:
-        print(f"    → Já totalmente processado (D='{val_d}', E='{val_e}'). Pulando.")
+    if retomada.concluida:
+        print("    → Já totalmente processado (colunas D e E preenchidas). Pulando.")
         return "ja_processado"
 
-    skip_dctfweb  = bool(val_d)   # D preenchida → DCTFWeb já concluído
-    skip_processo = bool(val_e)   # E preenchida → Processos Fiscais já concluídos
+    skip_dctfweb  = retomada.dctfweb_feito
+    skip_processo = retomada.processos_feitos
 
     if skip_dctfweb:
-        print(f"    → Coluna D já preenchida ('{val_d}'). Fará apenas Processos Fiscais.")
+        print("    → Coluna D já preenchida. Fará apenas Processos Fiscais.")
     if skip_processo:
-        print(f"    → Coluna E já preenchida ('{val_e}'). Fará apenas Débitos DCTFWeb.")
+        print("    → Coluna E já preenchida. Fará apenas Débitos DCTFWeb.")
 
     # ── Navegação e processamento ─────────────────────────────────────────────
     # A sessão já está autenticada; ir direto para representação.
@@ -566,7 +559,11 @@ def processar_cnpj(sessao, cnpj: str, row: pd.Series,
             # Registra o motivo na planilha antes de propagar, para que a recusa
             # fique visível em vez de a linha voltar em branco.
             if resultado.status_coluna_d:
-                escrever_coluna_d(caminho_planilha, cnpj, resultado.status_coluna_d)
+                _wb_sessao(caminho_planilha)
+                _relatar_status(
+                    cnpj, "D", resultado.status_coluna_d,
+                    _SESSAO.registrar_recusa_do_portal(cnpj, resultado.status_coluna_d),
+                )
             # TRANSITIONAL — converte o resultado de volta na exception que o laço
             # legado espera. A mensagem é CONSTANTE: a antiga carregava o CNPJ e o
             # texto bruto do portal, e este ponto de `raise` é novo.
@@ -604,10 +601,8 @@ def processar(df: pd.DataFrame, certs: dict[str, dict],
       (sem voltar ao eCAC), aguardando o intervalo mínimo de 30s.
     - Troca de certificado: fecha o navegador atual; próximo grupo faz login fresco.
     """
-    rows     = list(df.iterrows())
-    total    = len(rows)
-    col_cnpj = df.columns[0]   # Coluna A = CNPJ
-    col_cert = df.columns[2]   # Coluna C = CERTIFICADO
+    itens = planilha.itens_pendentes(df)
+    total = len(itens)
 
     cert_atual     = None
     sessao = None           # login.SessaoReceita | None
@@ -616,15 +611,14 @@ def processar(df: pd.DataFrame, certs: dict[str, dict],
     _retentativas_cnpj: dict[str, int] = {}          # contador por CNPJ
 
     i = 0
-    while i < len(rows):
-        idx, row = rows[i]
-
-        cnpj_raw    = re.sub(r"\.0+$", "", str(row[col_cnpj]).strip())
-        cnpj        = _normalizar_cnpj(cnpj_raw)
-        certificado = str(row[col_cert]).strip()
+    while i < len(itens):
+        item        = itens[i]
+        idx         = item.posicao
+        cnpj        = item.cnpj
+        certificado = item.certificado
 
         # Ignora linhas sem CNPJ válido
-        if cnpj in ("", "nan", "None", "00000000000000"):
+        if not item.utilizavel:
             print(f"  [{idx + 1}/{total}] CNPJ inválido/vazio. Ignorando linha.")
             i += 1
             continue
@@ -697,7 +691,7 @@ def processar(df: pd.DataFrame, certs: dict[str, dict],
         # ── Processa pendências deste CNPJ ────────────────────────────────────
         _avancar = True
         try:
-            processar_cnpj(sessao, cnpj, row, caminho_planilha)
+            processar_cnpj(sessao, cnpj, caminho_planilha)
 
         except FalhaPermanente as e:
             # Procuração expirada/inválida ou CNPJ não autorizado — não retentar.
@@ -839,7 +833,6 @@ def main() -> None:
 
     # Passo 3: leitura e ordenação por certificado (coluna C)
     df           = ler_e_ordenar(planilha)
-    col_cert     = df.columns[2]
     total_lido   = len(df)
 
     # Passo 4: descarta o que já está concluído ANTES de abrir o navegador.
@@ -856,10 +849,9 @@ def main() -> None:
         fechar_planilha()
         return
 
-    certificados = df[col_cert].dropna().unique().tolist()
-    print(f"Certificados: {len(certificados)}")
-    for cert in certificados:
-        qtd    = (df[col_cert] == cert).sum()
+    resumo = planilha.certificados_dos_itens(planilha.itens_pendentes(df))
+    print(f"Certificados: {len(resumo)}")
+    for cert, qtd in resumo:
         chave  = _buscar_certificado(cert, certs)
         status = "✓" if chave is not None else "✗ NÃO ENCONTRADO"
         print(f"  {status}  {cert}  ({qtd} CNPJ{'s' if qtd > 1 else ''} pendente(s))")
