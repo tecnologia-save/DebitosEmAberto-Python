@@ -255,8 +255,8 @@ def test_a_maquina_nao_e_deposito_de_impureza():
                if not n.startswith("_")]
 
     assert sorted(funcoes) == [
-        "abrir_sessao", "diretorio_de_perfil",
-        "garantir_policy_do_windows", "preparar_ambiente_do_certificado",
+        "abrir_sessao", "diretorio_de_perfil", "garantir_policy_do_windows",
+        "liberar_policy_do_windows", "preparar_ambiente_do_certificado",
     ]
 
 

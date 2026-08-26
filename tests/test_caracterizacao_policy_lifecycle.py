@@ -211,20 +211,22 @@ def test_d_a_escrita_apaga_os_valores_anteriores_da_chave():
 
 # ── E · I · nao existe cleanup normal ─────────────────────────────────────────
 
-def test_e_nenhum_caminho_da_aplicacao_limpa_a_policy():
-    """I · cleanup normal existe hoje: NAO.
+def test_e_o_cleanup_normal_passou_a_existir_e_mora_na_fiacao():
+    """ANTES da fatia 12B: nenhum caminho da aplicacao chamava
+    `limpar_autoselect`, e a policy so saia quando o PROCESSO morria.
 
-    Nem o app, nem os adapters, nem a fiacao chamam `limpar_autoselect`. O unico
-    ponto do projeto que chama e o dispatch de `--guard` no main legado, e la e
-    o tratamento de erro do proprio guardiao.
+    AGORA: existe um caminho normal, e ele mora onde as primitivas do Windows
+    moram. O app pede; ele nao conhece winreg.
     """
-    chamadores = []
-    for arquivo in ("automation/app.py", "automation/maquina.py", "runner.py",
-                    "local.py", "automation/policy_certificado.py"):
-        if "limpar_autoselect" in (RAIZ / arquivo).read_text(encoding="utf-8"):
-            chamadores.append(arquivo)
+    chamadores = [
+        arquivo for arquivo in ("automation/app.py", "runner.py", "local.py",
+                                "automation/policy_certificado.py")
+        if "limpar_autoselect" in (RAIZ / arquivo).read_text(encoding="utf-8")
+    ]
+    assert chamadores == [], "nem o app nem os adapters chamam a primitiva"
 
-    assert chamadores == []
+    fiacao = (RAIZ / "automation" / "maquina.py").read_text(encoding="utf-8")
+    assert "cert_windows.limpar_autoselect()" in fiacao
 
 
 def test_i_a_policy_sobrevive_ao_retorno_de_app_executar():
@@ -246,14 +248,19 @@ def test_i_a_policy_sobrevive_ao_retorno_de_app_executar():
     )
 
 
-def test_i_o_app_termina_sem_tocar_na_policy():
-    """O `finally` de `executar` fecha sessao e planilha — e mais nada."""
+def test_i_o_app_libera_a_policy_por_ultimo():
+    """ANTES: o `finally` de `executar` fechava sessao e planilha, e mais nada —
+    a policy ficava para o guardiao, que so age quando o processo morre.
+
+    AGORA: a liberacao acontece, e acontece POR ULTIMO. A ordem importa: enquanto
+    houver navegador vivo, a policy ainda esta em uso.
+    """
     fonte = inspect.getsource(app.executar)
     trecho = fonte[fonte.index("finally:"):]
 
-    assert "salvar()" in trecho and "descartar()" in trecho, "o que ele faz"
-    assert "policy" not in trecho.lower(), "e o que ele nao faz"
-    assert "limpar" not in trecho.lower()
+    assert "salvar()" in trecho and "descartar()" in trecho
+    assert "liberar_policy()" in trecho
+    assert trecho.index("descartar()") < trecho.index("liberar_policy()")
 
 
 # ── F · o guardiao depois de uma limpeza normal ───────────────────────────────
@@ -358,3 +365,227 @@ def test_o_app_nao_importa_as_primitivas_do_windows():
             nomes.add(no.module.split(".")[0])
 
     assert "winreg" not in nomes and "cert_windows" not in nomes
+
+
+# ── A liberação normal: só o que é nosso ──────────────────────────────────────
+
+class PlanilhaInerte:
+    def __init__(self):
+        self.estado = {}
+
+    def precisa_gravar(self):
+        return False
+
+    def descartar(self):
+        pass
+
+
+def execucao(emissor=None):
+    return app._Execucao(PlanilhaInerte(), "p.xlsx", CONFIG, emissor)
+
+
+def test_a_policy_propria_e_removida_no_fim(monkeypatch):
+    """ATIVADA: esta execução provocou a escrita, então ela sai antes do retorno."""
+    remocoes = []
+    monkeypatch.setattr(app.maquina, "liberar_policy_do_windows",
+                        lambda: remocoes.append(1))
+
+    ex = execucao()
+    ex.policy_propria = True
+    ex.liberar_policy()
+
+    assert remocoes == [1]
+    assert ex.policy_propria is False, "não tenta remover duas vezes"
+
+
+def test_a_policy_de_outro_NAO_e_removida(monkeypatch):
+    """JA_ATIVA: a policy já estava lá quando chegamos.
+
+    Apagá-la seria repetir, do outro lado, o mesmo cleanup cego que produziu
+    GLOBAL_CERT_POLICY_CONCURRENCY_RISK — só que agora seria a NOSSA execução
+    removendo o estado de outra.
+    """
+    remocoes = []
+    monkeypatch.setattr(app.maquina, "liberar_policy_do_windows",
+                        lambda: remocoes.append(1))
+
+    ex = execucao()
+    ex.policy_propria = False
+    ex.liberar_policy()
+
+    assert remocoes == []
+
+
+def test_o_ownership_nasce_do_tem_guardiao(monkeypatch):
+    """`tem_guardiao` é a única informação de ownership que existe hoje, e ela
+    responde exatamente à pergunta certa: esta execução provocou a escrita?"""
+    from automation.policy_certificado import ATIVADA as _ATIVADA
+    from automation.policy_certificado import JA_ATIVA as _JA_ATIVA
+    from automation.policy_certificado import ResultadoDaPolicy
+
+    for situacao, guardiao, esperado in (
+        (_JA_ATIVA, False, False),
+        (_ATIVADA, True, True),
+    ):
+        monkeypatch.setattr(app.maquina, "garantir_policy_do_windows",
+                            lambda cn, s=situacao, g=guardiao: ResultadoDaPolicy(s, g))
+        ex = execucao()
+        ex.certificados = {"c": {"subject_cn": CN_A, "serial": "0A01"}}
+        ex.trocar_certificado(
+            __import__("automation.planilha", fromlist=["x"]).ItemPendente(
+                posicao=0, cnpj="11111111000191", certificado=CN_A
+            )
+        )
+        assert ex.policy_propria is esperado, situacao
+
+
+def test_o_ownership_sobrevive_a_troca_de_certificado(monkeypatch):
+    """Um certificado adotado (JA_ATIVA) depois de um escrito (ATIVADA) não
+    apaga a responsabilidade: a policy da máquina continua sendo consequência
+    desta execução."""
+    from automation.policy_certificado import ATIVADA as _ATIVADA
+    from automation.policy_certificado import JA_ATIVA as _JA_ATIVA
+    from automation.policy_certificado import ResultadoDaPolicy
+
+    resultados = iter([ResultadoDaPolicy(_ATIVADA, True),
+                       ResultadoDaPolicy(_JA_ATIVA, False)])
+    monkeypatch.setattr(app.maquina, "garantir_policy_do_windows",
+                        lambda cn: next(resultados))
+    from automation.planilha import ItemPendente
+
+    ex = execucao()
+    ex.certificados = {"c": {"subject_cn": CN_A, "serial": "0A01"}}
+    ex.trocar_certificado(ItemPendente(0, "11111111000191", CN_A))
+    assert ex.policy_propria is True
+
+    ex.trocar_certificado(ItemPendente(1, "22222222000172", CN_A))
+    assert ex.policy_propria is True, "continua sendo nossa"
+
+
+# ── §21 · a liberação não pode mascarar a causa ───────────────────────────────
+
+def test_falha_ao_remover_vira_evento_e_nao_interrompe(monkeypatch):
+    """O guardião ainda é fallback, e o operador precisa saber que a policy ficou."""
+    from automation import eventos
+
+    monkeypatch.setattr(
+        app.maquina, "liberar_policy_do_windows",
+        lambda: (_ for _ in ()).throw(PermissionError("acesso negado ao registro")),
+    )
+    emitidos = []
+    ex = execucao(emitidos.append)
+    ex.policy_propria = True
+
+    ex.liberar_policy()   # não levanta
+
+    (evento,) = emitidos
+    assert evento.codigo == eventos.POLICY_NAO_REMOVIDA
+    assert evento.tipo_da_falha == "PermissionError"
+    assert "acesso negado" not in str(evento), "o nome da classe, nunca a mensagem"
+
+
+def test_a_falha_de_remocao_nao_apaga_a_causa_primaria(monkeypatch):
+    """A liberação roda no `finally` de `executar`. Uma falha conhecida dela não
+    pode tomar o lugar do erro que interrompeu a execução."""
+    monkeypatch.setattr(
+        app.maquina, "liberar_policy_do_windows",
+        lambda: (_ for _ in ()).throw(PermissionError("acesso negado")),
+    )
+    ex = execucao()
+    ex.policy_propria = True
+
+    with pytest.raises(RuntimeError, match="ERRO PRIMARIO"):
+        try:
+            raise RuntimeError("ERRO PRIMARIO: o portal caiu")
+        finally:
+            ex.liberar_policy()
+
+
+def test_a_frase_da_falha_nao_carrega_registro_nem_cn():
+    from automation import apresentacao_eventos, eventos
+
+    frase = apresentacao_eventos.frase(
+        eventos.EventoOperacional(eventos.POLICY_NAO_REMOVIDA,
+                                  tipo_da_falha="PermissionError")
+    )
+
+    assert "Software" not in frase and "HKCU" not in frase and "HKLM" not in frase
+    assert CN_A not in frase
+    assert "guardião" in frase, "diz ao operador que ainda há um fallback"
+
+
+# ── O limite de liberação do lock ─────────────────────────────────────────────
+
+def test_no_retorno_de_executar_a_policy_propria_ja_saiu():
+    """A propriedade que a fatia 12C precisa: quando `executar` retorna, nenhuma
+    policy escrita por esta execução continua instalada.
+
+    Isto NÃO cobre uma policy adotada (JA_ATIVA) — ela nunca foi nossa, e
+    continua sendo POLICY_STALE_OWNERSHIP_GAP.
+    """
+    fonte = inspect.getsource(app.executar)
+
+    assert "liberar_policy()" in fonte
+    assert fonte.index("_percorrer(execucao, itens)") < fonte.index("liberar_policy()")
+    assert "finally:" in fonte[: fonte.index("liberar_policy()")], "roda mesmo em falha"
+
+
+# ── §16 · §17 · §18 · o que mais precisa estar quieto no momento do release ───
+
+def test_cert_subject_cn_nao_impede_a_liberacao_do_lock():
+    """§16. O valor sobrevive à execução — em `os.environ` e no `.env` — mas
+    ninguém o consome depois que a sessão fecha, e a próxima execução o
+    sobrescreve ANTES de autenticar.
+
+    `abrir_sessao` prepara o ambiente e só então chama o fork: não há janela em
+    que uma execução nova autentique com o valor da anterior.
+    """
+    fonte = inspect.getsource(
+        __import__("automation.maquina", fromlist=["x"]).abrir_sessao
+    )
+
+    # "autenticar" solto casaria com "autenticada" no docstring — pela quarta
+    # vez neste projeto uma asserção bateu na prosa. Marcador de chamada.
+    assert fonte.index("preparar_ambiente_do_certificado(") < fonte.index("login.autenticar(")
+
+
+def test_o_caminho_de_sucesso_devolve_perfil_e_porta():
+    """§17. `SessaoReceita.encerrar` fecha o CONTEXTO e depois para o Playwright,
+    nessa ordem. Depois disso nenhum Chrome desta execução detém o perfil nem a
+    porta 9222."""
+    from automation import login
+
+    fonte = inspect.getsource(login.SessaoReceita.encerrar)
+
+    assert '(self.contexto, "close")' in fonte
+    assert '(self.playwright, "stop")' in fonte
+    assert fonte.index("contexto") < fonte.index("playwright"), "contexto primeiro"
+
+
+def test_o_caminho_de_falha_de_login_nao_fecha_o_contexto():
+    """§18 · LOGIN_RESOURCE_CLEANUP_GAP, e ele é o RESÍDUO desta fatia.
+
+    Todo `return None` de `fazer_login` chama `p.stop()` e nenhum chama
+    `context.close()`. Se `p.stop()` libera o perfil e a porta é comportamento do
+    Playwright/Chrome — não do nosso código — e portanto
+    UNKNOWN_REQUIRING_VALIDATION.
+
+    Consequência para a 12C: o limite de liberação do lock está definido para a
+    policy e para o caminho de sucesso, e continua ABERTO para o caminho de
+    falha de login. Não corrigido aqui: é o fork.
+    """
+    fonte = (RAIZ / "servicos_rf_login" / "login.py").read_text(encoding="utf-8")
+    corpo = fonte[fonte.index("p = sync_playwright().start()"):]
+
+    assert corpo.count("p.stop()") >= 6, "vários caminhos de falha param o Playwright"
+    assert "context.close()" not in corpo, "e nenhum fecha o contexto"
+
+
+def test_o_app_nao_depende_do_fork_para_fechar_o_que_ele_mesmo_abriu():
+    """O contrapeso: quando o login DEVOLVE uma sessão, quem a fecha é o app —
+    e aí o contexto é fechado. O resíduo é só o caminho em que o fork desiste
+    antes de devolver."""
+    fonte = inspect.getsource(app._Execucao.encerrar_sessao)
+
+    assert "sessao.encerrar()" in fonte
+    assert "finally:" in fonte, "os recursos saem mesmo se o logout falhar"

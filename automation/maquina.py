@@ -125,3 +125,20 @@ def garantir_policy_do_windows(cn: str) -> ResultadoDaPolicy:
     import cert_windows
 
     return cert_windows.iniciar_guarda_detalhado(cn)
+
+
+def liberar_policy_do_windows() -> None:
+    """Remove a policy do Chrome desta maquina.
+
+    Chamada SO quando a execucao provocou a escrita — ver
+    `_Execucao.liberar_policy`. A primitiva e cega: ela apaga a chave nas duas
+    colmeias sem conferir de quem e. Quem confere o ownership e o chamador, e e
+    por isso que esta funcao nao recebe CN nenhum: nao ha decisao aqui.
+
+    O guardiao continua existindo como fallback de CRASH. Esta funcao e o
+    caminho NORMAL — a diferenca importa porque o guardiao so age quando o
+    processo inteiro morre, e um adapter reutilizavel nao morre.
+    """
+    import cert_windows
+
+    cert_windows.limpar_autoselect()

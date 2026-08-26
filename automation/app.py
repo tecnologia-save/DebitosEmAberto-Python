@@ -89,6 +89,9 @@ class _Execucao:
         self.certificados: dict[str, dict] = {}
         self.certificado_atual: str | None = None
         self.policy_confiavel = True
+        # Esta execucao provocou a escrita de alguma policy? E o que autoriza
+        # remove-la no fim. Uma policy que ja existia NAO e nossa.
+        self.policy_propria = False
         self.sessao = None            # login.SessaoReceita | None
 
     # ── O seam de eventos ─────────────────────────────────────────────────────
@@ -117,6 +120,35 @@ class _Execucao:
                         tipo_da_falha=type(erro).__name__)
             return
         self.planilha.marcar_gravado()
+
+    def liberar_policy(self) -> None:
+        """Remove a policy do Chrome, se esta execucao a escreveu.
+
+        POLICY_LIFETIME_EXCEEDS_APP_EXECUTION: o guardiao so limpa quando o
+        PROCESSO principal morre, e um adapter reutilizavel nao morre. Sem esta
+        remocao, a policy sobrevivia ao retorno de `executar` por tempo
+        indefinido — e nenhum lock de host poderia ser liberado com seguranca.
+
+        SO remove o que e nosso. Uma policy que ja estava escrita quando
+        chegamos (JA_ATIVA) nao pertence a esta execucao: apaga-la seria repetir,
+        do outro lado, o mesmo cleanup cego que produziu
+        GLOBAL_CERT_POLICY_CONCURRENCY_RISK.
+
+        O guardiao continua como fallback de crash. Depois desta remocao ele
+        encontra a chave inexistente, `FileNotFoundError` e engolido pela
+        primitiva, e ele encerra — ele nao reescreve nada depois de comecar.
+
+        Falha conhecida do registro vira EVENTO e nao interrompe: a policy
+        continua na maquina, o operador precisa saber, e o guardiao ainda pode
+        remove-la. O catch e estreito pelo mesmo motivo de `salvar`.
+        """
+        if not self.policy_propria:
+            return
+        self.policy_propria = False
+        try:
+            maquina.liberar_policy_do_windows()
+        except OSError as erro:
+            self.emitir(eventos.POLICY_NAO_REMOVIDA, tipo_da_falha=type(erro).__name__)
 
     def registrar(self, codigo: str, metodo: str, posicao: int, *args) -> None:
         """Pede uma gravacao semantica e relata o que aconteceu."""
@@ -223,6 +255,7 @@ class _Execucao:
 
         resultado = maquina.garantir_policy_do_windows(self.subject_cn(chave))
         self.policy_confiavel = resultado.confiavel
+        self.policy_propria = self.policy_propria or resultado.tem_guardiao
         if not self.policy_confiavel:
             self.emitir(eventos.POLICY_NAO_CONFIAVEL)
         elif not resultado.sera_limpa:
@@ -537,3 +570,6 @@ def executar(
     finally:
         execucao.salvar()
         sessao_planilha.descartar()
+        # Por ultimo, e depois de a sessao ter sido encerrada nos dois ramos
+        # acima: enquanto houver navegador vivo, a policy ainda esta em uso.
+        execucao.liberar_policy()
