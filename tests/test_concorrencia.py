@@ -251,7 +251,9 @@ def test_o_intervalo_nao_influencia_qual_certificado_e_usado():
     arvore = ast.parse(inspect.getsource(representacao._aguardar_intervalo_troca))
     for no in ast.walk(arvore):   # fora a docstring, que fala de CNPJ em prosa
         corpo = getattr(no, "body", None)
-        if (corpo and isinstance(corpo[0], ast.Expr)
+        # `body` de um lambda e uma EXPRESSAO, e nao uma lista — indexa-lo
+        # levanta TypeError. So blocos entram aqui.
+        if (isinstance(corpo, list) and corpo and isinstance(corpo[0], ast.Expr)
                 and isinstance(corpo[0].value, ast.Constant)):
             corpo.pop(0)
     codigo = ast.unparse(arvore).lower()

@@ -34,6 +34,13 @@ CN_A = "ALFA FICTICIA:11111111000191"
 CN_B = "BETA FICTICIA:22222222000172"
 
 
+class _Controle:
+    """Token opaco do guardiao."""
+
+    def __init__(self, cn):
+        self.cn = cn
+
+
 class Registro:
     """A maquina, em memoria: o que a policy diz e o que os guardioes fizeram."""
 
@@ -50,15 +57,15 @@ class Registro:
         """O guardiao ELEVADO escreve a policy. 0 = o Windows aceitou."""
         self.guardioes.append(cn)
         self.cn = cn
-        return 0
+        return _Controle(cn)
 
     def recusar(self, cn):
-        return 1
+        return None
 
     def lancar_sem_escrever(self, cn):
         """Guardiao subiu numa colmeia que este processo nao enxerga."""
         self.guardioes.append(cn)
-        return 0
+        return _Controle(cn)
 
     def limpar(self):
         self.limpezas += 1
@@ -109,6 +116,7 @@ def test_b_ativada_lanca_guardiao_e_a_policy_passa_a_apontar_para_o_cn():
     assert resultado.situacao == ATIVADA
     assert resultado.tem_guardiao is True
     assert resultado.sera_limpa is True
+    assert resultado.controle is not None, "e agora da para PEDIR a limpeza a ele"
     assert reg.guardioes == [CN_A]
     assert reg.cn == CN_A
 
@@ -171,6 +179,7 @@ def test_nao_apareceu_lancou_guardiao_mas_nao_ve_a_policy():
     assert resultado.situacao == NAO_APARECEU
     assert resultado.tem_guardiao is True
     assert resultado.confiavel is False
+    assert resultado.controle is not None, "ha guardiao, e ele pode ser avisado"
 
 
 # ── C · D · policy stale ──────────────────────────────────────────────────────
@@ -197,7 +206,10 @@ def test_d_stale_com_OUTRO_cn_e_sobrescrita_e_a_execucao_passa_a_ter_guardiao():
     assert resultado.situacao == ATIVADA
     assert resultado.tem_guardiao is True
     assert reg.cn == CN_B
-    assert reg.limpezas == 0, "ninguem removeu a policy antiga; ela foi sobrescrita"
+    assert reg.limpezas == 0, (
+        "no PROTOCOLO ninguem remove a antiga: ela e sobrescrita. Quem a libera "
+        "antes e o app, em trocar_certificado — ver test_caracterizacao_guardiao"
+    )
 
 
 def test_d_a_escrita_apaga_os_valores_anteriores_da_chave():
@@ -226,7 +238,7 @@ def test_e_o_cleanup_normal_passou_a_existir_e_mora_na_fiacao():
     assert chamadores == [], "nem o app nem os adapters chamam a primitiva"
 
     fiacao = (RAIZ / "automation" / "maquina.py").read_text(encoding="utf-8")
-    assert "cert_windows.limpar_autoselect()" in fiacao
+    assert "cert_windows.pedir_limpeza" in fiacao, "quem remove e o guardiao elevado"
 
 
 def test_i_a_policy_sobrevive_ao_retorno_de_app_executar():
@@ -238,14 +250,12 @@ def test_i_a_policy_sobrevive_ao_retorno_de_app_executar():
     """
     fonte = (RAIZ / "cert_windows.py").read_text(encoding="utf-8")
 
-    assert "_runas(_guard_args([\"--guard\", str(os.getpid()), cn_b64])" in fonte
-    assert "WaitForSingleObject(h, INFINITE)" in fonte
-
     guarda = fonte[fonte.index("def guardiao("):fonte.index("def _lancar_guardiao")]
     assert "limpar_autoselect()" in guarda
-    assert guarda.index("WaitForSingleObject") < guarda.index("limpar_autoselect()"), (
-        "a limpeza so acontece DEPOIS de o processo principal morrer"
+    assert "WaitForMultipleObjects" in guarda, (
+        "a limpeza deixou de depender da morte do processo: o pedido tambem acorda"
     )
+    assert "WaitForSingleObject(h, INFINITE)" in guarda, "sem canal, o de sempre"
 
 
 def test_i_o_app_libera_a_policy_por_ultimo():
@@ -393,14 +403,14 @@ def test_a_policy_propria_e_removida_no_fim(monkeypatch):
     """ATIVADA: esta execução provocou a escrita, então ela sai antes do retorno."""
     remocoes = []
     monkeypatch.setattr(app.maquina, "liberar_policy_do_windows",
-                        lambda: remocoes.append(1) or True)
+                        lambda controle: remocoes.append(controle) or True)
 
     ex = execucao()
-    ex.policy_propria = True
+    ex.controle_da_policy = _Controle(CN_A)
     ex.liberar_policy()
 
-    assert remocoes == [1]
-    assert ex.policy_propria is False, "saiu, CONFIRMADO — não tenta de novo"
+    assert len(remocoes) == 1, "o controle do guardiao desta policy foi usado"
+    assert ex.controle_da_policy is None, "saiu, CONFIRMADO — não tenta de novo"
 
 
 def test_a_policy_de_outro_NAO_e_removida(monkeypatch):
@@ -412,13 +422,13 @@ def test_a_policy_de_outro_NAO_e_removida(monkeypatch):
     """
     remocoes = []
     monkeypatch.setattr(app.maquina, "liberar_policy_do_windows",
-                        lambda: remocoes.append(1))
+                        lambda controle: remocoes.append(controle))
 
     ex = execucao()
-    ex.policy_propria = False
+    ex.controle_da_policy = None
     ex.liberar_policy()
 
-    assert remocoes == []
+    assert remocoes == [], "sem controle, nao ha o que pedir"
 
 
 def test_o_ownership_nasce_do_tem_guardiao(monkeypatch):
@@ -432,8 +442,12 @@ def test_o_ownership_nasce_do_tem_guardiao(monkeypatch):
         (_JA_ATIVA, False, False),
         (_ATIVADA, True, True),
     ):
-        monkeypatch.setattr(app.maquina, "garantir_policy_do_windows",
-                            lambda cn, s=situacao, g=guardiao: ResultadoDaPolicy(s, g))
+        monkeypatch.setattr(
+            app.maquina, "garantir_policy_do_windows",
+            lambda cn, s=situacao, g=guardiao: ResultadoDaPolicy(
+                s, g, controle=_Controle(cn) if g else None
+            ),
+        )
         ex = execucao()
         ex.certificados = {"c": {"subject_cn": CN_A, "serial": "0A01"}}
         ex.trocar_certificado(
@@ -441,7 +455,7 @@ def test_o_ownership_nasce_do_tem_guardiao(monkeypatch):
                 posicao=0, cnpj="11111111000191", certificado=CN_A
             )
         )
-        assert ex.policy_propria is esperado, situacao
+        assert (ex.controle_da_policy is not None) is esperado, situacao
 
 
 def test_o_ownership_sobrevive_a_troca_de_certificado(monkeypatch):
@@ -452,19 +466,22 @@ def test_o_ownership_sobrevive_a_troca_de_certificado(monkeypatch):
     from automation.policy_certificado import JA_ATIVA as _JA_ATIVA
     from automation.policy_certificado import ResultadoDaPolicy
 
-    resultados = iter([ResultadoDaPolicy(_ATIVADA, True),
+    resultados = iter([ResultadoDaPolicy(_ATIVADA, True, controle=_Controle(CN_A)),
                        ResultadoDaPolicy(_JA_ATIVA, False)])
     monkeypatch.setattr(app.maquina, "garantir_policy_do_windows",
                         lambda cn: next(resultados))
+    monkeypatch.setattr(app.maquina, "liberar_policy_do_windows", lambda c: True)
     from automation.planilha import ItemPendente
 
     ex = execucao()
     ex.certificados = {"c": {"subject_cn": CN_A, "serial": "0A01"}}
     ex.trocar_certificado(ItemPendente(0, "11111111000191", CN_A))
-    assert ex.policy_propria is True
+    assert ex.controle_da_policy is not None, "a de ATIVADA e nossa"
 
     ex.trocar_certificado(ItemPendente(1, "22222222000172", CN_A))
-    assert ex.policy_propria is True, "continua sendo nossa"
+    assert ex.controle_da_policy is None, (
+        "a nossa foi liberada na troca, e a de JA_ATIVA e emprestada"
+    )
 
 
 # ── §21 · a liberação não pode mascarar a causa ───────────────────────────────
@@ -473,16 +490,19 @@ def test_falha_ao_remover_vira_evento_e_nao_interrompe(monkeypatch):
     """O guardião ainda é fallback, e o operador precisa saber que a policy ficou."""
     from automation import eventos
 
-    monkeypatch.setattr(app.maquina, "liberar_policy_do_windows", lambda: False)
+    monkeypatch.setattr(app.maquina, "liberar_policy_do_windows", lambda c: False)
     emitidos = []
     ex = execucao(emitidos.append)
-    ex.policy_propria = True
+    controle = _Controle(CN_A)
+    ex.controle_da_policy = controle
 
     ex.liberar_policy()   # não levanta
 
     (evento,) = emitidos
     assert evento.codigo == eventos.POLICY_NAO_REMOVIDA
-    assert ex.policy_propria is True, "o estado reflete a máquina"
+    assert ex.controle_da_policy is controle, (
+        "o guardiao continua sendo o nosso, e segue como fallback de crash"
+    )
 
 
 def test_a_falha_de_remocao_nao_apaga_a_causa_primaria(monkeypatch):
@@ -533,8 +553,8 @@ def test_no_retorno_de_executar_a_policy_propria_ja_saiu():
     # E o que a 12B.1 acrescentou: a confirmacao. Se a policy NAO saiu,
     # `policy_propria` continua True — e e isso que a 12C precisa consultar
     # antes de liberar o host.
-    assert "if maquina.liberar_policy_do_windows():" in inspect.getsource(
-        app._Execucao.liberar_policy
+    assert "if maquina.liberar_policy_do_windows(self.controle_da_policy):" in (
+        inspect.getsource(app._Execucao.liberar_policy)
     )
 
 

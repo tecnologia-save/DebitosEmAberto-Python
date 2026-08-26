@@ -17,6 +17,7 @@ garante a limpeza com um único UAC.
 """
 import base64
 import ctypes
+import itertools
 import json
 import os
 import sys
@@ -179,6 +180,42 @@ _k32.CloseHandle.restype = wintypes.BOOL
 _k32.CloseHandle.argtypes = [wintypes.HANDLE]
 _k32.GetExitCodeProcess.restype = wintypes.BOOL
 _k32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+# O canal de limpeza normal (fatia 12B.2). Um evento nomeado do proprio Windows:
+# o dono e o SO, ele morre com os processos que o abriram, e nao deixa arquivo
+# para trás se a máquina cair no meio.
+_k32.CreateEventW.restype = wintypes.HANDLE
+_k32.CreateEventW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.BOOL,
+                              wintypes.LPCWSTR]
+_k32.OpenEventW.restype = wintypes.HANDLE
+_k32.OpenEventW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+_k32.SetEvent.restype = wintypes.BOOL
+_k32.SetEvent.argtypes = [wintypes.HANDLE]
+_k32.WaitForMultipleObjects.restype = wintypes.DWORD
+_k32.WaitForMultipleObjects.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE),
+                                        wintypes.BOOL, wintypes.DWORD]
+
+EVENT_MODIFY_STATE = 0x0002
+SYNCHRONIZE = 0x00100000
+INFINITE = 0xFFFFFFFF
+WAIT_OBJECT_0 = 0x00000000
+
+
+class ControleDoGuardiao:
+    """O que permite PEDIR limpeza a um guardiao especifico.
+
+    Opaco para quem o recebe: o protocolo em automation/policy_certificado.py
+    nunca o inspeciona, e o app so o carrega. Nao guarda CN, CNPJ nem segredo —
+    so o nome do canal e o handle do evento.
+    """
+
+    __slots__ = ("evento", "nome")
+
+    def __init__(self, evento, nome: str):
+        self.evento = evento
+        self.nome = nome
+
+    def __repr__(self) -> str:
+        return "ControleDoGuardiao(...)"
 _shell32.ShellExecuteExW.restype = wintypes.BOOL
 _shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(_SHELLEXECUTEINFOW)]
 
@@ -215,9 +252,21 @@ def _guard_args(extra: list) -> list:
 
 # ── Processo guardião ──────────────────────────────────────────────────────────
 
-def guardiao(pid: int, cn: str) -> None:
-    """(roda ELEVADO) Escreve a policy e fica vigiando o processo `pid`. Quando ele
-    termina — por QUALQUER motivo — remove a policy."""
+def guardiao(pid: int, cn: str, canal: str = "") -> None:
+    """(roda ELEVADO) Escreve a policy e a remove quando não for mais necessária.
+
+    Duas formas de saber que chegou a hora, e é a segunda que a fatia 12B.2
+    acrescentou:
+
+        PID morreu   — crash, Ctrl+C, kill. É a razão de este processo existir,
+                       e continua intacta.
+        canal        — o processo principal PEDIU a limpeza, e ainda está vivo.
+                       Sem isso, num adapter reutilizável a policy ficava
+                       instalada por tempo indefinido depois de a execução
+                       acabar.
+
+    `canal` é opcional: sem ele o comportamento é exatamente o de antes.
+    """
     _glog = Path(__file__).parent / "_guard_log.txt"
     def _log(m):
         try:
@@ -233,13 +282,20 @@ def guardiao(pid: int, cn: str) -> None:
         _log(f"policy escrita | {diagnostico()}")
     except Exception as e:
         _log(f"erro definir: {type(e).__name__}: {e}")
-    SYNCHRONIZE = 0x00100000
-    INFINITE = 0xFFFFFFFF
     h = None
+    evento = None
     try:
         h = _k32.OpenProcess(SYNCHRONIZE, False, int(pid))
         _log(f"OpenProcess -> h={h}")
-        if h:
+        if canal:
+            evento = _k32.OpenEventW(SYNCHRONIZE, False, canal)
+            _log(f"OpenEvent({canal}) -> {evento}")
+        if h and evento:
+            alvos = (wintypes.HANDLE * 2)(h, evento)
+            r = _k32.WaitForMultipleObjects(2, alvos, False, INFINITE)
+            _log(f"WaitForMultipleObjects retornou {r} "
+                 f"({'pid morreu' if r == WAIT_OBJECT_0 else 'limpeza pedida'})")
+        elif h:
             r = _k32.WaitForSingleObject(h, INFINITE)
             _log(f"WaitForSingleObject retornou {r}")
         else:
@@ -248,6 +304,8 @@ def guardiao(pid: int, cn: str) -> None:
     finally:
         if h:
             _k32.CloseHandle(h)
+        if evento:
+            _k32.CloseHandle(evento)
         removeu = False
         for _ in range(10):
             limpar_autoselect()
@@ -258,14 +316,47 @@ def guardiao(pid: int, cn: str) -> None:
         _log(f"limpeza removeu={removeu}")
 
 
-def _lancar_guardiao(cn: str) -> int:
-    """Relança ESTE programa elevado no modo guardião. 0 = o Windows aceitou.
+_SEQUENCIA_DE_GUARDIOES = itertools.count(1)
+
+
+def _lancar_guardiao(cn: str) -> ControleDoGuardiao | None:
+    """Relança ESTE programa elevado no modo guardião. `None` = UAC recusado.
 
     O CN vai em base64 apenas como QUOTING — remove espaços e acentos do argv.
     Não é proteção: qualquer um que veja a linha de comando o decodifica.
+
+    Devolve o CONTROLE, e não um código: sem ele o processo principal não tem
+    como pedir a limpeza depois. `_runas` fecha o handle do processo elevado e
+    devolve 0, então o canal precisa existir ANTES do lançamento — o nome vai
+    no argv, e o guardião o abre do outro lado.
+
+    O nome inclui PID e sequência porque cada policy tem o seu guardião: uma
+    troca de certificado lança outro, e pedir limpeza ao errado apagaria a
+    policy em uso (MULTIPLE_POLICY_GUARDIANS_LIFETIME).
     """
+    nome = (r"Local\DebitosEmAberto-guardiao-"
+            f"{os.getpid()}-{next(_SEQUENCIA_DE_GUARDIOES)}")
+    evento = _k32.CreateEventW(None, True, False, nome)
+    if not evento:
+        return None
+
     cn_b64 = base64.b64encode(cn.encode("utf-8")).decode("ascii")
-    return _runas(_guard_args(["--guard", str(os.getpid()), cn_b64]), wait_ms=None)
+    if _runas(_guard_args(["--guard", str(os.getpid()), cn_b64, nome]),
+              wait_ms=None) != 0:
+        _k32.CloseHandle(evento)
+        return None
+    return ControleDoGuardiao(evento, nome)
+
+
+def pedir_limpeza(controle: ControleDoGuardiao) -> None:
+    """Sinaliza ao guardião que ele pode remover a policy AGORA.
+
+    Só o pedido. Quem confirma que a policy saiu é
+    `policy_certificado.liberar_policy`, lendo o registro — e é por isso que um
+    guardião surdo não trava nada: a confirmação nunca chega, a policy continua
+    sendo do chamador, e o fallback de crash segue de pé.
+    """
+    _k32.SetEvent(controle.evento)
 
 
 def iniciar_guarda_detalhado(cn: str) -> policy_certificado.ResultadoDaPolicy:
@@ -315,7 +406,8 @@ def iniciar_guarda(cn: str) -> bool:
 if __name__ == "__main__":
     if len(sys.argv) >= 4 and sys.argv[1] == "--guard":
         try:
-            guardiao(int(sys.argv[2]), base64.b64decode(sys.argv[3]).decode("utf-8"))
+            guardiao(int(sys.argv[2]), base64.b64decode(sys.argv[3]).decode("utf-8"),
+                     sys.argv[4] if len(sys.argv) >= 5 else "")
         except Exception as e:
             try:
                 (Path(__file__).parent / "_wincert_erro.log").write_text(

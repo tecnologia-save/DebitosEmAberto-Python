@@ -38,16 +38,26 @@ class Maquina:
         return self.cn
 
     def lancar(self, cn):
+        """CHARACTERIZATION_TARGET_CHANGE (fatia 12B.2): o lancamento devolve o
+        CONTROLE do guardiao — ou `None` quando o UAC recusa. Antes era um `int`,
+        e um inteiro nao permite PEDIR nada ao processo elevado depois."""
         self.lancamentos.append(cn)
         if self.elevacao == 0 and self.guardiao_escreve and self.demora == 0:
             self.cn = cn
         self._pendente = cn
-        return self.elevacao
+        return _ControleFalso(cn) if self.elevacao == 0 else None
 
     def aguardar(self):
         self.esperas += 1
         if self.guardiao_escreve and self.demora and self.esperas >= self.demora:
             self.cn = self._pendente
+
+
+class _ControleFalso:
+    """Token opaco. O protocolo nunca o inspeciona — so o carrega."""
+
+    def __init__(self, cn):
+        self.cn = cn
 
 
 def pedir(maquina, cn=CN_A):

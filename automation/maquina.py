@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
-from automation import login
+from automation import login, policy_certificado
 from automation.login import Certificado, ConfigLogin, ResultadoDoLogin
 from automation.policy_certificado import ResultadoDaPolicy
 
@@ -127,25 +128,26 @@ def garantir_policy_do_windows(cn: str) -> ResultadoDaPolicy:
     return cert_windows.iniciar_guarda_detalhado(cn)
 
 
-def liberar_policy_do_windows() -> bool:
-    """Remove a policy do Chrome desta maquina.
+def liberar_policy_do_windows(controle: object) -> bool:
+    """Pede ao GUARDIAO que remova a policy, e confirma que ela saiu.
 
-    Chamada SO quando a execucao provocou a escrita — ver
-    `_Execucao.liberar_policy`. A primitiva e cega: ela apaga a chave nas duas
-    colmeias sem conferir de quem e. Quem confere o ownership e o chamador, e e
-    por isso que esta funcao nao recebe CN nenhum: nao ha decisao aqui.
+    Quem escreveu a policy em HKLM foi o guardiao ELEVADO; este processo nao tem
+    privilegio para remove-la de la — NORMAL_POLICY_CLEANUP_PRIVILEGE_GAP. Ate a
+    fatia 12B.2 tentavamos remover daqui mesmo, e a falha em HKLM sumia dentro da
+    primitiva, que engole o erro por colmeia.
 
-    O guardiao continua existindo como fallback de CRASH. Esta funcao e o
-    caminho NORMAL — a diferenca importa porque o guardiao so age quando o
-    processo inteiro morre, e um adapter reutilizavel nao morre.
+    O protocolo vive em `policy_certificado`; aqui ficam as primitivas. Devolve
+    se a policy REALMENTE saiu — `policy_existe()` le as duas colmeias.
 
-    Devolve se a policy REALMENTE saiu, e nao se a tentativa aconteceu.
-    `limpar_autoselect` engole o erro por colmeia e devolve `None`: uma falha de
-    permissao em HKLM some ali dentro, e ate a fatia 12B.1 o chamador acreditava
-    ter limpado. `policy_existe()` le as DUAS colmeias — a confirmacao sempre
-    esteve disponivel, so nao era consultada.
+    O guardiao continua sendo o fallback de CRASH: se ele nao responder, isto
+    devolve False, a policy continua sendo do chamador, e a morte do processo
+    ainda a remove.
     """
     import cert_windows
 
-    cert_windows.limpar_autoselect()
-    return not cert_windows.policy_existe()
+    return policy_certificado.liberar_policy(
+        controle,
+        pedir_limpeza=cert_windows.pedir_limpeza,
+        policy_ainda_existe=cert_windows.policy_existe,
+        aguardar=lambda: time.sleep(policy_certificado.INTERVALO_LIBERACAO_S),
+    )

@@ -254,6 +254,7 @@ if __name__ == "__main__":
             cert_windows.guardiao(
                 int(sys.argv[2]),
                 base64.b64decode(sys.argv[3]).decode("utf-8"),
+                sys.argv[4] if len(sys.argv) >= 5 else "",
             )
         except Exception:
             cert_windows.limpar_autoselect()

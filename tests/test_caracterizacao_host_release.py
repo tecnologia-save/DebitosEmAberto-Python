@@ -32,6 +32,13 @@ CN_A = "ALFA FICTICIA:11111111000191"
 CN_B = "BETA FICTICIA:22222222000172"
 
 
+class _Controle:
+    """Token opaco do guardiao."""
+
+    def __init__(self, cn):
+        self.cn = cn
+
+
 class PlanilhaInerte:
     def __init__(self):
         self.estado = {}
@@ -45,7 +52,7 @@ class PlanilhaInerte:
 
 def execucao(emissor=None, propria=True):
     ex = app._Execucao(PlanilhaInerte(), "p.xlsx", CONFIG, emissor)
-    ex.policy_propria = propria
+    ex.controle_da_policy = _Controle(CN_A) if propria else None
     return ex
 
 
@@ -80,13 +87,16 @@ def test_a_falha_em_hklm_nao_chega_ao_app(monkeypatch):
 
     monkeypatch.setattr(cert_windows.winreg, "DeleteKey", so_hkcu)
     monkeypatch.setattr(cert_windows, "policy_existe", lambda: True)
+    monkeypatch.setattr(cert_windows, "pedir_limpeza", lambda c: None)
+    monkeypatch.setattr(maquina.policy_certificado, "INTERVALO_LIBERACAO_S", 0)
 
     emitidos = []
     ex = execucao(emitidos.append)
+    controle = ex.controle_da_policy
     ex.liberar_policy()
 
     assert [e.codigo for e in emitidos] == [eventos.POLICY_NAO_REMOVIDA]
-    assert ex.policy_propria is True, (
+    assert ex.controle_da_policy is controle, (
         "continua NOSSA: quem for liberar o host precisa saber que ficou estado"
     )
 
@@ -100,7 +110,7 @@ def test_o_evento_de_falha_passou_a_ser_alcancavel():
     fonte = inspect.getsource(app._Execucao.liberar_policy)
 
     assert "except OSError" not in fonte
-    assert "if maquina.liberar_policy_do_windows():" in fonte
+    assert "if maquina.liberar_policy_do_windows(self.controle_da_policy):" in fonte
     assert "POLICY_NAO_REMOVIDA" in fonte
 
 
@@ -120,33 +130,29 @@ def test_o_app_deixa_de_fingir_que_limpou(monkeypatch):
 
     AGORA o estado reflete a maquina, e e ele que a 12C vai consultar.
     """
-    monkeypatch.setattr(maquina, "liberar_policy_do_windows", lambda: False)
+    monkeypatch.setattr(maquina, "liberar_policy_do_windows", lambda c: False)
     ex = execucao(lambda e: None)
     ex.liberar_policy()
-    assert ex.policy_propria is True, "não saiu; continua sendo nossa"
+    assert ex.controle_da_policy is not None, "não saiu; continua sendo nossa"
 
-    monkeypatch.setattr(maquina, "liberar_policy_do_windows", lambda: True)
+    monkeypatch.setattr(maquina, "liberar_policy_do_windows", lambda c: True)
     ex = execucao()
     ex.liberar_policy()
-    assert ex.policy_propria is False, "saiu, confirmado"
+    assert ex.controle_da_policy is None, "saiu, confirmado"
 
 
 # ── §4 · bug nosso no cleanup substitui a causa ───────────────────────────────
 
-def test_bug_no_cleanup_da_policy_apaga_a_causa_primaria(monkeypatch):
-    """CLEANUP_PRIMARY_ERROR_MASKING, nova manifestacao.
-
-    O `except OSError` da 12B nao cobre um bug nosso. A protecao que a fatia 10
-    criou para o teardown de sessao nao foi aplicada a este caminho.
-    """
+def test_bug_no_cleanup_da_policy_nao_apaga_mais_a_causa_primaria(monkeypatch):
+    """CLEANUP_PRIMARY_ERROR_MASKING, fechado na 12B.1 e preservado aqui."""
     monkeypatch.setattr(maquina, "liberar_policy_do_windows",
-                        lambda: (_ for _ in ()).throw(TypeError("bug de cleanup")))
+                        lambda c: (_ for _ in ()).throw(TypeError("bug de cleanup")))
 
-    with pytest.raises(TypeError, match="bug de cleanup"):
+    with pytest.raises(RuntimeError, match="ERRO PRIMARIO"):
         try:
             raise RuntimeError("ERRO PRIMARIO: o portal caiu")
         finally:
-            execucao().liberar_policy()
+            execucao().liberar_policy_sem_apagar_a_causa()
 
 
 def test_falha_do_emissor_no_cleanup_da_policy_nao_apaga_mais_a_causa(monkeypatch):
@@ -217,7 +223,7 @@ def test_ja_ativa_e_estado_EMPRESTADO_e_nao_proprio(monkeypatch):
 
     ex.trocar_certificado(ItemPendente(0, "11111111000191", CN_A))
 
-    assert ex.policy_propria is False
+    assert ex.controle_da_policy is None, "emprestada: nao ha guardiao nosso"
 
 
 def test_o_lock_nao_provaria_quem_criou_a_policy_preexistente():
@@ -247,20 +253,20 @@ def test_policy_preexistente_com_outro_cn_e_destruida(monkeypatch):
     O que existia antes nao volta. Isso e independente de concorrencia: um lock
     de host nao resolve ownership de estado externo.
     """
-    from automation.policy_certificado import ATIVADA, ResultadoDaPolicy, garantir_policy
+    from automation.policy_certificado import ATIVADA, garantir_policy
 
     maquina_falsa = {"cn": CN_A}
 
     def lancar(cn):
         maquina_falsa["cn"] = cn      # o guardiao sobrescreve os valores
-        return 0
+        return _Controle(cn)
 
     resultado = garantir_policy(
         CN_B, ler_cn_atual=lambda: maquina_falsa["cn"],
         lancar_guardiao=lancar, aguardar=lambda: None,
     )
 
-    assert resultado == ResultadoDaPolicy(ATIVADA, tem_guardiao=True)
+    assert resultado.situacao == ATIVADA and resultado.tem_guardiao is True
     assert maquina_falsa["cn"] == CN_B, "o CN externo foi substituído"
 
 
@@ -337,16 +343,15 @@ def test_o_caminho_de_sucesso_fecha_os_dois():
 
 # ── §20 · o guardiao nao tem canal ────────────────────────────────────────────
 
-def test_o_guardiao_nao_aceita_ordem_de_limpar_antes_da_morte_do_pid():
-    """R · SIM/NAO respondido pela fonte: nao ha canal nenhum.
+def test_o_guardiao_passou_a_aceitar_ordem_de_limpar():
+    """R · ANTES: nao havia canal nenhum — so `WaitForSingleObject` sobre o PID.
 
-    Ele espera `WaitForSingleObject(h, INFINITE)` sobre o PID e nada mais. Nao ha
-    arquivo-sinal, pipe, evento nomeado ou socket para pedir limpeza antecipada.
+    AGORA ha um evento nomeado do Windows, e a escolha e deliberada: o dono do
+    objeto e o SO. Ele some com os processos que o abriram, nao deixa arquivo
+    para tras se a maquina cair, e nao precisa de polling de disco.
     """
     fonte = (RAIZ / "cert_windows.py").read_text(encoding="utf-8")
     guarda = fonte[fonte.index("def guardiao("):fonte.index("def _lancar_guardiao")]
 
-    assert "WaitForSingleObject(h, INFINITE)" in guarda
-    # "sinal" sai da lista: aparece num comentario em prosa sobre elevacao.
-    for canal in ("Pipe", "socket", "CreateEvent", "OpenEvent", "mmap", "NamedPipe"):
-        assert canal not in guarda
+    assert "OpenEventW(SYNCHRONIZE, False, canal)" in guarda
+    assert "WaitForMultipleObjects" in guarda

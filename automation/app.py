@@ -89,9 +89,10 @@ class _Execucao:
         self.certificados: dict[str, dict] = {}
         self.certificado_atual: str | None = None
         self.policy_confiavel = True
-        # Esta execucao provocou a escrita de alguma policy? E o que autoriza
-        # remove-la no fim. Uma policy que ja existia NAO e nossa.
-        self.policy_propria = False
+        # O guardiao da policy que ESTA execucao mandou escrever, ou None.
+        # Uma policy que ja existia (JA_ATIVA) nao tem controle nosso: ela e
+        # emprestada, e nao a removemos.
+        self.controle_da_policy = None
         self.sessao = None            # login.SessaoReceita | None
 
     # ── O seam de eventos ─────────────────────────────────────────────────────
@@ -124,33 +125,29 @@ class _Execucao:
     def liberar_policy(self) -> None:
         """Remove a policy do Chrome, se esta execucao a escreveu.
 
-        POLICY_LIFETIME_EXCEEDS_APP_EXECUTION: o guardiao so limpa quando o
-        PROCESSO principal morre, e um adapter reutilizavel nao morre. Sem esta
-        remocao, a policy sobrevivia ao retorno de `executar` por tempo
-        indefinido — e nenhum lock de host poderia ser liberado com seguranca.
+        POLICY_LIFETIME_EXCEEDS_APP_EXECUTION: o guardiao so limpava quando o
+        PROCESSO principal morria, e um adapter reutilizavel nao morre. Desde a
+        fatia 12B.2 o pedido e explicito, e quem remove e o proprio guardiao —
+        elevado, e portanto capaz de mexer em HKLM.
 
         SO remove o que e nosso. Uma policy que ja estava escrita quando
-        chegamos (JA_ATIVA) nao pertence a esta execucao: apaga-la seria repetir,
-        do outro lado, o mesmo cleanup cego que produziu
+        chegamos (JA_ATIVA) nao tem controle: ela e emprestada, e apaga-la seria
+        repetir, do outro lado, o mesmo cleanup cego que produziu
         GLOBAL_CERT_POLICY_CONCURRENCY_RISK.
 
-        O guardiao continua como fallback de crash. Depois desta remocao ele
-        encontra a chave inexistente, `FileNotFoundError` e engolido pela
-        primitiva, e ele encerra — ele nao reescreve nada depois de comecar.
-
-        Falha conhecida do registro vira EVENTO e nao interrompe: a policy
-        continua na maquina, o operador precisa saber, e o guardiao ainda pode
-        remove-la. O catch e estreito pelo mesmo motivo de `salvar`.
+        PEDIR nao e CONFIRMAR: so devolve ao estado limpo quando a policy nao
+        esta mais escrita. Enquanto isso nao acontecer, o controle fica, e o
+        guardiao continua sendo o fallback de crash.
         """
-        if not self.policy_propria:
+        if self.controle_da_policy is None:
             return
-        if maquina.liberar_policy_do_windows():
-            self.policy_propria = False
+        if maquina.liberar_policy_do_windows(self.controle_da_policy):
+            self.controle_da_policy = None
             return
-        # A policy CONTINUA na maquina. O caso conhecido e HKLM: o guardiao a
-        # escreveu elevado, e este processo nao tem privilegio para remove-la.
-        # `policy_propria` fica True de proposito — quem for liberar o host
-        # precisa saber que ainda ha estado nosso instalado.
+        # A policy CONTINUA na maquina: o guardiao nao respondeu, ou tentou e
+        # falhou. O controle fica de proposito — quem for liberar o host precisa
+        # saber que ainda ha estado nosso instalado, e o guardiao segue como
+        # fallback de crash.
         self.emitir(eventos.POLICY_NAO_REMOVIDA)
 
     def liberar_policy_sem_apagar_a_causa(self) -> None:
@@ -273,9 +270,16 @@ class _Execucao:
             return False
         chave = busca.chave
 
+        # A policy anterior — se for nossa — sai ANTES de a proxima entrar. A
+        # sessao ja foi encerrada acima, entao nenhum navegador a esta usando, e
+        # sem isto os guardioes se acumulavam: um por certificado, todos vivos
+        # ate a morte do processo (MULTIPLE_POLICY_GUARDIANS_LIFETIME).
+        self.liberar_policy()
+
         resultado = maquina.garantir_policy_do_windows(self.subject_cn(chave))
         self.policy_confiavel = resultado.confiavel
-        self.policy_propria = self.policy_propria or resultado.tem_guardiao
+        if resultado.controle is not None:
+            self.controle_da_policy = resultado.controle
         if not self.policy_confiavel:
             self.emitir(eventos.POLICY_NAO_CONFIAVEL)
         elif not resultado.sera_limpa:

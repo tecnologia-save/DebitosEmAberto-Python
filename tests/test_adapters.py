@@ -324,7 +324,9 @@ def _codigo_sem_docstrings(caminho) -> str:
     arvore = ast.parse(caminho.read_text(encoding="utf-8-sig"))
     for no in ast.walk(arvore):
         corpo = getattr(no, "body", None)
-        if (corpo and isinstance(corpo[0], ast.Expr)
+        # `body` de um lambda e uma EXPRESSAO, e nao uma lista — indexa-lo
+        # levanta TypeError. So blocos entram aqui.
+        if (isinstance(corpo, list) and corpo and isinstance(corpo[0], ast.Expr)
                 and isinstance(corpo[0].value, ast.Constant)
                 and isinstance(corpo[0].value.value, str)):
             corpo.pop(0)
