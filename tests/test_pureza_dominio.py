@@ -35,8 +35,12 @@ REPRESENTACAO = "representacao.py"
 # policy_certificado.py continuem nucleo — este teste recusou a primeira
 # tentativa de colocar a fiacao dentro delas, e estava certo.
 MAQUINA = "maquina.py"
+# `exclusividade_host.py` e a primitiva de exclusividade do host (fatia 12C): um
+# objeto nomeado do Windows, e portanto ctypes. Mesma natureza de `maquina.py` —
+# adapter de runtime, e nao nucleo.
+EXCLUSIVIDADE = "exclusividade_host.py"
 INTEGRACOES = {PLANILHA, CERTIFICADOS, CAPTCHA, FISCAL, NAVEGADOR, REPRESENTACAO,
-               MAQUINA}
+               MAQUINA, EXCLUSIVIDADE}
 NUCLEO = [m for m in AUTOMATION if m.name not in INTEGRACOES]
 
 # Nada disso pode aparecer no nucleo.
@@ -105,8 +109,20 @@ def test_so_a_integracao_conhece_openpyxl_e_pandas():
 
 def test_so_a_integracao_windows_conhece_subprocess():
     """A fronteira arquitetural da fatia 5A: PowerShell mora num lugar so."""
-    culpados = {m.name for m in AUTOMATION if _importa(m, {"subprocess", "winreg", "ctypes"})}
+    culpados = {m.name for m in AUTOMATION if _importa(m, {"subprocess", "winreg"})}
     assert culpados == {CERTIFICADOS}, f"esperado {CERTIFICADOS}, encontrado {culpados}"
+
+
+def test_ctypes_mora_num_lugar_so_dentro_de_automation():
+    """`exclusividade_host` e o UNICO modulo de `automation/` que fala ctypes.
+
+    `certificados_windows` nao fala — ele usa `subprocess` para o PowerShell, e
+    nunca precisou de Win32 direto. O resto do Win32 do projeto continua onde
+    sempre esteve: em `cert_windows.py`, fora de `automation/`.
+    """
+    culpados = {m.name for m in AUTOMATION if _importa(m, {"ctypes"})}
+
+    assert culpados == {EXCLUSIVIDADE}, culpados
 
 
 def test_a_integracao_windows_nao_altera_o_sistema():

@@ -29,9 +29,13 @@ import os
 import sys
 from pathlib import Path
 
-from automation import app, apresentacao_eventos
+from automation import app, apresentacao_eventos, exclusividade_host
 from automation.boundary import EntradaInvalida, montar_entrada
 from automation.captcha import ConfigCaptcha, ConfiguracaoInvalida
+from automation.exclusividade_host import (
+    ExecucaoJaAtivaNoHost,
+    FalhaAoVerificarExclusividade,
+)
 from automation.planilha import PlanilhaIndisponivel, validar_recurso
 
 RAIZ = Path(__file__).resolve().parent
@@ -135,7 +139,21 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Chave Gemini:  configurada (origem: {origem})")
 
     apresentador = apresentacao_eventos.Apresentador()
-    app.executar(entrada, config, emitir_evento=apresentador)
+
+    # SINGLE_HOST_CONCURRENCY_CONTRACT. O mesmo lease do runner e do desktop
+    # legado: um objeto só, para que os três entrypoints colidam entre si.
+    try:
+        controle = exclusividade_host.adquirir()
+    except (ExecucaoJaAtivaNoHost, FalhaAoVerificarExclusividade) as erro:
+        print(f"{erro}", file=sys.stderr)
+        return 3
+
+    try:
+        app.executar(entrada, config, emitir_evento=apresentador)
+    finally:
+        # Fechar ESTE handle não libera o host por si: se o guardião ainda
+        # mantiver o dele, o objeto continua existindo. É intencional.
+        exclusividade_host.liberar(controle)
 
     if apresentador.abortou:
         return 1

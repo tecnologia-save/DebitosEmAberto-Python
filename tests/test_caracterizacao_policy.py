@@ -400,23 +400,34 @@ class Kernel32Falso:
     def __init__(self, handle=1):
         self.handle = handle
         self.esperas = []
+        self.fechados = []
 
     def OpenProcess(self, acesso, herdar, pid):
         return self.handle
+
+    def OpenEventW(self, acesso, herdar, nome):
+        return 0        # sem canal de limpeza nestes testes
 
     def WaitForSingleObject(self, h, ms):
         self.esperas.append(ms)
         return 0
 
     def CloseHandle(self, h):
+        self.fechados.append(h)
         return True
 
 
 @pytest.fixture
 def guardiao_isolado(monkeypatch, tmp_path, sem_dormir):
-    """O guardião roda elevado e grava log ao lado do módulo — nos testes, em tmp."""
+    """O guardião roda elevado e grava log ao lado do módulo — nos testes, em tmp.
+
+    Desde a fatia 12C ele também ANEXA ao lease do host antes de escrever a
+    policy. Aqui o lease é um handle fictício: o que se caracteriza é a policy,
+    e o lease tem os seus próprios testes.
+    """
     monkeypatch.setattr(cert_windows, "_k32", Kernel32Falso())
     monkeypatch.setattr(cert_windows, "Path", lambda *a: tmp_path / "cert_windows.py")
+    monkeypatch.setattr(cert_windows.exclusividade_host, "anexar", lambda: 99)
     return tmp_path
 
 
@@ -454,7 +465,13 @@ def test_o_o_guardiao_limpa_sem_olhar_de_quem_e_a_policy(
 
 def test_j_a_limpeza_insiste_ate_dez_vezes(registro, guardiao_isolado, monkeypatch):
     """E insistir é o que transforma uma corrida em disputa: enquanto a chave
-    reaparecer, o guardião continua apagando — por até ~5 s."""
+    reaparecer, o guardião continua apagando — por até ~5 s.
+
+    Desde a fatia 12C, se as dez não bastarem ele NÃO desiste e vai embora: são
+    mais 20 rodadas espaçadas, e depois disso o processo PARA — bloqueado no
+    próprio lease do host, que nunca é sinalizado. Sem CPU, sem laço, e o host
+    continua ocupado. HOST_EXCLUSIVITY_FAIL_CLOSED.
+    """
     monkeypatch.setattr(cert_windows, "limpar_autoselect", lambda: None)
     monkeypatch.setattr(cert_windows, "policy_existe", lambda: True)
     dormidas = []
@@ -462,8 +479,10 @@ def test_j_a_limpeza_insiste_ate_dez_vezes(registro, guardiao_isolado, monkeypat
 
     cert_windows.guardiao(4242, CN_A)
 
-    assert len(dormidas) == 10
-    assert set(dormidas) == {0.5}
+    curtas = [d for d in dormidas if d == 0.5]
+    longas = [d for d in dormidas if d == cert_windows.INTERVALO_REPETICAO_S]
+    assert len(curtas) == 10 * (1 + cert_windows.REPETICOES_APOS_A_MORTE)
+    assert len(longas) == cert_windows.REPETICOES_APOS_A_MORTE, "espaçadas, não em laço"
 
 
 def test_v_o_log_do_guardiao_grava_o_cn_em_disco(registro, guardiao_isolado, monkeypatch):

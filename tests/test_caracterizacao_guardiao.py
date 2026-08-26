@@ -258,23 +258,28 @@ def test_e_a_troca_de_certificado_libera_a_policy_anterior():
 # ── F · o crash path, que precisa ser preservado ──────────────────────────────
 
 def test_f_o_crash_path_limpa_e_e_a_razao_de_o_guardiao_existir():
+    """A limpeza confirmada saiu para `_limpar_confirmando`, e o crash path
+    continua chamando-a."""
     fonte = (RAIZ / "cert_windows.py").read_text(encoding="utf-8")
     guarda = fonte[fonte.index("def guardiao("):fonte.index("def _lancar_guardiao")]
+    helper = fonte[fonte.index("def _limpar_confirmando"):fonte.index("def guardiao(")]
 
     assert "finally:" in guarda
-    assert "for _ in range(10):" in guarda
-    assert "limpar_autoselect()" in guarda
-    assert "if not policy_existe():" in guarda, "ele ja confirma o que removeu"
+    assert "_limpar_confirmando(_log)" in guarda
+    assert "for _ in range(10):" in helper
+    assert "if not policy_existe():" in helper, "ele ja confirma o que removeu"
 
 
-def test_f_a_confirmacao_ja_existe_do_lado_do_guardiao():
-    """O guardiao SEMPRE confirmou a remocao — `removeu` sai no log dele. O que
-    falta e esse resultado chegar ao processo principal."""
+def test_f_a_confirmacao_do_guardiao_agora_DECIDE_o_que_ele_faz():
+    """ANTES a confirmacao so ia para o log dele. AGORA ela decide: confirmou,
+    encerra; nao confirmou, o host continua ocupado."""
     fonte = (RAIZ / "cert_windows.py").read_text(encoding="utf-8")
-    guarda = fonte[fonte.index("def guardiao("):fonte.index("def _lancar_guardiao")]
+    helper = fonte[fonte.index("def _limpar_confirmando"):fonte.index("def guardiao(")]
 
-    assert "removeu = False" in guarda and "removeu = True" in guarda
-    assert "return" not in guarda, "e ele nao devolve nada a ninguem"
+    assert "return True" in helper and "return False" in helper
+
+    guarda = fonte[fonte.index("def guardiao("):fonte.index("def _lancar_guardiao")]
+    assert "if _limpar_confirmando(_log):" in guarda
 
 
 # ── §28 · o lifecycle novo ────────────────────────────────────────────────────
@@ -383,7 +388,7 @@ def test_5_a_fonte_do_guardiao_sai_do_wait_e_cai_no_finally():
 
     assert "WaitForMultipleObjects" in guarda
     assert guarda.index("WaitForMultipleObjects") < guarda.index("finally:")
-    assert "while True" not in guarda
+    assert "break" in guarda, "confirmado, ele sai do laco e cai no finally"
 
 
 def test_6_o_crash_path_continua_intacto():
@@ -474,37 +479,46 @@ def test_10_nenhum_cn_nem_caminho_de_registro_entra_no_evento():
 
 # ── §1 · o guardião abandona quando o cleanup não confirma ────────────────────
 
-def test_o_guardiao_desiste_depois_de_dez_tentativas_e_encerra():
-    """O que a 12C precisa corrigir.
+def test_o_guardiao_nao_desiste_mais_e_nao_abandona_a_policy():
+    """ANTES: dez tentativas, `removeu=False`, e saia assim mesmo — deixando uma
+    policy OWNED sem nenhum processo elevado responsavel.
 
-    Se a policy continua escrita depois das dez tentativas, ele registra
-    `removeu=False` — e sai assim mesmo. Fica uma policy OWNED sem nenhum
-    processo elevado responsavel por ela.
+    AGORA: se o pedido falhou, volta a vigiar o pai; se o pai ja morreu e a
+    limpeza falhou, sao mais rodadas espacadas e, no limite, o processo PARA
+    bloqueado no lease. O host nunca e devolvido com estado nosso instalado.
     """
     fonte = (RAIZ / "cert_windows.py").read_text(encoding="utf-8")
     guarda = fonte[fonte.index("def guardiao("):fonte.index("def _lancar_guardiao")]
 
-    assert "for _ in range(10):" in guarda
-    assert "removeu = False" in guarda
-    depois = guarda[guarda.index("_log(f\"limpeza removeu={removeu}\")"):]
-    assert "while" not in depois, "nao volta a tentar"
-    assert "raise" not in depois, "e nao avisa ninguem"
+    assert "voltando a vigiar o pai" in guarda
+    assert "REPETICOES_APOS_A_MORTE" in guarda
+    assert "WaitForSingleObject(lease, INFINITE)" in guarda, "para, e nao gira"
+    assert guarda.index("WaitForSingleObject(lease") < guarda.index("finally:")
 
 
-def test_o_guardiao_escreve_a_policy_antes_de_qualquer_verificacao():
-    """§13: hoje a mutacao vem PRIMEIRO.
+def test_o_guardiao_anexa_ao_lease_e_confere_o_pai_ANTES_de_escrever():
+    """§13 e §14, a prova central da ordem.
 
-    `definir_autoselect` roda no topo, antes de `OpenProcess`. Se o processo pai
-    ja morreu — ou morrer nesse intervalo — a policy e escrita assim mesmo, e
-    quem a herda e a proxima execucao.
+    ANTES: `definir_autoselect` no topo, antes do `OpenProcess`. O pai podia ja
+    ter morrido, o lease dele ter sumido, outra execucao ter entrado — e este
+    guardiao escrevia policy por cima dela.
+
+    AGORA: anexar ao lease, conferir que o pai vive, e so entao escrever. Se
+    qualquer um dos dois falhar, ele aborta SEM escrever nada.
     """
     fonte = (RAIZ / "cert_windows.py").read_text(encoding="utf-8")
     guarda = fonte[fonte.index("def guardiao("):fonte.index("def _lancar_guardiao")]
 
-    assert guarda.index("definir_autoselect(cn)") < guarda.index("OpenProcess")
+    anexa = guarda.index("exclusividade_host.anexar()")
+    confere = guarda.index("OpenProcess(SYNCHRONIZE, False, int(pid))")
+    escreve = guarda.index("definir_autoselect(cn)")
+
+    assert anexa < confere < escreve
+    assert "abortando sem escrever" in guarda
+    assert "abortando" in guarda[confere:escreve]
 
 
-def test_nao_existe_lease_de_host_em_lugar_nenhum():
+def test_todo_entrypoint_adquire_o_lease_de_host():
     """O estado ANTES da 12C: nenhum entrypoint impede uma segunda execucao.
 
     `cert_windows` fica de fora da varredura de `CreateEventW`: ele ja cria um
@@ -513,10 +527,8 @@ def test_nao_existe_lease_de_host_em_lugar_nenhum():
     """
     for arquivo in ("runner.py", "local.py", "main.py"):
         fonte = (RAIZ / arquivo).read_text(encoding="utf-8-sig")
-        for marca in ("CreateEventW", "ERROR_ALREADY_EXISTS", "exclusividade"):
-            assert marca not in fonte, f"{arquivo} ja fala de {marca}"
-
-    for arquivo in ("runner.py", "local.py", "main.py", "cert_windows.py"):
-        fonte = (RAIZ / arquivo).read_text(encoding="utf-8-sig")
-        for marca in ("ERROR_ALREADY_EXISTS", "host-v1", "ExecucaoJaAtiva"):
-            assert marca not in fonte, f"{arquivo} ja fala de {marca}"
+        assert "exclusividade_host.adquirir()" in fonte, f"{arquivo} nao adquire"
+        assert "exclusividade_host.liberar(" in fonte
+        # E nenhum deles fala Win32: a primitiva mora no modulo de runtime.
+        assert "CreateEventW" not in fonte
+        assert "ERROR_ALREADY_EXISTS" not in fonte

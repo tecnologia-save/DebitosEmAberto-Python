@@ -29,9 +29,13 @@ from __future__ import annotations
 
 import os
 
-from automation import app, apresentacao_eventos
+from automation import app, apresentacao_eventos, exclusividade_host
 from automation.boundary import EntradaInvalida, montar_entrada
 from automation.captcha import ConfigCaptcha, ConfiguracaoInvalida
+from automation.exclusividade_host import (
+    ExecucaoJaAtivaNoHost,
+    FalhaAoVerificarExclusividade,
+)
 from automation.planilha import PlanilhaIndisponivel, validar_recurso
 
 
@@ -76,9 +80,25 @@ def executar(params: dict, emitir_evento=None) -> dict:
         if emitir_evento is not None:
             emitir_evento(evento)
 
-    app.executar(entrada, config, emitir_evento=emissor)
+    # SINGLE_HOST_CONCURRENCY_CONTRACT, imposto aqui e não pelo app: a
+    # exclusividade é assunto de runtime. Antes de `app.executar` porque o
+    # primeiro efeito global — a policy do Chrome — acontece lá dentro.
+    controle = exclusividade_host.adquirir()
+    try:
+        app.executar(entrada, config, emitir_evento=emissor)
+    finally:
+        # Fechar ESTE handle não libera o host por si: se o guardião ainda
+        # mantiver o dele, o objeto continua existindo. É intencional.
+        exclusividade_host.liberar(controle)
 
     return {"ok": not apresentador.abortou}
 
 
-__all__ = ["ConfiguracaoInvalida", "EntradaInvalida", "PlanilhaIndisponivel", "executar"]
+__all__ = [
+    "ConfiguracaoInvalida",
+    "EntradaInvalida",
+    "ExecucaoJaAtivaNoHost",
+    "FalhaAoVerificarExclusividade",
+    "PlanilhaIndisponivel",
+    "executar",
+]

@@ -251,7 +251,7 @@ def test_i_a_policy_sobrevive_ao_retorno_de_app_executar():
     fonte = (RAIZ / "cert_windows.py").read_text(encoding="utf-8")
 
     guarda = fonte[fonte.index("def guardiao("):fonte.index("def _lancar_guardiao")]
-    assert "limpar_autoselect()" in guarda
+    assert "_limpar_confirmando(_log)" in guarda
     assert "WaitForMultipleObjects" in guarda, (
         "a limpeza deixou de depender da morte do processo: o pedido tambem acorda"
     )
@@ -303,10 +303,10 @@ def test_f_o_guardiao_nao_reescreve_a_policy_depois_de_comecar():
 
 def test_f_a_limpeza_do_guardiao_insiste_ate_dez_vezes():
     fonte = (RAIZ / "cert_windows.py").read_text(encoding="utf-8")
-    guarda = fonte[fonte.index("def guardiao("):fonte.index("def _lancar_guardiao")]
+    helper = fonte[fonte.index("def _limpar_confirmando"):fonte.index("def guardiao(")]
 
-    assert "for _ in range(10):" in guarda
-    assert "if not policy_existe():" in guarda
+    assert "for _ in range(10):" in helper
+    assert "if not policy_existe():" in helper
 
 
 # ── H · HKCU e HKLM divergentes ───────────────────────────────────────────────

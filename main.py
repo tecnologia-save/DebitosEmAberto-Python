@@ -100,7 +100,17 @@ def _resolver_gemini_key() -> tuple[str, str]:
 # ── Fronteiras da aplicação ───────────────────────────────────────────────────
 # As reexportações de `status_portal` saíram com a orquestração: quem afirmava
 # sobre elas aqui era a caracterização do laço, e o laço mudou de casa.
-from automation import app, apresentacao_eventos, captcha, eventos        # noqa: E402
+from automation import (                                                   # noqa: E402
+    app,
+    apresentacao_eventos,
+    captcha,
+    eventos,
+    exclusividade_host,
+)
+from automation.exclusividade_host import (                                # noqa: E402
+    ExecucaoJaAtivaNoHost,
+    FalhaAoVerificarExclusividade,
+)
 from automation.boundary import (                                           # noqa: E402
     EntradaDebitosEmAberto,
     EntradaInvalida,
@@ -236,7 +246,23 @@ def main() -> None:
     # planilha, login, representação, consulta e persistência são do app; o que
     # sobra aqui é traduzir os fatos que ele emite.
     renderer = Renderer()
-    app.executar(entrada, _config_captcha(), emitir_evento=renderer)
+
+    # SINGLE_HOST_CONCURRENCY_CONTRACT. Este entrypoint é legado, mas enquanto
+    # for executável ele participa do contrato — sem isto, um `runner.py` e um
+    # duplo-clique no .exe continuariam se atropelando, e a exclusividade seria
+    # uma declaração falsa.
+    try:
+        controle = exclusividade_host.adquirir()
+    except (ExecucaoJaAtivaNoHost, FalhaAoVerificarExclusividade) as erro:
+        print(f"  [!] {erro}")
+        sys.exit(3)
+
+    try:
+        app.executar(entrada, _config_captcha(), emitir_evento=renderer)
+    finally:
+        # Fechar ESTE handle não libera o host por si: se o guardião ainda
+        # mantiver o dele, o objeto continua existindo. É intencional.
+        exclusividade_host.liberar(controle)
 
     if renderer.abortou:
         sys.exit(1)
@@ -249,6 +275,11 @@ if __name__ == "__main__":
     # a policy de auto-seleção do Chrome e a remove quando o PID da automação
     # morrer — por qualquer motivo. Precisa vir antes de main() porque no exe
     # congelado o guardião é o próprio executável, com estes argumentos.
+    #
+    # E é por isso que ele vem ANTES da aquisição do lease de host: o guardião
+    # NÃO é uma execução nova. Ele faz parte de uma que já possui o host, e
+    # tentar adquirir o lease aqui o recusaria — deixando a policy sem ninguém
+    # para removê-la.
     if len(sys.argv) >= 4 and sys.argv[1] == "--guard":
         try:
             cert_windows.guardiao(

@@ -26,7 +26,7 @@ import winreg
 from ctypes import wintypes
 from pathlib import Path
 
-from automation import policy_certificado
+from automation import exclusividade_host, policy_certificado
 
 # URLs do eCAC / acesso.gov.br onde o certificado é solicitado.
 CERT_URLS = [
@@ -252,6 +252,26 @@ def _guard_args(extra: list) -> list:
 
 # ── Processo guardião ──────────────────────────────────────────────────────────
 
+# Entre tentativas de limpeza depois que o pai ja morreu. Longo de proposito:
+# nao ha pressa, e um laco apertado num processo elevado seria pior que o
+# problema.
+INTERVALO_REPETICAO_S = 30
+REPETICOES_APOS_A_MORTE = 20
+
+
+def _limpar_confirmando(_log) -> bool:
+    """Remove a policy e CONFIRMA que ela saiu. Dez tentativas curtas."""
+    for _ in range(10):
+        limpar_autoselect()
+        if not policy_existe():
+            _log("limpeza confirmada")
+            return True
+        time.sleep(0.5)
+    _log("limpeza NAO confirmada")
+    return False
+
+
+
 def guardiao(pid: int, cn: str, canal: str = "") -> None:
     """(roda ELEVADO) Escreve a policy e a remove quando não for mais necessária.
 
@@ -275,6 +295,24 @@ def guardiao(pid: int, cn: str, canal: str = "") -> None:
         except Exception:
             pass
     _log(f"=== guardiao start pid={pid} admin={is_admin()} ===")
+
+    # ── ORDEM OBRIGATORIA, e ela e a prova da fatia 12C ──────────────────────
+    # 1. anexar ao lease do host    2. conferir que o pai vive    3. so entao
+    # escrever. Invertida, a corrida volta: o pai morre, o lease dele some, uma
+    # segunda execucao entra, e este guardiao escreve policy por cima dela.
+    lease = exclusividade_host.anexar()
+    if lease is None:
+        _log("lease do host nao existe — o pai ja morreu; abortando sem escrever")
+        return
+
+    h = _k32.OpenProcess(SYNCHRONIZE, False, int(pid))
+    if not h:
+        _log("pai ja morreu antes da escrita; abortando")
+        _k32.CloseHandle(lease)
+        return
+    # O pai estava vivo quando ja tinhamos o lease. Dai em diante a morte dele
+    # nao destroi o objeto: o nosso handle o mantem.
+
     try:
         definir_autoselect(cn)
         # Registra em QUAL colmeia caiu: se só HKCU tiver valor e o processo
@@ -282,38 +320,51 @@ def guardiao(pid: int, cn: str, canal: str = "") -> None:
         _log(f"policy escrita | {diagnostico()}")
     except Exception as e:
         _log(f"erro definir: {type(e).__name__}: {e}")
-    h = None
-    evento = None
+    evento = _k32.OpenEventW(SYNCHRONIZE, False, canal) if canal else None
+    _log(f"canal -> {evento}")
     try:
-        h = _k32.OpenProcess(SYNCHRONIZE, False, int(pid))
-        _log(f"OpenProcess -> h={h}")
-        if canal:
-            evento = _k32.OpenEventW(SYNCHRONIZE, False, canal)
-            _log(f"OpenEvent({canal}) -> {evento}")
-        if h and evento:
-            alvos = (wintypes.HANDLE * 2)(h, evento)
-            r = _k32.WaitForMultipleObjects(2, alvos, False, INFINITE)
-            _log(f"WaitForMultipleObjects retornou {r} "
-                 f"({'pid morreu' if r == WAIT_OBJECT_0 else 'limpeza pedida'})")
-        elif h:
-            r = _k32.WaitForSingleObject(h, INFINITE)
-            _log(f"WaitForSingleObject retornou {r}")
-        else:
-            _log("OpenProcess falhou (processo ja morreu?)")
-            time.sleep(2)
+        while True:
+            if evento:
+                alvos = (wintypes.HANDLE * 2)(h, evento)
+                r = _k32.WaitForMultipleObjects(2, alvos, False, INFINITE)
+                pai_morreu = r == WAIT_OBJECT_0
+            else:
+                _k32.WaitForSingleObject(h, INFINITE)
+                pai_morreu = True
+            _log(f"acordou ({'pid morreu' if pai_morreu else 'limpeza pedida'})")
+
+            if _limpar_confirmando(_log):
+                break
+
+            # NAO confirmado. Nao encerramos: uma policy OWNED sem processo
+            # elevado responsavel e pior do que um host ocupado.
+            if not pai_morreu:
+                _log("limpeza pedida falhou; voltando a vigiar o pai")
+                continue
+
+            # O pai ja morreu e a limpeza falhou. HOST_EXCLUSIVITY_FAIL_CLOSED.
+            _log("FAIL-CLOSED: policy owned continua; host permanece ocupado")
+            for _ in range(REPETICOES_APOS_A_MORTE):
+                time.sleep(INTERVALO_REPETICAO_S)
+                if _limpar_confirmando(_log):
+                    break
+            else:
+                # Esgotou. NAO fechamos o lease: uma policy owned sem processo
+                # elevado responsavel e pior do que um host ocupado. E nao
+                # ficamos girando sobre o registro — este processo PARA aqui,
+                # bloqueado no proprio lease, que nunca e sinalizado. Sem CPU,
+                # sem laco, e o host continua nosso ate alguem olhar.
+                _log("FAIL-CLOSED definitivo: aguardando intervencao")
+                _k32.WaitForSingleObject(lease, INFINITE)
+            break
     finally:
         if h:
             _k32.CloseHandle(h)
         if evento:
             _k32.CloseHandle(evento)
-        removeu = False
-        for _ in range(10):
-            limpar_autoselect()
-            if not policy_existe():
-                removeu = True
-                break
-            time.sleep(0.5)
-        _log(f"limpeza removeu={removeu}")
+        # POR ULTIMO: enquanto este handle existir, o host continua ocupado.
+        _k32.CloseHandle(lease)
+        _log("lease do host liberado")
 
 
 _SEQUENCIA_DE_GUARDIOES = itertools.count(1)
