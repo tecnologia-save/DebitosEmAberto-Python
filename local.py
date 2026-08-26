@@ -30,6 +30,7 @@ import sys
 from pathlib import Path
 
 from automation import app, apresentacao_eventos, exclusividade_host
+from automation.app import ConfiguracaoDeHostIncompativel
 from automation.boundary import EntradaInvalida, montar_entrada
 from automation.captcha import ConfigCaptcha, ConfiguracaoInvalida
 from automation.exclusividade_host import (
@@ -150,6 +151,12 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         app.executar(entrada, config, emitir_evento=apresentador)
+    except ConfiguracaoDeHostIncompativel as erro:
+        # FALHA, e não "sucesso com aviso": a execução parou antes de fazer
+        # qualquer coisa útil, e continuar com uma policy alheia faria o Chrome
+        # autenticar com o certificado de outra pessoa.
+        print(f"{erro}", file=sys.stderr)
+        return 4
     finally:
         # Fechar ESTE handle não libera o host por si: se o guardião ainda
         # mantiver o dele, o objeto continua existindo. É intencional.

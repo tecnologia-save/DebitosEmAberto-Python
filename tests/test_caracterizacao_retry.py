@@ -310,7 +310,7 @@ def test_bug_nosso_nao_impede_o_cleanup_final(monkeypatch, tmp_path):
     monkeypatch.setattr(app.certificados_windows, "descobrir", lambda: (CERTS, 0))
     monkeypatch.setattr(app, "SessaoPlanilha", Planilha)
     monkeypatch.setattr(app.maquina, "garantir_policy_do_windows",
-                        lambda cn: __import__(
+                        lambda cn, nossa=False: __import__(
                             "automation.policy_certificado", fromlist=["x"]
                         ).ResultadoDaPolicy("ativada", tem_guardiao=True))
     monkeypatch.setattr(app.maquina, "abrir_sessao",

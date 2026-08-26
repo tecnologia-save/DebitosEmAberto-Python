@@ -53,6 +53,15 @@ from automation.boundary import EntradaDebitosEmAberto
 from automation.captcha import ConfigCaptcha
 from automation.eventos import EventoOperacional
 from automation.planilha import SessaoPlanilha
+from automation.policy_certificado import ConfiguracaoDeHostIncompativel
+
+# Reexportado de proposito, e nao por conveniencia: `executar` pode terminar
+# assim, e os adapters precisam nomear essa falha para transforma-la em codigo
+# de saida. Importa-la de `policy_certificado` obrigaria runner e local a
+# conhecer POR QUE o host esta impedido — policy, registro, certificado —, e
+# esse e exatamente o conhecimento que um adapter nao pode ter. Aqui eles
+# aprendem so o que precisam: a aplicacao recusou comecar.
+__all__ = ["ConfiguracaoDeHostIncompativel", "executar"]
 
 MAX_TENTATIVAS_POR_ITEM = 2
 
@@ -276,7 +285,13 @@ class _Execucao:
         # ate a morte do processo (MULTIPLE_POLICY_GUARDIANS_LIFETIME).
         self.liberar_policy()
 
-        resultado = maquina.garantir_policy_do_windows(self.subject_cn(chave))
+        # `policy_ja_e_nossa`: se ainda detemos o controle, a liberacao acima
+        # NAO confirmou e a policy que continua escrita e desta execucao, com
+        # handle e tudo. Sem isto a validacao de estado preexistente recusaria a
+        # nossa propria policy no meio da troca de certificado.
+        resultado = maquina.garantir_policy_do_windows(
+            self.subject_cn(chave), self.controle_da_policy is not None
+        )
         self.policy_confiavel = resultado.confiavel
         if resultado.controle is not None:
             self.controle_da_policy = resultado.controle
@@ -550,6 +565,13 @@ def executar(
     exception, e uma falha fatal sobe. Nao ha resumo final porque nenhum
     consumidor precisa de um — a necessidade operacional e em TEMPO REAL, e quem
     a atende e `emitir_evento`.
+
+    Levanta `ConfiguracaoDeHostIncompativel` quando o host ja tinha configuracao
+    de auto-selecao de certificado que esta execucao nao instalou e nao pode usar
+    com seguranca (fatia 12D). E FATAL e nao evento: acontece antes de qualquer
+    processamento util, e prosseguir faria o Chrome autenticar com o certificado
+    de outra pessoa. Nada e escrito no registro antes dessa decisao, e nada e
+    removido depois dela.
     """
     sessao_planilha = SessaoPlanilha()
     execucao = _Execucao(sessao_planilha, entrada.planilha, config_captcha, emitir_evento)

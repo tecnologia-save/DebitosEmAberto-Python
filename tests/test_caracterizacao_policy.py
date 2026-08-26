@@ -12,6 +12,7 @@ import pytest
 from registro_falso import RegistroFalso
 
 import cert_windows
+from automation import policy_certificado
 
 CN_A = "ALFA FICTICIA LTDA:11111111000191"
 CN_B = "BETA FICTICIA SA:22222222000172"
@@ -365,31 +366,46 @@ def test_l_policy_ja_correta_devolve_true_sem_lancar_guardiao(registro, monkeypa
     assert "Policy ja ativa" in capsys.readouterr().out
 
 
-def test_m_policy_de_outro_cn_lanca_guardiao_novo(registro, sem_dormir, monkeypatch):
-    """M da entrega: a policy de CN_B não impede o guardião de CN_A. Ele sobe,
-    sobrescreve, e agora há DOIS donos potenciais para a mesma chave."""
+def test_m_policy_de_outro_cn_agora_RECUSA_em_vez_de_sobrescrever(
+    registro, sem_dormir, monkeypatch
+):
+    """ANTES (ate a fatia 12C): a policy de CN_B nao impedia o guardiao de CN_A.
+    Ele subia, sobrescrevia, e ficavam dois donos potenciais para a mesma chave
+    — com o CN_B perdido para sempre, porque nada era guardado.
+
+    AGORA: a configuracao preexistente nao e nossa, aponta para outro
+    certificado, e a execucao para antes de escrever qualquer coisa.
+    """
     cert_windows.definir_autoselect(CN_B)
     lancamentos = []
 
     def lancar(args, wait_ms=None):
         lancamentos.append(args)
-        cert_windows.definir_autoselect(CN_A)
         return 0
 
     monkeypatch.setattr(cert_windows, "_runas", lancar)
 
-    assert cert_windows.iniciar_guarda(CN_A) is True
-    assert len(lancamentos) == 1
-    assert cert_windows.policy_cn() == CN_A, "sobrescreveu"
+    with pytest.raises(policy_certificado.ConfiguracaoDeHostIncompativel):
+        cert_windows.iniciar_guarda(CN_A)
+
+    assert lancamentos == [], "ninguem foi lancado"
+    assert cert_windows.policy_cn() == CN_B, "e o CN alheio continua intacto"
 
 
 def test_m_esperar_pelo_cn_e_nao_pela_existencia_torna_a_troca_segura(
     registro, sem_dormir, monkeypatch
 ):
     """Se o guardião subir mas escrever outro CN, o polling estoura em vez de
-    devolver True — senão o Chrome abriria com o certificado errado."""
-    cert_windows.definir_autoselect(CN_B)
-    monkeypatch.setattr(cert_windows, "_runas", lambda *a, **k: 0)
+    devolver True — senão o Chrome abriria com o certificado errado.
+
+    Fatia 12D: o host começa LIMPO e é o guardião que escreve o CN errado. Antes
+    a policy de CN_B já estava lá desde o início; hoje esse estado é recusado
+    antes do polling, e a asserção sobre o polling é a mesma."""
+    def guardiao_confuso(args, wait_ms=None):
+        cert_windows.definir_autoselect(CN_B)
+        return 0
+
+    monkeypatch.setattr(cert_windows, "_runas", guardiao_confuso)
 
     assert cert_windows.iniciar_guarda(CN_A) is False
 

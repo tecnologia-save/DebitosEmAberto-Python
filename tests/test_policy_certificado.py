@@ -60,8 +60,22 @@ class _ControleFalso:
         self.cn = cn
 
 
+def _decisao_de_antes(ler, cn):
+    """A regra de startup ANTERIOR a fatia 12D, preservada aqui de proposito.
+
+    O que este arquivo observa e o ciclo de vida do guardiao e da posse, e nao a
+    validacao de estado preexistente — que tem os seus proprios testes. Manter a
+    decisao antiga faz cada assercao abaixo continuar significando exatamente o
+    que significava: "o CN visivel ja e o pedido" -> usa sem lancar ninguem.
+    """
+    from automation.policy_certificado import CRIAR, EMPRESTAR, DecisaoDeStartup
+
+    return lambda: DecisaoDeStartup(EMPRESTAR if ler() == cn else CRIAR)
+
+
 def pedir(maquina, cn=CN_A):
-    return garantir_policy(cn, maquina.ler, maquina.lancar, maquina.aguardar)
+    return garantir_policy(cn, _decisao_de_antes(maquina.ler, cn), maquina.ler,
+                           maquina.lancar, maquina.aguardar)
 
 
 # ── Os quatro desfechos ───────────────────────────────────────────────────────

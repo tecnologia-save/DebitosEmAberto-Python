@@ -124,7 +124,7 @@ def diario(monkeypatch):
         sessoes.append(sessao)
         return ResultadoDoLogin(AUTENTICADO, sessao)
 
-    def policy(cn):
+    def policy(cn, nossa=False):
         reg.anotar("policy", cn)
         return ResultadoDaPolicy(ATIVADA, tem_guardiao=True)
 
@@ -187,7 +187,7 @@ def test_i_o_resultado_da_policy_chega_ao_login_como_um_bool(diario, monkeypatch
     """ResultadoDaPolicy fica na orquestracao; o login recebe so `auto_select`."""
     monkeypatch.setattr(
         app.maquina, "garantir_policy_do_windows",
-        lambda cn: ResultadoDaPolicy(JA_ATIVA, tem_guardiao=False),
+        lambda cn, nossa=False: ResultadoDaPolicy(JA_ATIVA, tem_guardiao=False),
     )
 
     executar(planilha_com((CNPJ_1, "CERT ALFA")), CERTS)
@@ -201,7 +201,7 @@ def test_i_policy_indisponivel_ainda_tenta_o_login(diario, monkeypatch):
 
     monkeypatch.setattr(
         app.maquina, "garantir_policy_do_windows",
-        lambda cn: ResultadoDaPolicy(ELEVACAO_RECUSADA),
+        lambda cn, nossa=False: ResultadoDaPolicy(ELEVACAO_RECUSADA),
     )
 
     executar(planilha_com((CNPJ_1, "CERT ALFA")), CERTS)

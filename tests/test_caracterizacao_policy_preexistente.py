@@ -1,13 +1,15 @@
-"""Como o caminho ATUAL reage a uma policy que ja estava no host.
+"""O que a execucao faz com uma policy que ja estava no host — antes e depois.
 
-Escrito ANTES de qualquer mudanca da fatia 12D. Nenhum teste toca o registro
-real, pede UAC, lanca processo elevado ou abre Chrome: `winreg` inteiro e
-substituido por `RegistroFalso`, e o guardiao entra por parametro.
+A versao ANTERIOR deste arquivo, com o comportamento de antes da fatia 12D,
+esta no commit que o introduziu. Cada teste que mudou de resultado diz aqui o
+que afirmava antes.
 
-Todos os CNs sao ficticios.
+Nenhum teste toca o registro real, pede UAC, lanca processo elevado ou abre
+Chrome: `winreg` inteiro e substituido por `RegistroFalso`, e o guardiao entra
+por parametro. Todos os CNs sao ficticios.
 
-A pergunta que esta fatia faz
------------------------------
+A pergunta que esta fatia responde
+----------------------------------
 "Uma execucao acabou de adquirir exclusividade do host. O que ela pode fazer com
 uma policy que JA estava la antes dela?"
 
@@ -16,6 +18,8 @@ esta concorrendo. Ele NAO prova quem escreveu a policy que ja estava no
 registro: ela pode ter sido deixada por um administrador, por outra ferramenta,
 por uma execucao anterior que morreu junto com o guardiao, ou por um reboot
 antes da limpeza. O registro e persistente; o lease e efemero.
+
+A resposta desta fatia e BORROW / CREATE / REFUSE.
 """
 import json
 
@@ -50,11 +54,11 @@ def semear(registro, colmeia, cn):
     }
 
 
-def protocolo(cn, registro, lancamentos):
-    """`garantir_policy` com a leitura real e um guardiao falso.
+def protocolo(cn, lancamentos, nossa=False):
+    """`garantir_policy` com a leitura real e um guardiao falso que ESCREVE.
 
-    O guardiao falso ESCREVE, como o de verdade escreveria — e por isso os
-    testes abaixo veem o efeito destrutivo, e nao apenas a decisao.
+    E por isso que os testes abaixo veem o efeito no registro, e nao apenas a
+    decisao.
     """
     def lancar(pedido):
         lancamentos.append(pedido)
@@ -62,12 +66,18 @@ def protocolo(cn, registro, lancamentos):
         return object()
 
     return policy_certificado.garantir_policy(
-        cn, ler_cn_atual=cert_windows.policy_cn,
-        lancar_guardiao=lancar, aguardar=lambda: None,
+        cn,
+        avaliar_inicio=lambda: policy_certificado.avaliar_estado_inicial(
+            cert_windows.inventario_da_policy(), cn, tuple(cert_windows.CERT_URLS)
+        ),
+        ler_cn_atual=cert_windows.policy_cn,
+        lancar_guardiao=lancar,
+        aguardar=lambda: None,
+        policy_ja_e_nossa=nossa,
     )
 
 
-# ── A · nenhuma policy ────────────────────────────────────────────────────────
+# ── A · nenhuma policy: CRIAR ─────────────────────────────────────────────────
 
 def test_a_host_limpo_nao_tem_cn_nenhum(registro):
     assert cert_windows.policy_cn() == ""
@@ -77,47 +87,69 @@ def test_a_host_limpo_nao_tem_cn_nenhum(registro):
 def test_a_host_limpo_lanca_guardiao_e_a_policy_passa_a_ser_nossa(registro):
     lancamentos = []
 
-    resultado = protocolo(CN_NOSSO, registro, lancamentos)
+    resultado = protocolo(CN_NOSSO, lancamentos)
 
     assert lancamentos == [CN_NOSSO]
     assert resultado.situacao == policy_certificado.ATIVADA
-    assert resultado.tem_guardiao is True
+    assert resultado.tem_guardiao is True, "e o guardiao a remove no fim"
 
 
-# ── B · C · D · o mesmo CN ja escrito ─────────────────────────────────────────
+def test_a_chave_existente_e_vazia_conta_como_host_limpo(registro):
+    """Sem regras, o Chrome nao seleciona nada — e a nossa propria escrita cria
+    a chave antes de preenche-la. Recusar aqui seria recusar o proprio rastro."""
+    registro.dados["HKCU"][CAMINHO] = {}
+    lancamentos = []
 
-def test_b_mesmo_cn_em_hkcu_e_aceito_sem_lancar_guardiao(registro):
+    assert protocolo(CN_NOSSO, lancamentos).situacao == policy_certificado.ATIVADA
+    assert lancamentos == [CN_NOSSO]
+
+
+# ── B · C · D · o mesmo CN ja escrito: EMPRESTAR ──────────────────────────────
+
+def test_b_mesmo_cn_em_hkcu_e_EMPRESTADO_sem_lancar_guardiao(registro):
     semear(registro, "HKCU", CN_NOSSO)
     lancamentos = []
 
-    resultado = protocolo(CN_NOSSO, registro, lancamentos)
+    resultado = protocolo(CN_NOSSO, lancamentos)
 
     assert lancamentos == [], "ninguem e lancado"
     assert resultado.situacao == policy_certificado.JA_ATIVA
     assert resultado.tem_guardiao is False, "e ninguem vai limpar"
 
 
-def test_c_mesmo_cn_so_em_hklm_tambem_e_aceito(registro):
-    """HKCU ausente. `policy_cn` desce para a segunda colmeia e devolve o CN."""
+def test_b_emprestar_nao_modifica_nada(registro):
+    """§14: se e emprestada, nao se escreve, nao se lanca dono e nao se limpa."""
+    semear(registro, "HKCU", CN_NOSSO)
+    antes = registro.valores("HKCU", CAMINHO)
+
+    protocolo(CN_NOSSO, [])
+
+    assert registro.valores("HKCU", CAMINHO) == antes
+    assert ("SetValueEx", "HKCU", "1") not in registro.operacoes
+    assert not [op for op in registro.operacoes if op[0] == "DeleteKey"]
+
+
+def test_c_mesmo_cn_so_em_hklm_tambem_e_emprestado(registro):
+    """HKCU ausente. A unica colmeia com conteudo esta completa e coerente."""
     semear(registro, "HKLM", CN_NOSSO)
 
-    assert cert_windows.policy_cn() == CN_NOSSO
-    assert protocolo(CN_NOSSO, registro, []).situacao == policy_certificado.JA_ATIVA
+    assert protocolo(CN_NOSSO, []).situacao == policy_certificado.JA_ATIVA
 
 
 def test_d_mesmo_cn_coerente_nas_duas_colmeias(registro):
     semear(registro, "HKCU", CN_NOSSO)
     semear(registro, "HKLM", CN_NOSSO)
 
-    assert protocolo(CN_NOSSO, registro, []).situacao == policy_certificado.JA_ATIVA
+    assert protocolo(CN_NOSSO, []).situacao == policy_certificado.JA_ATIVA
 
 
-def test_b_aceitar_nao_e_saber_quem_escreveu(registro):
-    """O ponto epistemico da fatia.
+def test_b_emprestar_nao_e_saber_quem_escreveu(registro):
+    """O ponto epistemico da fatia, e ele NAO foi resolvido — foi contornado.
 
     O estado semeado aqui e indistinguivel do que a nossa propria automacao
-    escreveria — mesmas URLs, mesmo formato, mesmo CN. E mesmo assim ninguem
-    neste processo sabe quem o escreveu: nao ha marcador de dono no payload.
+    escreveria. Ninguem neste processo sabe quem o escreveu: nao ha marcador de
+    dono no payload. O que a fatia garante e que essa ignorancia nao autoriza
+    destruir nada — emprestar nao modifica e nao limpa.
     """
     semear(registro, "HKCU", CN_NOSSO)
 
@@ -125,96 +157,117 @@ def test_b_aceitar_nao_e_saber_quem_escreveu(registro):
         assert "DebitosEmAberto" not in bruto
         assert set(json.loads(bruto)) == {"pattern", "filter"}, "nao ha campo de dono"
 
+    assert protocolo(CN_NOSSO, []).sera_limpa is False, "continua sendo de quem a fez"
 
-# ── E · CN diferente: a substituicao destrutiva ───────────────────────────────
 
-def test_e_cn_diferente_lanca_guardiao_e_sobrescreve(registro):
+# ── E · CN diferente: RECUSAR ─────────────────────────────────────────────────
+
+def test_e_cn_diferente_RECUSA_em_vez_de_sobrescrever(registro):
+    """ANTES: lancava o guardiao, sobrescrevia, e a execucao seguia com o CN
+    novo. O CN alheio desaparecia sem que nada dele fosse guardado.
+
+    AGORA: para antes de escrever. Uma policy apontando para outro certificado
+    faria o Chrome autenticar como outra empresa — seguir seria pior que parar.
+    """
     semear(registro, "HKCU", CN_ALHEIO)
     lancamentos = []
 
-    resultado = protocolo(CN_NOSSO, registro, lancamentos)
+    with pytest.raises(policy_certificado.ConfiguracaoDeHostIncompativel) as erro:
+        protocolo(CN_NOSSO, lancamentos)
 
-    assert lancamentos == [CN_NOSSO]
-    assert resultado.situacao == policy_certificado.ATIVADA
-    lido = json.loads(registro.valores("HKCU", CAMINHO)["1"])
-    assert lido["filter"]["SUBJECT"]["CN"] == CN_NOSSO, "o CN alheio se foi"
+    assert erro.value.motivo == policy_certificado.OUTRO_CERTIFICADO
+    assert lancamentos == []
 
 
-def test_e_nada_e_guardado_do_estado_anterior(registro):
-    """PREEXISTING_POLICY_DESTRUCTIVE_REPLACEMENT, o nucleo.
+def test_e_o_estado_alheio_fica_exatamente_como_estava(registro):
+    """ANTES este teste se chamava `nada_e_guardado_do_estado_anterior` e
+    afirmava que o CN alheio sumia dos valores. Nao ha mais o que guardar,
+    porque nao ha mais o que destruir."""
+    semear(registro, "HKCU", CN_ALHEIO)
+    antes = registro.valores("HKCU", CAMINHO)
 
-    Nenhum snapshot, nenhuma copia, nenhum registro do que havia antes: o CN
-    alheio existe so enquanto nao for sobrescrito.
-    """
+    with pytest.raises(policy_certificado.ConfiguracaoDeHostIncompativel):
+        protocolo(CN_NOSSO, [])
+
+    assert registro.valores("HKCU", CAMINHO) == antes
+
+
+def test_e_e_nenhuma_limpeza_nossa_e_disparada(registro):
+    """ANTES o ciclo era alheio -> nosso -> chave apagada, e o alheio nunca
+    voltava. Recusar antes de escrever tambem significa nao ter o que limpar."""
     semear(registro, "HKCU", CN_ALHEIO)
 
-    protocolo(CN_NOSSO, registro, [])
+    with pytest.raises(policy_certificado.ConfiguracaoDeHostIncompativel):
+        protocolo(CN_NOSSO, [])
 
-    for bruto in registro.valores("HKCU", CAMINHO).values():
-        assert CN_ALHEIO not in bruto
-
-
-def test_e_e_a_limpeza_apaga_a_chave_inteira_sem_restaurar(registro):
-    """O ciclo completo: alheio -> nosso -> limpo. O alheio nunca volta."""
-    semear(registro, "HKCU", CN_ALHEIO)
-    protocolo(CN_NOSSO, registro, [])
-
-    cert_windows.limpar_autoselect()
-
-    assert not registro.tem("HKCU", CAMINHO), "a chave inteira saiu"
-    assert cert_windows.policy_cn() == "", "e o CN alheio nao foi restaurado"
+    assert cert_windows.policy_cn() == CN_ALHEIO
+    assert not [op for op in registro.operacoes if op[0] == "DeleteKey"]
 
 
-# ── F · colmeias divergentes ──────────────────────────────────────────────────
+# ── F · colmeias divergentes: RECUSAR ─────────────────────────────────────────
 
-def test_f_hkcu_esperado_e_hklm_diferente_passa_como_ja_ativa(registro):
-    """PARTIAL_POLICY_STATE em forma de decisao.
+def test_f_hkcu_esperado_e_hklm_diferente_agora_RECUSA(registro):
+    """ANTES: a colmeia lida primeiro tinha o CN certo, entao `policy_cn`
+    devolvia o CN certo e o protocolo declarava JA_ATIVA. HKLM nunca era
+    consultado — e o Chrome pode justamente ler HKLM.
 
-    A colmeia lida primeiro tem o CN certo, entao `policy_cn` devolve o CN certo
-    e o protocolo declara JA_ATIVA. HKLM nunca e consultado — e o Chrome pode
-    justamente ler HKLM.
+    AGORA as duas sao lidas, e a divergencia por si so basta para recusar. Isto
+    e o PARTIAL_POLICY_STATE deixando de ser um risco silencioso.
     """
     semear(registro, "HKCU", CN_NOSSO)
     semear(registro, "HKLM", CN_ALHEIO)
     lancamentos = []
 
-    resultado = protocolo(CN_NOSSO, registro, lancamentos)
+    with pytest.raises(policy_certificado.ConfiguracaoDeHostIncompativel) as erro:
+        protocolo(CN_NOSSO, lancamentos)
 
-    assert resultado.situacao == policy_certificado.JA_ATIVA
+    assert erro.value.motivo == policy_certificado.COLMEIAS_DIVERGENTES
     assert lancamentos == []
-    assert cert_windows._ler_cn("HKLM") == CN_ALHEIO, "e continua la, intocado"
 
 
-def test_f_hkcu_diferente_e_hklm_esperado_lanca_guardiao(registro):
-    """A ordem inversa da anterior decide o oposto — pelo mesmo motivo."""
+def test_f_hkcu_diferente_e_hklm_esperado_tambem_recusa(registro):
+    """ANTES a ordem inversa decidia o oposto — lancava guardiao e sobrescrevia
+    — porque so a primeira colmeia nao vazia era consultada. Hoje as duas
+    ordens dao o mesmo resultado, que e o que "divergente" deveria significar."""
     semear(registro, "HKCU", CN_ALHEIO)
     semear(registro, "HKLM", CN_NOSSO)
-    lancamentos = []
 
-    assert protocolo(CN_NOSSO, registro, lancamentos).situacao == (
-        policy_certificado.ATIVADA
-    )
-    assert lancamentos == [CN_NOSSO]
+    with pytest.raises(policy_certificado.ConfiguracaoDeHostIncompativel) as erro:
+        protocolo(CN_NOSSO, [])
+
+    assert erro.value.motivo == policy_certificado.COLMEIAS_DIVERGENTES
 
 
-def test_f_a_decisao_e_do_primeiro_nao_vazio_e_so_dele(registro):
+def test_f_recusar_dispensa_saber_qual_colmeia_o_chrome_prefere(registro):
+    """A razao de a precedencia HKCU/HKLM nao ser necessaria para a seguranca:
+    quando as duas discordam, nao se escolhe entre elas — para-se.
+
+    A prova e a INDEPENDENCIA DE ORDEM. Inverter as colmeias nao muda a decisao,
+    e uma decisao que nao depende da ordem tambem nao depende de qual delas o
+    Chrome le primeiro.
+    """
+    avaliar = policy_certificado.avaliar_estado_inicial
+    padroes = tuple(cert_windows.CERT_URLS)
+    semear(registro, "HKCU", CN_ALHEIO)
+    semear(registro, "HKLM", CN_NOSSO)
+    colmeias = cert_windows.inventario_da_policy()
+
+    direta = avaliar(colmeias, CN_NOSSO, padroes)
+    invertida = avaliar(tuple(reversed(colmeias)), CN_NOSSO, padroes)
+
+    assert direta == invertida
+    assert direta.decisao == policy_certificado.RECUSAR
+
+
+# ── G · uma colmeia ausente ───────────────────────────────────────────────────
+
+def test_g_uma_colmeia_ausente_com_a_outra_coerente_e_emprestavel(registro):
+    """Ausencia nao e divergencia. Escrever nas duas e o desejado; ter escrito
+    so numa e o comum (HKLM sem elevacao), e nao ha nada de conflitante nisso."""
     semear(registro, "HKCU", CN_NOSSO)
-    semear(registro, "HKLM", CN_ALHEIO)
 
-    assert cert_windows.policy_cn() == CN_NOSSO
-    assert cert_windows.policy_existe() is True, "e nao diz de qual colmeia"
-
-
-# ── G · uma colmeia ausente quando ambas eram esperadas ───────────────────────
-
-def test_g_uma_colmeia_ausente_e_indistinguivel_de_coerente(registro):
-    """Escrever nas duas e o desejado; ter escrito so numa e o comum (HKLM sem
-    elevacao). O protocolo nao consegue diferenciar os dois casos."""
-    semear(registro, "HKCU", CN_NOSSO)
-
-    assert cert_windows.policy_cn() == CN_NOSSO
     assert not registro.tem("HKLM", CAMINHO)
-    assert protocolo(CN_NOSSO, registro, []).situacao == policy_certificado.JA_ATIVA
+    assert protocolo(CN_NOSSO, []).situacao == policy_certificado.JA_ATIVA
 
 
 def test_g_a_escrita_parcial_real_produz_exatamente_esse_estado(monkeypatch):
@@ -229,118 +282,145 @@ def test_g_a_escrita_parcial_real_produz_exatamente_esse_estado(monkeypatch):
     assert not falso.tem("HKLM", CAMINHO)
 
 
-# ── H · payload malformado ────────────────────────────────────────────────────
+# ── H · payload malformado: RECUSAR ───────────────────────────────────────────
 
-def test_h_payload_malformado_e_lido_como_ausencia(registro):
+def test_h_payload_malformado_continua_invisivel_para_a_leitura_antiga(registro):
+    """`_ler_cn` nao mudou, e continua tratando o ilegivel como ausente. O que
+    mudou e que a DECISAO deixou de nascer dela."""
     registro.dados["HKCU"][CAMINHO] = {"1": "isto nao e json"}
-
-    assert cert_windows._ler_cn("HKCU") == ""
-    assert cert_windows.policy_existe() is False, "existe no registro, some na leitura"
-
-
-def test_h_malformado_leva_a_sobrescrever_sem_perceber(registro):
-    """A ausencia aparente vira licenca para escrever: o protocolo acha o host
-    limpo e o guardiao escreve por cima de uma configuracao que ele nao
-    entendeu."""
-    registro.dados["HKCU"][CAMINHO] = {"1": "isto nao e json"}
-    lancamentos = []
-
-    assert protocolo(CN_NOSSO, registro, lancamentos).situacao == (
-        policy_certificado.ATIVADA
-    )
-    assert lancamentos == [CN_NOSSO]
-
-
-def test_h_json_valido_sem_o_campo_cn_tambem_le_como_vazio(registro):
-    registro.dados["HKCU"][CAMINHO] = {"1": json.dumps({"pattern": "https://x"})}
-
-    assert cert_windows._ler_cn("HKCU") == ""
-
-
-def test_h_o_cn_fora_do_valor_um_e_invisivel(registro):
-    """`_ler_cn` le SO o valor "1". Uma policy legitima escrita por outra
-    ferramenta, com o mesmo formato mas comecando em outro indice, nao existe
-    para nos."""
-    registro.dados["HKCU"][CAMINHO] = {"2": entrada(CN_ALHEIO)}
 
     assert cert_windows._ler_cn("HKCU") == ""
     assert cert_windows.policy_existe() is False
-    assert registro.tem("HKCU", CAMINHO), "mas a chave esta la, com conteudo"
 
 
-def test_h_e_por_isso_a_limpeza_pode_ser_confirmada_sem_a_chave_sair(registro):
-    """Consequencia direta: `policy_existe` e o confirmador da 12B.2. Uma chave
-    cheia de valores que ele nao le e uma limpeza confirmada que nao limpou."""
+def test_h_malformado_agora_RECUSA_em_vez_de_sobrescrever(registro):
+    """ANTES a ausencia aparente virava licenca para escrever: o protocolo achava
+    o host limpo e o guardiao escrevia por cima de uma configuracao que ninguem
+    tinha entendido.
+
+    AGORA o inventario ve que ha conteudo e que nao sabemos le-lo, e isso e
+    motivo de parada — nao de sobrescrita.
+    """
+    registro.dados["HKCU"][CAMINHO] = {"1": "isto nao e json"}
+    lancamentos = []
+
+    with pytest.raises(policy_certificado.ConfiguracaoDeHostIncompativel) as erro:
+        protocolo(CN_NOSSO, lancamentos)
+
+    assert erro.value.motivo == policy_certificado.CONTEUDO_NAO_RECONHECIDO
+    assert lancamentos == []
+
+
+def test_h_o_cn_fora_do_valor_um_deixou_de_ser_invisivel(registro):
+    """ANTES: `_ler_cn` lia SO o valor "1", entao uma policy legitima escrita por
+    outra ferramenta comecando em outro indice simplesmente nao existia para
+    nos — e era sobrescrita.
+
+    AGORA o inventario enumera a colmeia inteira, e o que ele ve basta para
+    recusar."""
     registro.dados["HKCU"][CAMINHO] = {"2": entrada(CN_ALHEIO)}
 
-    assert cert_windows.policy_existe() is False, "confirmaria a remocao"
-    assert registro.valores("HKCU", CAMINHO), "com a chave intacta"
+    assert cert_windows._ler_cn("HKCU") == "", "a leitura antiga continua cega"
+
+    with pytest.raises(policy_certificado.ConfiguracaoDeHostIncompativel):
+        protocolo(CN_NOSSO, [])
 
 
-# ── I · valores extras ────────────────────────────────────────────────────────
+# ── I · valores extras: RECUSAR ───────────────────────────────────────────────
 
-def test_i_valor_fora_da_sequencia_sobrevive_a_nossa_escrita(registro):
+def test_i_regra_a_mais_agora_RECUSA(registro):
+    """ANTES: a decisao lia um valor so, entao valores adicionais nao entravam
+    nela — a execucao seguia e a nossa escrita preservava o extra por acidente
+    (a limpeza para no primeiro indice ausente).
+
+    AGORA sao motivo de recusa. §15: nao sabemos se uma regra adicional afeta as
+    nossas URLs, e sem saber a resposta segura e parar, nunca apagar.
+    """
     semear(registro, "HKCU", CN_NOSSO)
     registro.dados["HKCU"][CAMINHO]["99"] = entrada(CN_ALHEIO, "https://intranet")
 
-    cert_windows.definir_autoselect(CN_NOSSO)
+    with pytest.raises(policy_certificado.ConfiguracaoDeHostIncompativel) as erro:
+        protocolo(CN_NOSSO, [])
 
-    assert registro.valores("HKCU", CAMINHO)["99"] == entrada(
-        CN_ALHEIO, "https://intranet"
-    )
+    assert erro.value.motivo == policy_certificado.REGRAS_ADICIONAIS
 
 
-def test_i_nome_nao_numerico_tambem_sobrevive(registro):
-    """A limpeza percorre "1", "2", "3"... e para no primeiro ausente. Um valor
-    chamado de outra coisa nunca e alcancado."""
+def test_i_nome_nao_numerico_tambem_recusa(registro):
     semear(registro, "HKCU", CN_NOSSO)
     registro.dados["HKCU"][CAMINHO]["RegraDaEmpresa"] = entrada(CN_ALHEIO)
 
-    cert_windows.definir_autoselect(CN_NOSSO)
+    with pytest.raises(policy_certificado.ConfiguracaoDeHostIncompativel):
+        protocolo(CN_NOSSO, [])
+
+
+def test_i_e_o_extra_nao_e_apagado(registro):
+    """§15, literal: nao apagar valores extras. Recusar nao remove nada."""
+    semear(registro, "HKCU", CN_NOSSO)
+    registro.dados["HKCU"][CAMINHO]["RegraDaEmpresa"] = entrada(CN_ALHEIO)
+
+    with pytest.raises(policy_certificado.ConfiguracaoDeHostIncompativel):
+        protocolo(CN_NOSSO, [])
 
     assert "RegraDaEmpresa" in registro.valores("HKCU", CAMINHO)
 
 
-def test_i_mas_a_limpeza_final_leva_tudo(registro):
-    """A assimetria que interessa: a ESCRITA preserva os extras, a LIMPEZA nao.
-    `DeleteKey` remove a chave inteira, com o que era nosso e o que nao era."""
+def test_i_a_limpeza_continua_levando_tudo_e_por_isso_nao_a_alcancamos(registro):
+    """`limpar_autoselect` sempre apagou a chave INTEIRA, com o que era nosso e o
+    que nao era. Isso nao mudou — o que mudou e que ela so e alcancada por uma
+    policy que esta execucao instalou."""
     semear(registro, "HKCU", CN_NOSSO)
     registro.dados["HKCU"][CAMINHO]["RegraDaEmpresa"] = entrada(CN_ALHEIO)
 
     cert_windows.limpar_autoselect()
 
-    assert not registro.tem("HKCU", CAMINHO), "a regra alheia foi junto"
+    assert not registro.tem("HKCU", CAMINHO), "quando chamada, ainda leva tudo"
 
 
-def test_i_um_extra_reconhecivel_nao_muda_decisao_nenhuma(registro):
-    """Hoje a decisao le um valor so. Valores adicionais nao entram nela."""
-    semear(registro, "HKCU", CN_NOSSO)
-    registro.dados["HKCU"][CAMINHO]["99"] = entrada(CN_ALHEIO)
+# ── J · posse dentro da execucao ──────────────────────────────────────────────
 
-    assert protocolo(CN_NOSSO, registro, []).situacao == policy_certificado.JA_ATIVA
+def test_j_a_nossa_propria_policy_nao_e_recusada_no_meio_da_execucao(registro):
+    """A posse DENTRO de uma execucao e demonstravel: quem chama detem o
+    controle do guardiao que escreveu a policy anterior. Sem esta porta, uma
+    liberacao que nao confirmou faria a automacao se barrar a si mesma na troca
+    de certificado."""
+    semear(registro, "HKCU", CN_ALHEIO)
+    lancamentos = []
 
+    resultado = protocolo(CN_NOSSO, lancamentos, nossa=True)
 
-# ── J · o comportamento destrutivo, de ponta a ponta ──────────────────────────
-
-def test_j_nenhum_caminho_atual_pergunta_de_quem_e_a_policy():
-    """Nem a escrita, nem a leitura, nem a limpeza tem o conceito de dono."""
-    with open(cert_windows.__file__, encoding="utf-8") as arquivo:
-        codigo = arquivo.read()
-
-    trecho = codigo[codigo.index("def definir_autoselect"):codigo.index("def is_admin")]
-    for marca in ("dono", "owner", "preexist", "ownership"):
-        assert marca not in trecho.lower(), f"nao ha nocao de {marca} hoje"
+    assert resultado.situacao == policy_certificado.ATIVADA
+    assert lancamentos == [CN_NOSSO]
 
 
-def test_j_a_execucao_seguinte_herda_o_que_a_anterior_deixou(registro):
-    """Startup apos crash duplo: processo e guardiao morreram, o lease efemero
-    sumiu com eles, e a policy persistente ficou. A execucao seguinte adquire o
-    lease normalmente e encontra este estado — sem nenhuma forma de saber se ele
-    era nosso ou de outra pessoa."""
+def test_j_e_o_padrao_e_nao_ter_essa_posse(registro):
+    """Entre execucoes distintas nao ha nada equivalente ao controle do
+    guardiao, e por isso o padrao e False."""
+    import inspect
+
+    parametro = inspect.signature(
+        policy_certificado.garantir_policy
+    ).parameters["policy_ja_e_nossa"]
+
+    assert parametro.default is False
+
+
+def test_j_a_execucao_seguinte_a_um_crash_duplo_para_em_vez_de_herdar(registro):
+    """ANTES: processo e guardiao morriam, o lease efemero sumia com eles, a
+    policy persistente ficava, e a execucao seguinte adquiria o lease e escrevia
+    por cima — sem forma nenhuma de saber se aquele estado era nosso.
+
+    AGORA ela para. HOST_LEASE_RECOVERY_GAP nao e fechado tornando o lease
+    persistente; e fechado tratando com seguranca o estado que sobrevive a ele.
+    """
     semear(registro, "HKCU", CN_ALHEIO)
 
-    assert cert_windows.policy_cn() == CN_ALHEIO
-    resultado = protocolo(CN_NOSSO, registro, [])
+    with pytest.raises(policy_certificado.ConfiguracaoDeHostIncompativel):
+        protocolo(CN_NOSSO, [])
 
-    assert resultado.situacao == policy_certificado.ATIVADA, "escreve por cima"
-    assert resultado.tem_guardiao is True
+
+def test_j_um_crash_duplo_com_o_MESMO_certificado_nao_trava_o_host(registro):
+    """O outro lado da moeda, e o que impede a regra de ser inutilizavel: se o
+    que sobrou aponta para o certificado desta execucao, ela empresta e segue."""
+    semear(registro, "HKCU", CN_NOSSO)
+
+    assert protocolo(CN_NOSSO, []).situacao == policy_certificado.JA_ATIVA

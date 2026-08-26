@@ -72,9 +72,23 @@ class Registro:
         self.cn = ""
 
 
+def _decisao_de_antes(ler, cn):
+    """A regra de startup ANTERIOR a fatia 12D, preservada aqui de proposito.
+
+    O que este arquivo observa e o ciclo de vida do guardiao e da posse, e nao a
+    validacao de estado preexistente — que tem os seus proprios testes. Manter a
+    decisao antiga faz cada assercao abaixo continuar significando exatamente o
+    que significava: "o CN visivel ja e o pedido" -> usa sem lancar ninguem.
+    """
+    from automation.policy_certificado import CRIAR, EMPRESTAR, DecisaoDeStartup
+
+    return lambda: DecisaoDeStartup(EMPRESTAR if ler() == cn else CRIAR)
+
+
 def pedir(registro, cn, lancar=None):
     return garantir_policy(
-        cn, ler_cn_atual=registro.ler_cn,
+        cn, avaliar_inicio=_decisao_de_antes(registro.ler_cn, cn),
+        ler_cn_atual=registro.ler_cn,
         lancar_guardiao=lancar or registro.lancar,
         aguardar=lambda: None,
     )
@@ -133,7 +147,8 @@ def test_b_a_espera_e_pelo_CN_PEDIDO_e_nao_pela_existencia():
         return 0   # o guardiao subiu mas ainda nao escreveu
 
     resultado = garantir_policy(
-        CN_B, ler_cn_atual=reg.ler_cn, lancar_guardiao=demora, aguardar=lambda: None
+        CN_B, avaliar_inicio=_decisao_de_antes(reg.ler_cn, CN_B),
+        ler_cn_atual=reg.ler_cn, lancar_guardiao=demora, aguardar=lambda: None
     )
 
     assert resultado.situacao == NAO_APARECEU, "nunca aceitou o CN_A como suficiente"
@@ -326,13 +341,22 @@ def test_h_a_decisao_de_ownership_le_apenas_a_primeira_colmeia_nao_vazia():
     assert "return" in leitura, "devolve a primeira que responder"
 
 
-def test_h_o_protocolo_recebe_um_unico_cn_e_nao_o_estado_das_duas_colmeias():
-    """`garantir_policy` decide com UM valor. Ele nao tem como saber que as
-    colmeias divergem — a informacao nao chega ate ele."""
+def test_h_o_protocolo_passou_a_receber_o_ESTADO_e_nao_so_um_cn():
+    """ANTES: `garantir_policy` recebia quatro coisas — cn, ler_cn_atual,
+    lancar_guardiao, aguardar — e decidia com UM valor lido de UMA colmeia. A
+    divergencia entre HKCU e HKLM simplesmente nao chegava ate ele.
+
+    AGORA existe `avaliar_inicio`, e quem o fornece le as duas colmeias
+    inteiras. A decisao de startup deixou de nascer de uma leitura parcial.
+    """
     parametros = list(inspect.signature(policy_certificado.garantir_policy).parameters)
 
-    assert parametros == ["cn", "ler_cn_atual", "lancar_guardiao", "aguardar"]
-    assert "colmeia" not in inspect.getsource(policy_certificado.garantir_policy)
+    assert parametros == ["cn", "avaliar_inicio", "ler_cn_atual",
+                          "lancar_guardiao", "aguardar", "policy_ja_e_nossa"]
+
+    # E a avaliacao vem ANTES do unico ponto que escreve no registro.
+    fonte = inspect.getsource(policy_certificado.garantir_policy)
+    assert fonte.index("avaliar_inicio()") < fonte.index("lancar_guardiao(cn)")
 
 
 # ── G · o cleanup nao pode mascarar a causa ───────────────────────────────────
@@ -444,7 +468,7 @@ def test_o_ownership_nasce_do_tem_guardiao(monkeypatch):
     ):
         monkeypatch.setattr(
             app.maquina, "garantir_policy_do_windows",
-            lambda cn, s=situacao, g=guardiao: ResultadoDaPolicy(
+            lambda cn, nossa=False, s=situacao, g=guardiao: ResultadoDaPolicy(
                 s, g, controle=_Controle(cn) if g else None
             ),
         )
@@ -469,7 +493,7 @@ def test_o_ownership_sobrevive_a_troca_de_certificado(monkeypatch):
     resultados = iter([ResultadoDaPolicy(_ATIVADA, True, controle=_Controle(CN_A)),
                        ResultadoDaPolicy(_JA_ATIVA, False)])
     monkeypatch.setattr(app.maquina, "garantir_policy_do_windows",
-                        lambda cn: next(resultados))
+                        lambda cn, nossa=False: next(resultados))
     monkeypatch.setattr(app.maquina, "liberar_policy_do_windows", lambda c: True)
     from automation.planilha import ItemPendente
 

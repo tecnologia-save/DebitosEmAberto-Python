@@ -58,6 +58,19 @@ def execucao(emissor=None, propria=True):
 
 # ── §1 · §3 · o cleanup e RELATADO, nao CONFIRMADO ────────────────────────────
 
+def _decisao_de_antes(ler, cn):
+    """A regra de startup ANTERIOR a fatia 12D, preservada aqui de proposito.
+
+    O que este arquivo observa e o ciclo de vida do guardiao e da posse, e nao a
+    validacao de estado preexistente — que tem os seus proprios testes. Manter a
+    decisao antiga faz cada assercao abaixo continuar significando exatamente o
+    que significava: "o CN visivel ja e o pedido" -> usa sem lancar ninguem.
+    """
+    from automation.policy_certificado import CRIAR, EMPRESTAR, DecisaoDeStartup
+
+    return lambda: DecisaoDeStartup(EMPRESTAR if ler() == cn else CRIAR)
+
+
 def test_a_primitiva_engole_a_falha_por_colmeia():
     """`limpar_autoselect` tenta HKCU e HKLM, guarda o que conseguiu, e devolve
     `None`. Um `PermissionError` numa das duas some ali dentro."""
@@ -217,7 +230,7 @@ def test_ja_ativa_e_estado_EMPRESTADO_e_nao_proprio(monkeypatch):
     from automation.policy_certificado import JA_ATIVA, ResultadoDaPolicy
 
     monkeypatch.setattr(maquina, "garantir_policy_do_windows",
-                        lambda cn: ResultadoDaPolicy(JA_ATIVA, tem_guardiao=False))
+                        lambda cn, nossa=False: ResultadoDaPolicy(JA_ATIVA, tem_guardiao=False))
     ex = app._Execucao(PlanilhaInerte(), "p.xlsx", CONFIG, None)
     ex.certificados = {"c": {"subject_cn": CN_A, "serial": "0A01"}}
 
@@ -262,7 +275,9 @@ def test_policy_preexistente_com_outro_cn_e_destruida(monkeypatch):
         return _Controle(cn)
 
     resultado = garantir_policy(
-        CN_B, ler_cn_atual=lambda: maquina_falsa["cn"],
+        CN_B,
+        avaliar_inicio=_decisao_de_antes(lambda: maquina_falsa["cn"], CN_B),
+        ler_cn_atual=lambda: maquina_falsa["cn"],
         lancar_guardiao=lancar, aguardar=lambda: None,
     )
 

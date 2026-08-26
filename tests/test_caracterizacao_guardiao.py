@@ -54,8 +54,22 @@ class Maquina:
             self.cn = ""
 
 
+def _decisao_de_antes(ler, cn):
+    """A regra de startup ANTERIOR a fatia 12D, preservada aqui de proposito.
+
+    O que este arquivo observa e o ciclo de vida do guardiao e da posse, e nao a
+    validacao de estado preexistente — que tem os seus proprios testes. Manter a
+    decisao antiga faz cada assercao abaixo continuar significando exatamente o
+    que significava: "o CN visivel ja e o pedido" -> usa sem lancar ninguem.
+    """
+    from automation.policy_certificado import CRIAR, EMPRESTAR, DecisaoDeStartup
+
+    return lambda: DecisaoDeStartup(EMPRESTAR if ler() == cn else CRIAR)
+
+
 def pedir(m, cn):
-    return garantir_policy(cn, ler_cn_atual=m.ler_cn, lancar_guardiao=m.lancar,
+    return garantir_policy(cn, avaliar_inicio=_decisao_de_antes(m.ler_cn, cn),
+                           ler_cn_atual=m.ler_cn, lancar_guardiao=m.lancar,
                            aguardar=lambda: None)
 
 
@@ -407,7 +421,7 @@ def test_7_policy_emprestada_nao_e_liberada(monkeypatch):
 
     pedidos = []
     monkeypatch.setattr(maquina, "garantir_policy_do_windows",
-                        lambda cn: ResultadoDaPolicy(JA_ATIVA, tem_guardiao=False))
+                        lambda cn, nossa=False: ResultadoDaPolicy(JA_ATIVA, tem_guardiao=False))
     monkeypatch.setattr(maquina, "liberar_policy_do_windows",
                         lambda c: pedidos.append(c) or True)
     from automation.planilha import ItemPendente
@@ -432,7 +446,7 @@ def test_8_a_troca_de_certificado_nao_acumula_guardioes(monkeypatch):
 
     vivos = []
 
-    def garantir(cn):
+    def garantir(cn, nossa=False):
         controle = _Controle(cn)
         vivos.append(controle)
         return ResultadoDaPolicy(_ATIVADA, tem_guardiao=True, controle=controle)

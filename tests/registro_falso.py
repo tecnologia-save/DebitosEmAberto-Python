@@ -64,6 +64,19 @@ class RegistroFalso:
             raise FileNotFoundError(nome)
         return valores[nome], self.REG_SZ
 
+    def EnumValue(self, chave, indice):
+        """Percorre os valores por posicao, como o winreg de verdade.
+
+        E o que uma leitura COMPLETA da colmeia exige: sem enumerar, so se
+        encontra o valor cujo nome ja se sabia. Levanta OSError no fim, que e
+        como o winreg sinaliza que acabou.
+        """
+        valores = list(self.dados[chave.colmeia][chave.caminho].items())
+        if indice >= len(valores):
+            raise OSError(259, "no more data")
+        nome, valor = valores[indice]
+        return nome, valor, self.REG_SZ
+
     def DeleteValue(self, chave, nome):
         valores = self.dados[chave.colmeia][chave.caminho]
         if nome not in valores:

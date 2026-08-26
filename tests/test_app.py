@@ -121,7 +121,7 @@ def execucao_com(sessao_planilha=None, emissor=None, sessao=None):
 def capacidades(monkeypatch):
     """Todas as fronteiras substituidas nos NOSSOS modulos, nunca por parametro."""
     monkeypatch.setattr(app.maquina, "garantir_policy_do_windows",
-                        lambda cn: ResultadoDaPolicy(ATIVADA, tem_guardiao=True))
+                        lambda cn, nossa=False: ResultadoDaPolicy(ATIVADA, tem_guardiao=True))
     monkeypatch.setattr(app.maquina, "abrir_sessao",
                         lambda cert, auto, chave: ResultadoDoLogin(AUTENTICADO, SessaoFalsa()))
     monkeypatch.setattr(app.navegador, "encerrar_no_portal", lambda page: None)

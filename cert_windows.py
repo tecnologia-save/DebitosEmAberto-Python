@@ -142,6 +142,65 @@ def policy_cn() -> str:
     return ""
 
 
+def _interpretar(nome: str, bruto: object) -> policy_certificado.RegraDaPolicy:
+    """Uma entrada do registro virada regra — ou marcada como ilegível.
+
+    Nada de palpite: um payload que não tem a forma que conhecemos sai com
+    `reconhecida=False`, e não com campos meio preenchidos.
+    """
+    try:
+        dado = json.loads(bruto)
+        padrao = dado["pattern"]
+        cn = dado["filter"]["SUBJECT"]["CN"]
+        if not isinstance(padrao, str) or not isinstance(cn, str):
+            raise TypeError(nome)
+        if set(dado) != {"pattern", "filter"}:
+            raise ValueError(nome)
+    except (TypeError, ValueError, KeyError):
+        return policy_certificado.RegraDaPolicy(nome, reconhecida=False)
+    return policy_certificado.RegraDaPolicy(nome, padrao=padrao, cn=cn)
+
+
+def _inventariar(rotulo: str, raiz) -> policy_certificado.ColmeiaDaPolicy:
+    try:
+        key = winreg.OpenKeyEx(raiz, REG_PATH, 0, winreg.KEY_READ)
+    except FileNotFoundError:
+        return policy_certificado.ColmeiaDaPolicy(rotulo, existe=False)
+    except OSError:
+        # Existe e não pudemos ler. Não é o mesmo que não existir, e tratá-los
+        # igual seria escrever por cima do que não vimos.
+        return policy_certificado.ColmeiaDaPolicy(rotulo, existe=True, legivel=False)
+
+    regras = []
+    try:
+        indice = 0
+        while True:
+            try:
+                nome, bruto, _ = winreg.EnumValue(key, indice)
+            except OSError:
+                break
+            regras.append(_interpretar(nome, bruto))
+            indice += 1
+    finally:
+        winreg.CloseKey(key)
+    return policy_certificado.ColmeiaDaPolicy(
+        rotulo, existe=True, regras=tuple(regras)
+    )
+
+
+def inventario_da_policy() -> tuple[policy_certificado.ColmeiaDaPolicy, ...]:
+    """O estado COMPLETO da policy nas duas colmeias.
+
+    `policy_cn` responde "qual CN o Chrome vai aplicar" olhando um valor de uma
+    colmeia. Isso decide bem quando o host é nosso e decide mal quando há estado
+    que não escrevemos: um valor fora do índice 1 fica invisível, uma colmeia
+    divergente nunca é consultada, e um payload malformado passa por ausência.
+
+    Esta leitura não resume nada — é ela que a decisão de startup consome.
+    """
+    return tuple(_inventariar(rotulo, raiz) for rotulo, raiz in _COLMEIAS)
+
+
 def diagnostico() -> str:
     """Resumo do estado da policy em cada colmeia, para o log."""
     partes = []
@@ -410,17 +469,27 @@ def pedir_limpeza(controle: ControleDoGuardiao) -> None:
     _k32.SetEvent(controle.evento)
 
 
-def iniciar_guarda_detalhado(cn: str) -> policy_certificado.ResultadoDaPolicy:
+def iniciar_guarda_detalhado(
+    cn: str, policy_ja_e_nossa: bool = False
+) -> policy_certificado.ResultadoDaPolicy:
     """Garante a policy e devolve COMO ela ficou — inclusive quem vai limpá-la.
 
     O protocolo vive em automation/policy_certificado.py; aqui ficam as
     primitivas do Windows e o que vai para o console.
+
+    `policy_ja_e_nossa` atravessa até o protocolo sem ser interpretado aqui: é o
+    chamador que sabe se detém o controle do guardião que escreveu a policy
+    atual, e só ele pode afirmar posse.
     """
     resultado = policy_certificado.garantir_policy(
         cn,
+        avaliar_inicio=lambda: policy_certificado.avaliar_estado_inicial(
+            inventario_da_policy(), cn, tuple(CERT_URLS)
+        ),
         ler_cn_atual=policy_cn,
         lancar_guardiao=_lancar_guardiao,
         aguardar=lambda: time.sleep(policy_certificado.INTERVALO_SONDAGEM_S),
+        policy_ja_e_nossa=policy_ja_e_nossa,
     )
 
     if resultado.situacao == policy_certificado.JA_ATIVA:

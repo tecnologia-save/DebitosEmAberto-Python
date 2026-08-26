@@ -112,20 +112,27 @@ def abrir_sessao(
     )
 
 
-def garantir_policy_do_windows(cn: str) -> ResultadoDaPolicy:
+def garantir_policy_do_windows(
+    cn: str, policy_ja_e_nossa: bool = False
+) -> ResultadoDaPolicy:
     """TRANSITIONAL — a policy desta maquina, com as primitivas ja existentes.
 
     `cert_windows` fica fora de `automation/` e conhece registro, UAC e o
     processo guardiao. Este atalho existe para que a aplicacao peca a policy sem
     importar nada disso.
 
-    Os findings da fatia 7A continuam abertos e NAO sao tratados aqui:
-    POLICY_STALE_OWNERSHIP_GAP, GLOBAL_CERT_POLICY_CONCURRENCY_RISK e
-    PARTIAL_POLICY_STATE.
+    Levanta `PolicyPreexistenteIncompativel` quando havia configuracao de
+    auto-selecao no host que esta execucao nao instalou e nao pode usar com
+    seguranca (fatia 12D). Nada e escrito antes dessa decisao.
+
+    `policy_ja_e_nossa` diz que o chamador DETEM o controle do guardiao que
+    escreveu a policy atual. So dentro de uma execucao isso e demonstravel.
+
+    Findings da fatia 7A ainda abertos: GLOBAL_CERT_POLICY_CONCURRENCY_RISK.
     """
     import cert_windows
 
-    return cert_windows.iniciar_guarda_detalhado(cn)
+    return cert_windows.iniciar_guarda_detalhado(cn, policy_ja_e_nossa)
 
 
 def liberar_policy_do_windows(controle: object) -> bool:
