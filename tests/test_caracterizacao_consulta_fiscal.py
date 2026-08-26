@@ -58,10 +58,10 @@ def escritas(monkeypatch):
 @pytest.fixture(autouse=True)
 def sem_navegacao_real(monkeypatch):
     """Os helpers de paginacao mudaram de casa na 8B2 — so encanamento."""
-    monkeypatch.setattr(main, "_aguardar_networkidle", lambda page, **k: None)
     monkeypatch.setattr(fiscal, "selecionar_itens_por_pagina", lambda page, n: None)
     monkeypatch.setattr(fiscal, "expandir_linhas", lambda page: None)
-    monkeypatch.setattr(main, "_goto_seguro", lambda page, url, **k: page.goto(url))
+    monkeypatch.setattr(fiscal, "navegar", lambda page, url, **k: page.goto(url))
+    monkeypatch.setattr(fiscal, "aguardar_rede", lambda page, **k: None)
 
 
 def usar_leitor(monkeypatch, nome, funcao):

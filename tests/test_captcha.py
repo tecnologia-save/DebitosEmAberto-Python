@@ -229,26 +229,20 @@ def test_os_desfechos_sao_um_conjunto_fechado():
 # ── A ponte TRANSITIONAL ──────────────────────────────────────────────────────
 
 def test_a_ponte_do_main_monta_a_config_a_partir_do_ambiente(monkeypatch):
+    """A ponte deixou de resolver o captcha na 8A2 — ela agora so MONTA a
+    config, e quem resolve e a representacao. O segredo continua entrando por
+    um lugar so."""
     import main
 
     monkeypatch.setenv("GEMINI_API_KEY", CHAVE)
-    capturado = {}
 
-    def espiao(alvo, config, tentativas=2, aguardar=None, resolver_bruto=None):
-        capturado["chave"] = config.api_key
-        capturado["tentativas"] = tentativas
-        return RESOLVIDO_OU_AUSENTE
-
-    monkeypatch.setattr(main.captcha, "resolver", espiao)
-
-    assert main._resolver_captcha(PAGINA) == RESOLVIDO_OU_AUSENTE
-    assert capturado == {"chave": CHAVE, "tentativas": 2}
+    assert main._config_captcha().api_key == CHAVE
 
 
 def test_a_ponte_esta_marcada_e_tem_condicao_de_remocao():
     import main
 
-    doc = main._resolver_captcha.__doc__
+    doc = main._config_captcha.__doc__
     assert "TRANSITIONAL" in doc
-    assert "CAPTCHA_INTEGRATION_COUPLING" in doc
+    assert "LEGACY_SECRET_LOADING" in doc
     assert "Condição de remoção" in doc

@@ -45,7 +45,6 @@ import cert_windows                                                        # noq
 from servicos_rf_login import fazer_login                                  # noqa: E402
 from servicos_rf_login.log_manager import registrar_erro                   # noqa: E402
 from servicos_rf_login.login import fechar_tutorial_pos_login              # noqa: E402
-from resolvedor_captcha import solve_hcaptcha                                  # noqa: E402
 from ui_upload import main as selecionar_planilha                         # noqa: E402
 
 from automation.domain import buscar_certificado                            # noqa: E402
@@ -101,16 +100,12 @@ def _resolver_gemini_key() -> tuple[str, str]:
 
     return "", "nenhuma"
 
-URL_SERVICOS_RF        = "https://servicos.receitafederal.gov.br/"
-URL_PENDENCIAS         = "https://servicos.receitafederal.gov.br/servico/pendencias/"
 # Classe específica do botão gov.br — mais robusto que XPath posicional
 # (o botão contém <img alt="gov.br">, por isso has-text("gov.br") não funciona)
 BTN_ENTRAR_GOV  = 'button.login-banner-button'
 
 # ── Timer de troca de CNPJ ────────────────────────────────────────────────────
 # O portal não permite trocar de CNPJ com intervalo menor que 30 segundos.
-_ultimo_troca_cnpj: float = 0.0
-_INTERVALO_TROCA           = 30   # segundos
 
 
 # ── Classificação de recusas do portal ────────────────────────────────────────
@@ -143,72 +138,6 @@ from automation.status_portal import status_encerra_linha as _status_encerra_lin
 _normalizar_cnpj = planilha.normalizar_cnpj
 
 
-def _aguardar_intervalo_troca() -> None:
-    """Aguarda o intervalo mínimo de 30s entre trocas de CNPJ no portal.
-
-    Chamado sempre antes de clicar em 'Representar'. Se o intervalo já passou,
-    retorna imediatamente sem bloqueio.
-    """
-    global _ultimo_troca_cnpj
-    if _ultimo_troca_cnpj == 0.0:
-        return
-    decorrido = time.time() - _ultimo_troca_cnpj
-    if decorrido < _INTERVALO_TROCA:
-        espera = _INTERVALO_TROCA - decorrido
-        print(f"    → Aguardando {espera:.0f}s (intervalo mínimo de {_INTERVALO_TROCA}s entre trocas)...")
-        time.sleep(espera)
-
-
-def _goto_seguro(page, url: str, label: str = "", timeout: int = 60_000) -> None:
-    """Navega para `url` com logging detalhado e diagnóstico em caso de falha.
-
-    Usa wait_until='domcontentloaded' em vez de 'networkidle':
-    portais Angular mantêm conexões abertas e nunca atingem networkidle
-    dentro de 30s, causando TimeoutError mesmo quando a página está pronta.
-    O conteúdo real é verificado por wait_for() nos elementos seguintes.
-    """
-    prefixo = f"[{label}] " if label else ""
-    url_antes = page.url
-    print(f"    → {prefixo}Navegando para {url}\n"
-          f"          (URL atual: {url_antes[:100]})")
-    _t0 = time.time()
-    try:
-        page.goto(url, wait_until="domcontentloaded", timeout=timeout)
-    except Exception as _err:
-        _elapsed = time.time() - _t0
-        _url_apos = page.url
-        try:
-            _titulo = page.title()
-        except Exception:
-            _titulo = "(indisponível)"
-        print(
-            f"    [!] {prefixo}Falha na navegação após {_elapsed:.1f}s:\n"
-            f"          Erro       : {type(_err).__name__}: {_err}\n"
-            f"          URL origem : {url_antes}\n"
-            f"          URL destino: {url}\n"
-            f"          URL atual  : {_url_apos}\n"
-            f"          Título pág.: {_titulo!r}"
-        )
-        raise
-    _elapsed = time.time() - _t0
-    print(f"    [✓] {prefixo}Carregado em {_elapsed:.1f}s. URL: {page.url[:100]}")
-
-
-def _aguardar_networkidle(page, timeout: int = 60_000, label: str = "") -> None:
-    """Aguarda networkidle com fallback gracioso para SPAs Angular.
-
-    SPAs Angular podem manter conexões abertas indefinidamente.
-    Em vez de lançar exceção no timeout, registra o aviso e prossegue —
-    o elemento-alvo é verificado pelo wait_for() da etapa seguinte.
-    """
-    try:
-        page.wait_for_load_state("networkidle", timeout=timeout)
-    except Exception as _err:
-        _label_txt = f"[{label}] " if label else ""
-        print(f"    → {_label_txt}networkidle não atingido "
-              f"({type(_err).__name__}) — prosseguindo. URL: {page.url[:80]}")
-
-
 # ── Certificados ──────────────────────────────────────────────────────────────
 
 
@@ -230,24 +159,16 @@ def _autenticar(cert_subject_cn: str, cert_serial: str, auto_select: bool):
     return login.autenticar(certificado, config, auto_select, fazer_login=fazer_login)
 
 
-def _resolver_captcha(alvo, aguardar=None) -> str:
-    """TRANSITIONAL — ponte entre o fluxo legado e a fronteira do captcha.
+def _config_captcha() -> captcha.ConfigCaptcha:
+    """TRANSITIONAL — a chave do Gemini ainda é lida de `os.environ` AQUI.
 
-    Duas coisas moram aqui e não na integração, de propósito:
+    Daqui para baixo ela viaja explicitamente. O `os.environ` sobrevive porque o
+    modo desktop/executável legado continua populando-o (LEGACY_SECRET_LOADING).
 
-    1. A chave sai de `os.environ`. A fronteira a recebe por parâmetro e nunca
-       lê o ambiente; é o adapter que sabe onde ela está hoje.
-    2. `resolvedor_captcha.solve_hcaptcha` lê `os.environ["GEMINI_API_KEY"]` por
-       conta própria — não há parâmetro. Enquanto o fork não mudar, a variável
-       global CONTINUA sendo o único transporte do segredo até ele.
-       Ver CAPTCHA_INTEGRATION_COUPLING e LEGACY_SECRET_LOADING.
-
-    Condição de remoção: quando o fork aceitar a chave por parâmetro, esta função
-    passa a construir `ConfigCaptcha` a partir do input da execução e some junto
-    com o `os.environ` do passo 1.
+    Condição de remoção: quando o runner construir a configuração a partir do
+    input da execução.
     """
-    config = captcha.ConfigCaptcha(api_key=os.environ.get("GEMINI_API_KEY", ""))
-    return captcha.resolver(alvo, config, tentativas=2, aguardar=aguardar)
+    return captcha.ConfigCaptcha(api_key=os.environ.get("GEMINI_API_KEY", ""))
 
 
 def _listar_certs_windows() -> list[dict]:
@@ -534,388 +455,6 @@ def _fechar_navegador(p, context, page=None) -> None:
     print("    [✓] Navegador fechado.")
 
 
-def _recuperar_apos_recusa(page) -> bool:
-    """Devolve o portal a um estado utilizável depois de uma recusa de representação.
-
-    A recusa é do CNPJ, não da sessão: o certificado segue autenticado e o portal
-    aberto. Fechar o navegador aqui obrigaria um login novo para o próximo CNPJ
-    do mesmo certificado — justamente o custo que se quer evitar.
-
-    Fecha o formulário de representação (que fica aberto exibindo o erro) e volta
-    para o portal, confirmando que o avatar reaparece.
-
-    Returns:
-        True se a sessão continua utilizável para representar o próximo CNPJ.
-    """
-    try:
-        page.keyboard.press("Escape")
-        page.wait_for_timeout(300)
-    except Exception:
-        pass
-
-    try:
-        _goto_seguro(page, URL_SERVICOS_RF, label="pós-recusa", timeout=30_000)
-        page.locator('xpath=//*[@id="avatar-dropdown-trigger"]').first.wait_for(
-            state="visible", timeout=15_000
-        )
-        print("    [✓] Sessão mantida — seguindo para o próximo CNPJ deste certificado.")
-        return True
-    except Exception as e:
-        print(f"    [!] Sessão não recuperada após a recusa "
-              f"({type(e).__name__}: {e}). Fechando o navegador.")
-        return False
-
-
-def trocar_perfil_procurador(page, cnpj: str) -> None:
-    """Aguarda o intervalo de 30s, depois representa o CNPJ como Procurador
-    no portal e navega para a página de pendências.
-
-    Pode ser chamado tanto para o primeiro CNPJ (logo após entrar no portal)
-    quanto para os seguintes (sem precisar voltar ao eCAC).
-    """
-    global _ultimo_troca_cnpj
-
-    # ── Garante intervalo mínimo de 30s entre trocas ──────────────────────────
-    _aguardar_intervalo_troca()
-
-    _MAX_TENTATIVAS_REPR = 3
-
-    for _tentativa_repr in range(1, _MAX_TENTATIVAS_REPR + 1):
-
-        if _tentativa_repr > 1:
-            print(
-                f"    → Retentando representação "
-                f"(tentativa {_tentativa_repr}/{_MAX_TENTATIVAS_REPR})..."
-            )
-            # Fecha dropdown se ainda estiver aberto
-            try:
-                page.keyboard.press("Escape")
-                page.wait_for_timeout(500)
-            except Exception:
-                pass
-            page.wait_for_timeout(2_000)
-
-        # ── Tutorial pós-login ────────────────────────────────────────────────
-        # Rede de segurança: se estiver aberto, cobre a tela e intercepta o
-        # clique no avatar. Timeout 0 para não pagar espera a cada CNPJ — quem
-        # espera pelo tutorial é fazer_login(), uma vez por sessão.
-        fechar_tutorial_pos_login(page, timeout_ms=0)
-
-        # ── Abre menu do avatar ───────────────────────────────────────────────
-        print(f"    → Abrindo menu do certificado...")
-        avatar = page.locator('xpath=//*[@id="avatar-dropdown-trigger"]').first
-        avatar.wait_for(state="visible", timeout=15_000)
-        avatar.click()
-        page.wait_for_timeout(600)
-
-        # ── Preenche CNPJ ─────────────────────────────────────────────────────
-        print(f"    → Digitando CNPJ {cnpj} no campo de representação...")
-        campo_cnpj = page.locator('xpath=//*[@id="input-representar-cpfcnpj"]').first
-        campo_cnpj.wait_for(state="visible", timeout=10_000)
-        campo_cnpj.fill(cnpj)
-        page.wait_for_timeout(400)
-
-        # ── Seleciona Procurador ──────────────────────────────────────────────
-        print("    → Selecionando 'Procurador' no dropdown...")
-        ng_select = page.locator(
-            'xpath=//*[@id="formularioRepresentacao"]/form/div/div[2]/br-select/div/div/div[1]/ng-select'
-        ).first
-        ng_select.wait_for(state="visible", timeout=10_000)
-        ng_select.click()
-        page.wait_for_timeout(400)
-
-        opcao = page.get_by_role("option", name="Procurador").first
-        opcao.wait_for(state="visible", timeout=5_000)
-        opcao.click()
-        page.wait_for_timeout(400)
-
-        # ── Clica Representar ─────────────────────────────────────────────────
-        print("    → Clicando em 'Representar'...")
-        btn_representar = page.locator(
-            'xpath=//*[@id="formularioRepresentacao"]/form/div/button'
-        ).first
-        btn_representar.wait_for(state="visible", timeout=10_000)
-
-        # Listener de popup configurado ANTES do clique
-        _popups: list = []
-
-        def _on_new_page(p):
-            _popups.append(p)
-
-        page.context.on("page", _on_new_page)
-        btn_representar.click()
-
-        # Inicia cronômetro imediatamente após clicar em Representar
-        _ultimo_troca_cnpj = time.time()
-
-        # ── Aguarda "Carregando" APARECER antes de checar captcha ────────────
-        # O captcha pode aparecer POR CIMA do spinner "Carregando".
-        # Basta aguardar o spinner aparecer para saber que o servidor recebeu
-        # o clique; não esperamos ele sumir — isso ocorre após resolver captcha.
-        print("    → Aguardando 'Carregando' aparecer...")
-        _carregando = page.locator(
-            'xpath=/html/body/app-root/mf-portal-layout/portal-main-layout'
-            '/br-loading/div/div/a/div[2]'
-        ).first
-        _carregando_apareceu = False
-        try:
-            _carregando.wait_for(state="visible", timeout=8_000)
-            _carregando_apareceu = True
-            print("    → [Carregando...] detectado.")
-        except Exception:
-            pass  # spinner não apareceu (resposta muito rápida) — segue
-
-        # ── Espera ativa (até 25 s): erro / popup / captcha / confirmação ─────
-        # Prioridade de verificação a cada ~800 ms:
-        #   0. Erro "acesso automatizado" (span.mensagemErro) → retentar
-        #   1. Popup (nova janela) → captcha em popup
-        #   2. iframes hcaptcha VISIVEIS (challenge / checkbox) → captcha inline
-        #   3. CNPJ mudou no cabeçalho → representação sem captcha
-        _LIMITE_ESPERA_S  = 60
-        _deadline_captcha = time.time() + _LIMITE_ESPERA_S
-        captcha_tipo      = None    # "popup" | "inline" | None
-        _srcs_logados     = False
-        _erro_bloqueado   = False
-
-        while time.time() < _deadline_captcha:
-
-            # 0. Mensagem de erro do portal (anti-bot ou falha permanente)
-            _err_msg = page.evaluate(
-                "() => { const e = document.querySelector('span.mensagemErro'); "
-                "return e ? e.textContent.trim() : ''; }"
-            )
-            if _err_msg:
-                _classe = _classificar_mensagem(_err_msg)
-                if _classe == _ANTIBOT:
-                    print(f"    → [!] Erro anti-bot: '{_err_msg}'")
-                    _erro_bloqueado = True
-                    break
-                if _classe == _RECUSA_DO_CNPJ:
-                    raise FalhaPermanente(
-                        f"Portal recusou CNPJ {cnpj}: '{_err_msg}'",
-                        status_coluna_d=_status_erro_permanente(_err_msg),
-                    )
-
-            # 1. Popup nova janela
-            if _popups:
-                captcha_tipo = "popup"
-                break
-
-            # 2. Captcha challenge ATIVO — verificado por múltiplos seletores internos
-            # ─────────────────────────────────────────────────────────────────────
-            # Iframes frame=challenge ficam pré-carregados no DOM mesmo sem captcha
-            # ativo. Para evitar falsos positivos, executamos JavaScript DENTRO do
-            # iframe (cross-origin acessível pelo Playwright via frame.evaluate) e
-            # exigimos que TODOS os critérios abaixo sejam satisfeitos ao mesmo tempo:
-            #
-            #   1. .challenge-container   → existe E tem dimensões ≥ 100×100 px
-            #   2. .prompt-text           → existe E tem texto não-vazio
-            #                               (ex: "Toque em todos os seres vivos")
-            #   3. .task-grid             → existe (grade de imagens do desafio)
-            #   4. .button-submit         → existe E aria-disabled ≠ "true"
-            #
-            # Se qualquer critério falhar → captcha não está ativo.
-            _hc_frames = [
-                f for f in page.frames
-                if "hcaptcha.com" in (f.url or "")
-                and "frame=challenge" in (f.url or "")
-            ]
-
-            # Diagnóstico: loga srcs uma vez quando frames aparecerem no DOM
-            if _hc_frames and not _srcs_logados:
-                _srcs_logados = True
-                print(f"    → hcaptcha: {len(_hc_frames)} frame(s) challenge no DOM.")
-                for _hf in _hc_frames[:3]:
-                    print(f"      src: {(_hf.url or '')[:220]}")
-
-            _captcha_texto = None   # instrução do desafio, se ativo
-            for _hf in _hc_frames:
-                try:
-                    _captcha_texto = _hf.evaluate("""() => {
-                        // 1. challenge-container com dimensões reais
-                        const container = document.querySelector('.challenge-container');
-                        if (!container) return null;
-                        const r = container.getBoundingClientRect();
-                        if (r.width < 100 || r.height < 100) return null;
-
-                        // 2. prompt-text com instrução preenchida
-                        const prompt = document.querySelector('.prompt-text');
-                        if (!prompt || !prompt.textContent.trim()) return null;
-
-                        // 3. botão submit habilitado
-                        // Nota: NÃO verificamos .task-grid pois só existe no tipo grade 3x3.
-                        //       O tipo "imagem única" não tem .task-grid mas é igualmente válido.
-                        const btn = document.querySelector('.button-submit');
-                        if (!btn || btn.getAttribute('aria-disabled') === 'true') return null;
-
-                        return prompt.textContent.trim();
-                    }""")
-                    if _captcha_texto:
-                        break
-                except Exception:
-                    pass
-
-            if _captcha_texto:
-                print(f"    → Captcha ATIVO: '{_captcha_texto}'. Resolvendo...")
-                captcha_tipo = "inline"
-                break
-
-            # 3. CNPJ já mudou no cabeçalho? (botão avatar, sempre visível)
-            _cnpj_pag = page.evaluate(
-                "() => {"
-                "  const h = document.querySelector('.ni-pessoa:not(.ni-representante)');"
-                "  if (h) return h.textContent.trim();"
-                "  const r = document.querySelector('.ni-representacao');"
-                "  return r ? r.textContent.trim() : '';"
-                "}"
-            )
-            if re.sub(r"\D", "", _cnpj_pag).zfill(14) == cnpj:
-                print("    → Representação concluída sem captcha!")
-                break
-
-            # 4. "Carregando" sumiu = servidor respondeu sem captcha aparecer
-            if _carregando_apareceu and not _carregando.is_visible():
-                print("    → [Carregando...] sumiu. Sem captcha necessário.")
-                break
-
-            page.wait_for_timeout(800)
-
-        try:
-            page.context.remove_listener("page", _on_new_page)
-        except Exception:
-            pass
-
-        # ── Erro anti-bot → retentar ou desistir ─────────────────────────────
-        if _erro_bloqueado:
-            if _tentativa_repr < _MAX_TENTATIVAS_REPR:
-                continue  # abre menu, preenche, clica de novo
-            raise representacao.AntiBotEsgotado(
-                f"Acesso bloqueado por anti-bot após {_MAX_TENTATIVAS_REPR} "
-                "tentativa(s). Reprocessar manualmente mais tarde."
-            )
-
-        # ── Resolve captcha conforme tipo ─────────────────────────────────────
-        _captcha_repr_ok = True   # False se 2 tentativas falharem → retry repr
-        if captcha_tipo in ("popup", "inline"):
-            _alvo = _popups[0] if captcha_tipo == "popup" else page
-            if captcha_tipo == "popup":
-                print("    → Popup de captcha detectada. Resolvendo...")
-
-            _desfecho = _resolver_captcha(_alvo, aguardar=lambda: page.wait_for_timeout(2_000))
-            if _desfecho == captcha.RESOLVIDO_OU_AUSENTE:
-                print("    [✓] Captcha resolvido.")
-            else:
-                print(f"    → Captcha não resolvido em 2 tentativas ({_desfecho}).")
-                _captcha_repr_ok = False
-
-            if captcha_tipo == "popup":
-                try:
-                    _popups[0].wait_for_close(timeout=15_000)
-                    print("    [✓] Popup do captcha fechada.")
-                except PlaywrightError:
-                    pass
-        else:
-            print("    → Nenhum captcha detectado. Aguardando confirmação...")
-
-        # Captcha não resolvido em 2 tentativas → reinicia o fluxo de representação
-        if not _captcha_repr_ok:
-            print("    → Captcha não resolvido em 2 tentativas. Refazendo 'Representar'...")
-            if _tentativa_repr < _MAX_TENTATIVAS_REPR:
-                continue
-            raise representacao.RepresentacaoNaoConfirmada(
-                f"Captcha não resolvido para CNPJ {cnpj} após "
-                f"{_MAX_TENTATIVAS_REPR} tentativa(s)."
-            )
-
-        # ── Aguarda "Carregando" DESAPARECER após captcha ────────────────────
-        # Quando captcha é resolvido, o "Carregando" ainda está visível por baixo.
-        # Esperamos ele sumir para saber que o servidor processou a representação.
-        # Se não houve captcha, o "Carregando" já sumiu no loop acima — esta espera
-        # retorna imediatamente.
-        if captcha_tipo:
-            print("    → Aguardando [Carregando...] sumir após captcha...")
-        try:
-            _carregando.wait_for(state="hidden", timeout=30_000)
-            if captcha_tipo:
-                print("    → [Carregando...] sumiu.")
-        except Exception:
-            if captcha_tipo:
-                # Página travou no spinner — recarrega e verifica a situação.
-                # Se a representação já foi aceita pelo servidor, o CNPJ estará
-                # confirmado no cabeçalho após o reload e a automação continua.
-                # Se não, a verificação de CNPJ abaixo detecta e retenta.
-                print("    → [!] [Carregando...] não sumiu no timeout. Recarregando página...")
-                try:
-                    page.reload(wait_until="domcontentloaded", timeout=60_000)
-                    page.wait_for_timeout(1_500)
-                    print(f"    → Página recarregada. URL: {page.url[:80]}. Verificando situação...")
-                except Exception as _reload_err:
-                    print(f"    → Erro ao recarregar ({type(_reload_err).__name__}): {_reload_err}")
-
-        page.wait_for_timeout(800)
-
-        # ── Verifica erro anti-bot após captcha ───────────────────────────────
-        # O portal pode exibir "acesso bloqueado" também DEPOIS de resolver o
-        # captcha, quando o servidor processa a representação e rejeita o acesso.
-        _err_pos_captcha = page.evaluate(
-            "() => { const e = document.querySelector('span.mensagemErro'); "
-            "return e ? e.textContent.trim() : ''; }"
-        )
-        if _err_pos_captcha:
-            _classe_pos_captcha = _classificar_mensagem(_err_pos_captcha)
-            if _classe_pos_captcha == _ANTIBOT:
-                print(f"    → [!] Erro anti-bot após captcha: '{_err_pos_captcha}'")
-                if _tentativa_repr < _MAX_TENTATIVAS_REPR:
-                    continue
-                raise representacao.AntiBotEsgotado(
-                    f"Acesso bloqueado por anti-bot após captcha — "
-                    f"{_MAX_TENTATIVAS_REPR} tentativa(s). Reprocessar manualmente."
-                )
-            if _classe_pos_captcha == _RECUSA_DO_CNPJ:
-                raise FalhaPermanente(
-                    f"Portal recusou CNPJ {cnpj}: '{_err_pos_captcha}'",
-                    status_coluna_d=_status_erro_permanente(_err_pos_captcha),
-                )
-
-        # ── Verifica que o CNPJ representado realmente mudou ──────────────────
-        _cnpj_confirmado = False
-        _cnpj_pag_final  = ""
-        for _ in range(10):
-            _cnpj_pag_final = page.evaluate(
-                "() => {"
-                "  const h = document.querySelector('.ni-pessoa:not(.ni-representante)');"
-                "  if (h) return h.textContent.trim();"
-                "  const r = document.querySelector('.ni-representacao');"
-                "  return r ? r.textContent.trim() : '';"
-                "}"
-            )
-            if re.sub(r"\D", "", _cnpj_pag_final).zfill(14) == cnpj:
-                _cnpj_confirmado = True
-                break
-            page.wait_for_timeout(500)
-
-        if _cnpj_confirmado:
-            break  # ← sucesso, sai do loop de retry
-
-        # CNPJ não confirmado → retentar se ainda houver tentativas
-        if _tentativa_repr < _MAX_TENTATIVAS_REPR:
-            print(
-                f"    → CNPJ não confirmado (portal exibe '{_cnpj_pag_final}'). "
-                "Retentando..."
-            )
-            continue
-
-        raise representacao.RepresentacaoNaoConfirmada(
-            f"Representação falhou para CNPJ {cnpj} após {_MAX_TENTATIVAS_REPR} "
-            f"tentativa(s). Portal ainda exibe: '{_cnpj_pag_final}'."
-        )
-
-    print(f"    [✓] Perfil alterado para Procurador do CNPJ {cnpj}.")
-
-    _goto_seguro(page, URL_PENDENCIAS, label="pendências")
-    page.wait_for_timeout(500)
-
-
 def verificar_pendencias(sessao, cnpj: str, caminho_planilha: str,
                           skip_dctfweb: bool = False,
                           skip_processo: bool = False) -> str:
@@ -1021,11 +560,7 @@ def processar_cnpj(sessao, cnpj: str, row: pd.Series,
     # ── Navegação e processamento ─────────────────────────────────────────────
     # A sessão já está autenticada; ir direto para representação.
     try:
-        resultado = representacao.representar(
-            sessao, cnpj,
-            executar=trocar_perfil_procurador,
-            recusa_do_portal=FalhaPermanente,
-        )
+        resultado = representacao.representar(sessao, cnpj, _config_captcha())
 
         if resultado.encerra_a_linha:
             # Registra o motivo na planilha antes de propagar, para que a recusa
@@ -1170,7 +705,7 @@ def processar(df: pd.DataFrame, certs: dict[str, dict],
             # autenticado. Mantém o navegador para o próximo CNPJ do mesmo grupo
             # e só fecha se a sessão não voltar a um estado utilizável.
             print(f"    [!] Falha permanente — CNPJ {cnpj} ignorado: {e}")
-            if not _recuperar_apos_recusa(page):
+            if not representacao.recuperar_apos_recusa(page):
                 _fechar_navegador(sessao.playwright, sessao.contexto, sessao.pagina)
                 sessao = None
 

@@ -9,7 +9,16 @@ CNPJs e mensagens sao ficticios.
 import pytest
 from navegador_falso import PaginaDeRepresentacao
 
-import main
+from automation import representacao
+from automation.captcha import ConfigCaptcha
+from automation.representacao import (
+    ANTI_BOT_ESGOTADO,
+    NAO_CONFIRMADO,
+    RECUSA_DO_CNPJ,
+    REPRESENTADO,
+)
+
+CONFIG = ConfigCaptcha(api_key="AIzaSy-SENTINELA-FICTICIA-0000")
 
 CNPJ = "11111111000191"
 CNPJ_FORMATADO = "11.111.111/0001-91"
@@ -33,15 +42,23 @@ class Relogio:
         return self.agora
 
 
+def representar(pagina, cnpj=None):
+    """CHARACTERIZATION_TARGET_CHANGE (fatia 8A2): as mesmas situacoes, agora na
+    fronteira definitiva. O comportamento original esta em 445b9a7."""
+    return representacao._executar_representacao(pagina, cnpj or CNPJ, CONFIG)
+
+
 @pytest.fixture(autouse=True)
 def sem_esperas(monkeypatch):
     """O intervalo de 30s entre trocas e os sleeps nao existem nos testes."""
-    monkeypatch.setattr(main, "_ultimo_troca_cnpj", 0.0)
-    monkeypatch.setattr(main.time, "sleep", lambda s: None)
-    monkeypatch.setattr(main.time, "time", Relogio())
-    monkeypatch.setattr(main, "_goto_seguro", lambda page, url, **k: page.goto(url))
-    monkeypatch.setattr(main, "fechar_tutorial_pos_login", lambda page, **k: False)
-    monkeypatch.setattr(main, "_resolver_captcha", lambda alvo, aguardar=None: "não deveria")
+    monkeypatch.setattr(representacao, "_ultimo_troca_cnpj", 0.0)
+    monkeypatch.setattr(representacao.time, "sleep", lambda s: None)
+    monkeypatch.setattr(representacao.time, "time", Relogio())
+    monkeypatch.setattr(representacao.navegador, "navegar",
+                        lambda page, url, **k: page.goto(url))
+    monkeypatch.setattr(representacao, "_fechar_tutorial", lambda page: None)
+    monkeypatch.setattr(representacao.captcha, "resolver",
+                        lambda *a, **k: pytest.fail("nao deveria resolver captcha"))
 
 
 # ── H · o desfecho de sucesso ─────────────────────────────────────────────────
@@ -49,21 +66,21 @@ def sem_esperas(monkeypatch):
 def test_h_representacao_confirmada_navega_para_pendencias():
     pagina = PaginaDeRepresentacao(cnpj_no_cabecalho=CNPJ_FORMATADO)
 
-    assert main.trocar_perfil_procurador(pagina, CNPJ) is None
-    assert pagina.navegacoes == [main.URL_PENDENCIAS]
+    assert representar(pagina).situacao == REPRESENTADO
+    assert pagina.navegacoes == [representacao.URL_PENDENCIAS]
 
 
 def test_h_o_sucesso_nao_devolve_nada():
-    """O contrato de hoje: sucesso e `None`, exatamente como falha de login era."""
+    """Era `None`; hoje e um desfecho nomeado. Mesma decisao observavel."""
     pagina = PaginaDeRepresentacao(cnpj_no_cabecalho=CNPJ_FORMATADO)
 
-    assert main.trocar_perfil_procurador(pagina, CNPJ) is None
+    assert representar(pagina).representado is True
 
 
 def test_k_o_cnpj_e_preenchido_no_campo_de_representacao():
     pagina = PaginaDeRepresentacao(cnpj_no_cabecalho=CNPJ_FORMATADO)
 
-    main.trocar_perfil_procurador(pagina, CNPJ)
+    representar(pagina)
 
     campos = [valor for _, valor in pagina.preenchidos]
     assert campos == [CNPJ]
@@ -73,7 +90,7 @@ def test_k_a_confirmacao_compara_so_os_digitos():
     """O cabecalho vem formatado; a comparacao normaliza os dois lados."""
     pagina = PaginaDeRepresentacao(cnpj_no_cabecalho=f"CNPJ: {CNPJ_FORMATADO} — ALFA")
 
-    assert main.trocar_perfil_procurador(pagina, CNPJ) is None
+    assert representar(pagina).representado is True
 
 
 def test_l_o_intervalo_de_trinta_segundos_e_respeitado(monkeypatch):
@@ -81,14 +98,14 @@ def test_l_o_intervalo_de_trinta_segundos_e_respeitado(monkeypatch):
     'Representar', nao do fim da operacao."""
     esperas = []
     parado = Relogio(passo=0.0)
-    monkeypatch.setattr(main.time, "sleep", lambda s: esperas.append(s))
-    monkeypatch.setattr(main.time, "time", parado)
-    monkeypatch.setattr(main, "_ultimo_troca_cnpj", parado())   # a troca foi "agora"
+    monkeypatch.setattr(representacao.time, "sleep", lambda s: esperas.append(s))
+    monkeypatch.setattr(representacao.time, "time", parado)
+    monkeypatch.setattr(representacao, "_ultimo_troca_cnpj", parado())
 
-    main.trocar_perfil_procurador(PaginaDeRepresentacao(CNPJ_FORMATADO), CNPJ)
+    representar(PaginaDeRepresentacao(CNPJ_FORMATADO))
 
     assert len(esperas) == 1
-    assert 0 < esperas[0] <= main._INTERVALO_TROCA
+    assert 0 < esperas[0] <= representacao._INTERVALO_TROCA
 
 
 # ── H · recusa do CNPJ ────────────────────────────────────────────────────────
@@ -99,27 +116,26 @@ def test_h_recusa_conhecida_levanta_falha_permanente_com_status():
         mensagem_erro="Sua autorização como procurador não permite acesso a este serviço"
     )
 
-    with pytest.raises(main.FalhaPermanente) as erro:
-        main.trocar_perfil_procurador(pagina, CNPJ)
+    resultado = representar(pagina)
 
-    assert erro.value.status_coluna_d == "Procuração sem autorização"
+    assert resultado.situacao == RECUSA_DO_CNPJ
+    assert resultado.status_coluna_d == "Procuração sem autorização"
 
 
 def test_h_recusa_sem_status_proprio_tambem_e_permanente():
     pagina = PaginaDeRepresentacao(mensagem_erro="Procuração vencida")
 
-    with pytest.raises(main.FalhaPermanente) as erro:
-        main.trocar_perfil_procurador(pagina, CNPJ)
+    resultado = representar(pagina)
 
-    assert erro.value.status_coluna_d is None
+    assert resultado.situacao == RECUSA_DO_CNPJ
+    assert resultado.status_coluna_d is None
 
 
 def test_h_a_recusa_nao_gasta_as_tres_tentativas():
     """FalhaPermanente sobe na primeira: retentar uma procuracao vencida e inutil."""
     pagina = PaginaDeRepresentacao(mensagem_erro="Procuração vencida")
 
-    with pytest.raises(main.FalhaPermanente):
-        main.trocar_perfil_procurador(pagina, CNPJ)
+    assert representar(pagina).situacao == RECUSA_DO_CNPJ
 
     assert pagina.preenchidos == [("xpath=//*[@id=\"input-representar-cpfcnpj\"]", CNPJ)]
 
@@ -129,10 +145,10 @@ def test_h_a_recusa_nao_gasta_as_tres_tentativas():
 def test_h_anti_bot_gasta_as_tres_tentativas_e_levanta_generica():
     pagina = PaginaDeRepresentacao(mensagem_erro="Detectamos acesso automatizado")
 
-    with pytest.raises(Exception, match="anti-bot") as erro:
-        main.trocar_perfil_procurador(pagina, CNPJ)
+    resultado = representar(pagina)
 
-    assert not isinstance(erro.value, main.FalhaPermanente)
+    assert resultado.situacao == ANTI_BOT_ESGOTADO
+    assert resultado.encerra_a_linha is False, "e da sessao, nao do CNPJ"
     assert len(pagina.preenchidos) == 3, "as tres tentativas foram gastas"
 
 
@@ -140,10 +156,10 @@ def test_o_a_classificacao_anti_bot_vem_do_status_portal():
     """Nenhuma duplicacao de "automatizado"/"bloqueado" no main."""
     import pathlib
 
-    fonte = (pathlib.Path(main.__file__)).read_text(encoding="utf-8-sig")
+    fonte = pathlib.Path(representacao.__file__).read_text(encoding="utf-8")
 
     assert '"automatizado" in' not in fonte
-    assert fonte.count("_classificar_mensagem(") == 2
+    assert fonte.count("status_portal.classificar_mensagem(") == 2
 
 
 # ── H · CNPJ nao confirmado ───────────────────────────────────────────────────
@@ -151,23 +167,25 @@ def test_o_a_classificacao_anti_bot_vem_do_status_portal():
 def test_h_cnpj_nao_confirmado_esgota_as_tentativas():
     pagina = PaginaDeRepresentacao(cnpj_no_cabecalho=OUTRO_CNPJ)
 
-    with pytest.raises(Exception, match="Representação falhou") as erro:
-        main.trocar_perfil_procurador(pagina, CNPJ)
+    resultado = representar(pagina)
 
-    assert not isinstance(erro.value, main.FalhaPermanente)
+    assert resultado.situacao == NAO_CONFIRMADO
+    assert resultado.encerra_a_linha is False
     assert len(pagina.preenchidos) == 3
 
 
 def test_h_a_mensagem_de_falha_ecoa_o_cnpj_e_o_cabecalho():
-    """LOGIN/NAVIGATION: a mensagem carrega o CNPJ e o texto do portal.
-    Caracterizado, nao corrigido — e o legado que a levanta."""
+    """O vazamento SUMIU com a conversao em resultado.
+
+    Era: "Representacao falhou para CNPJ X ... Portal ainda exibe: 'Y'". Hoje o
+    desfecho e uma constante, e nem o CNPJ nem o texto do portal viajam nele.
+    """
     pagina = PaginaDeRepresentacao(cnpj_no_cabecalho=OUTRO_CNPJ)
 
-    with pytest.raises(Exception) as erro:
-        main.trocar_perfil_procurador(pagina, CNPJ)
+    resultado = representar(pagina)
 
-    assert CNPJ in str(erro.value)
-    assert OUTRO_CNPJ in str(erro.value)
+    assert CNPJ not in resultado.situacao
+    assert OUTRO_CNPJ not in resultado.situacao
 
 
 # ── M · N · esperas e retries ─────────────────────────────────────────────────
@@ -175,8 +193,7 @@ def test_h_a_mensagem_de_falha_ecoa_o_cnpj_e_o_cabecalho():
 def test_m_as_esperas_entre_tentativas_sao_preservadas():
     pagina = PaginaDeRepresentacao(cnpj_no_cabecalho=OUTRO_CNPJ)
 
-    with pytest.raises(Exception, match="Representação falhou"):
-        main.trocar_perfil_procurador(pagina, CNPJ)
+    assert representar(pagina).situacao == NAO_CONFIRMADO
 
     assert 500 in pagina.esperas, "escape do dropdown"
     assert 2_000 in pagina.esperas, "pausa entre tentativas"
@@ -186,8 +203,7 @@ def test_m_as_esperas_entre_tentativas_sao_preservadas():
 def test_n_a_confirmacao_do_cnpj_sonda_dez_vezes():
     pagina = PaginaDeRepresentacao(cnpj_no_cabecalho=OUTRO_CNPJ)
 
-    with pytest.raises(Exception, match="Representação falhou"):
-        main.trocar_perfil_procurador(pagina, CNPJ)
+    assert representar(pagina).situacao == NAO_CONFIRMADO
 
     # 10 sondagens por tentativa, 3 tentativas.
     assert pagina.esperas.count(500) >= 30
@@ -196,7 +212,7 @@ def test_n_a_confirmacao_do_cnpj_sonda_dez_vezes():
 def test_n_o_maximo_de_tentativas_de_representacao():
     import pathlib
 
-    fonte = pathlib.Path(main.__file__).read_text(encoding="utf-8-sig")
+    fonte = pathlib.Path(representacao.__file__).read_text(encoding="utf-8")
     assert "_MAX_TENTATIVAS_REPR = 3" in fonte
 
 
@@ -207,19 +223,19 @@ def test_r_representar_so_muda_o_perfil_ativo_da_sessao():
     proprio uso — CNPJs sao representados em sequencia na MESMA sessao, sem
     nenhuma limpeza entre eles."""
     pagina = PaginaDeRepresentacao(cnpj_no_cabecalho=CNPJ_FORMATADO)
-    main.trocar_perfil_procurador(pagina, CNPJ)
+    representar(pagina)
 
     pagina.cnpj_no_cabecalho = "22.222.222/0001-72"
-    assert main.trocar_perfil_procurador(pagina, OUTRO_CNPJ) is None
+    assert representar(pagina, OUTRO_CNPJ).representado is True
 
 
 def test_r_a_representacao_nao_fecha_a_sessao():
     """A integracao nao e dona da sessao — nem no caminho de falha."""
     import pathlib
 
-    fonte = pathlib.Path(main.__file__).read_text(encoding="utf-8-sig")
-    inicio = fonte.index("def trocar_perfil_procurador")
-    trecho = fonte[inicio:fonte.index("def verificar_pendencias")]
+    fonte = pathlib.Path(representacao.__file__).read_text(encoding="utf-8")
+    inicio = fonte.index("def _executar_representacao")
+    trecho = fonte[inicio:fonte.index("def recuperar_apos_recusa")]
 
     for proibido in ("context.close", "p.stop", "_fechar_navegador", "_fazer_logout"):
         assert proibido not in trecho, f"a representacao chama {proibido}."

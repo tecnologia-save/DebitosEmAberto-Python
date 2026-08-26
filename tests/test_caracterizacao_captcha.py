@@ -136,7 +136,9 @@ def test_b_a_api_publica_do_fork():
 def test_b_so_solve_hcaptcha_e_consumido():
     """Dos tres nomes exportados, o projeto usa UM. `solve_captcha` e alias e
     `cell_to_viewport` nao tem nenhum consumidor fora do proprio fork."""
-    consumidores = [RAIZ / "main.py", RAIZ / "servicos_rf_login" / "login.py"]
+    # `main.py` deixou de consumir o fork na 8A2: quem chama e a fronteira de
+    # captcha, e a representacao passa por ela.
+    consumidores = [RAIZ / "automation" / "captcha.py", RAIZ / "servicos_rf_login" / "login.py"]
     for arquivo in consumidores:
         fonte = arquivo.read_text(encoding="utf-8-sig")
         assert "solve_hcaptcha" in fonte
@@ -259,9 +261,11 @@ def test_h_o_retry_esta_duplicado_em_tres_niveis():
     # A extracao juntou as duas numa chamada so — o numero nao mudou, o lugar sim.
     assert FONTE_ORIGINAL.count("for tentativa in range(1, 3):") == 2, "2x, no original"
 
-    principal = (RAIZ / "main.py").read_text(encoding="utf-8-sig")
-    assert "tentativas=2" in principal, "as mesmas 2 tentativas, agora num lugar so"
-    assert "for tentativa in range(1, 3):" not in principal
+    # A 8A2 levou o bloco para automation/representacao.py; as 2 tentativas
+    # continuam iguais, agora dentro da capacidade.
+    repr_fonte = (RAIZ / "automation" / "representacao.py").read_text(encoding="utf-8")
+    assert "tentativas=2" in repr_fonte, "as mesmas 2 tentativas, num lugar so"
+    assert "for tentativa in range(1, 3):" not in repr_fonte
 
 
 # ── O bloco do main, congelado antes da extracao ──────────────────────────────

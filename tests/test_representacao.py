@@ -7,26 +7,19 @@ import dataclasses
 
 import pytest
 
+from automation import representacao
+from automation.captcha import ConfigCaptcha
 from automation.representacao import (
     ANTI_BOT_ESGOTADO,
     NAO_CONFIRMADO,
     RECUSA_DO_CNPJ,
     REPRESENTADO,
-    AntiBotEsgotado,
-    RepresentacaoNaoConfirmada,
     ResultadoDaRepresentacao,
     representar,
 )
 
 CNPJ = "11111111000191"
-
-
-class RecusaDoPortal(Exception):
-    """Dublê de FalhaPermanente — a fronteira a recebe por parametro."""
-
-    def __init__(self, mensagem, status_coluna_d=None):
-        super().__init__(mensagem)
-        self.status_coluna_d = status_coluna_d
+CONFIG = ConfigCaptcha(api_key="AIzaSy-SENTINELA-FICTICIA-0000")
 
 
 class SessaoFalsa:
@@ -38,17 +31,36 @@ class SessaoFalsa:
         self.encerrada = True
 
 
-def executar_que(erro=None):
-    def executar(pagina, cnpj):
-        executar.recebido = (pagina, cnpj)
+def executar_que(resultado=None, erro=None):
+    """Substitui a IMPLEMENTACAO, nao a fronteira.
+
+    O seam `executar=` era de migracao e deixou de existir na 8A2: a
+    implementacao mora dentro do modulo. Os testes passam a substitui-la por
+    monkeypatch, e nenhuma expectativa mudou.
+    """
+    def executar(pagina, cnpj, config_captcha):
+        executar.recebido = (pagina, cnpj, config_captcha)
         if erro is not None:
             raise erro
+        return resultado if resultado is not None else ResultadoDaRepresentacao(REPRESENTADO)
     executar.recebido = None
     return executar
 
 
-def pedir(sessao, executar):
-    return representar(sessao, CNPJ, executar, RecusaDoPortal)
+def pedir(sessao, executar, monkeypatch=None):
+    alvo = monkeypatch or _MONKEYPATCH[0]
+    alvo.setattr(representacao, "_executar_representacao", executar)
+    return representar(sessao, CNPJ, CONFIG)
+
+
+_MONKEYPATCH = [None]
+
+
+@pytest.fixture(autouse=True)
+def _guardar_monkeypatch(monkeypatch):
+    _MONKEYPATCH[0] = monkeypatch
+    yield
+    _MONKEYPATCH[0] = None
 
 
 # ── H · os quatro desfechos ───────────────────────────────────────────────────
@@ -62,13 +74,15 @@ def test_h_representado():
     assert resultado.situacao == REPRESENTADO
     assert resultado.representado is True
     assert resultado.encerra_a_linha is False
-    assert executar.recebido == (sessao.pagina, CNPJ)
+    assert executar.recebido == (sessao.pagina, CNPJ, CONFIG)
 
 
 def test_h_recusa_do_cnpj_carrega_o_status_da_coluna_d():
     resultado = pedir(
         SessaoFalsa(),
-        executar_que(RecusaDoPortal("recusou", status_coluna_d="Procuração sem autorização")),
+        executar_que(ResultadoDaRepresentacao(
+            RECUSA_DO_CNPJ, status_coluna_d="Procuração sem autorização"
+        )),
     )
 
     assert resultado.situacao == RECUSA_DO_CNPJ
@@ -77,7 +91,8 @@ def test_h_recusa_do_cnpj_carrega_o_status_da_coluna_d():
 
 
 def test_h_recusa_sem_status_tambem_encerra_a_linha():
-    resultado = pedir(SessaoFalsa(), executar_que(RecusaDoPortal("recusou")))
+    resultado = pedir(SessaoFalsa(), executar_que(
+        ResultadoDaRepresentacao(RECUSA_DO_CNPJ)))
 
     assert resultado.situacao == RECUSA_DO_CNPJ
     assert resultado.status_coluna_d is None
@@ -85,7 +100,8 @@ def test_h_recusa_sem_status_tambem_encerra_a_linha():
 
 
 def test_h_anti_bot_esgotado():
-    resultado = pedir(SessaoFalsa(), executar_que(AntiBotEsgotado("acabaram as tentativas")))
+    resultado = pedir(SessaoFalsa(), executar_que(
+        ResultadoDaRepresentacao(ANTI_BOT_ESGOTADO)))
 
     assert resultado.situacao == ANTI_BOT_ESGOTADO
     assert resultado.representado is False
@@ -93,7 +109,8 @@ def test_h_anti_bot_esgotado():
 
 
 def test_h_nao_confirmado():
-    resultado = pedir(SessaoFalsa(), executar_que(RepresentacaoNaoConfirmada("portal exibe outro")))
+    resultado = pedir(SessaoFalsa(), executar_que(
+        ResultadoDaRepresentacao(NAO_CONFIRMADO)))
 
     assert resultado.situacao == NAO_CONFIRMADO
     assert resultado.encerra_a_linha is False
@@ -101,9 +118,8 @@ def test_h_nao_confirmado():
 
 def test_h_os_desfechos_sao_um_conjunto_fechado_de_quatro():
     situacoes = {
-        pedir(SessaoFalsa(), executar_que(erro)).situacao
-        for erro in (None, RecusaDoPortal("x"), AntiBotEsgotado("x"),
-                     RepresentacaoNaoConfirmada("x"))
+        pedir(SessaoFalsa(), executar_que(ResultadoDaRepresentacao(s))).situacao
+        for s in (REPRESENTADO, RECUSA_DO_CNPJ, ANTI_BOT_ESGOTADO, NAO_CONFIRMADO)
     }
     assert situacoes == {REPRESENTADO, RECUSA_DO_CNPJ, ANTI_BOT_ESGOTADO, NAO_CONFIRMADO}
 
@@ -125,22 +141,20 @@ def test_encerra_a_linha_nao_e_o_mesmo_que_nao_representado():
 
 # ── S · nada e classificado por texto de mensagem ─────────────────────────────
 
-def test_s_a_distincao_e_por_tipo_e_nunca_por_mensagem():
-    """Duas exceptions com a MESMA frase e tipos diferentes dao desfechos
-    diferentes — prova de que ninguem esta lendo texto."""
-    frase = "aconteceu alguma coisa"
+def test_s_a_distincao_e_por_valor_e_nunca_por_mensagem():
+    """Os desfechos sao constantes distintas, e nao frases interpretadas.
 
-    assert pedir(SessaoFalsa(), executar_que(AntiBotEsgotado(frase))).situacao == ANTI_BOT_ESGOTADO
-    assert pedir(
-        SessaoFalsa(), executar_que(RepresentacaoNaoConfirmada(frase))
-    ).situacao == NAO_CONFIRMADO
+    Antes da 8A2 a prova era com duas exceptions de MESMA frase e tipos
+    diferentes; hoje as exceptions nao existem no caminho novo e a distincao e
+    o proprio valor.
+    """
+    assert ANTI_BOT_ESGOTADO != NAO_CONFIRMADO
+    assert len({REPRESENTADO, RECUSA_DO_CNPJ, ANTI_BOT_ESGOTADO, NAO_CONFIRMADO}) == 4
 
 
 def test_s_a_fronteira_nao_le_str_da_exception():
     import ast
     import pathlib
-
-    from automation import representacao
 
     codigo = pathlib.Path(representacao.__file__).read_text(encoding="utf-8")
     arvore = ast.parse(codigo)
@@ -150,6 +164,7 @@ def test_s_a_fronteira_nao_le_str_da_exception():
     }
     assert "str" not in chamadas
     assert ".args" not in codigo
+    assert "raise Anti" not in codigo and "raise Repres" not in codigo
 
 
 # ── S · bug nosso sobe ────────────────────────────────────────────────────────
@@ -158,7 +173,7 @@ def test_s_a_fronteira_nao_le_str_da_exception():
                                   ValueError("bug"), RuntimeError("bug")])
 def test_s_bug_nosso_nao_vira_desfecho(erro):
     with pytest.raises(type(erro)):
-        pedir(SessaoFalsa(), executar_que(erro))
+        pedir(SessaoFalsa(), executar_que(erro=erro))
 
 
 def test_s_excecao_desconhecida_do_navegador_tambem_sobe():
@@ -167,7 +182,7 @@ def test_s_excecao_desconhecida_do_navegador_tambem_sobe():
     from navegador_falso import ErroDeNavegacao
 
     with pytest.raises(ErroDeNavegacao):
-        pedir(SessaoFalsa(), executar_que(ErroDeNavegacao("avatar não apareceu")))
+        pedir(SessaoFalsa(), executar_que(erro=ErroDeNavegacao("avatar não apareceu")))
 
 
 # ── Q · ownership ─────────────────────────────────────────────────────────────
@@ -175,9 +190,8 @@ def test_s_excecao_desconhecida_do_navegador_tambem_sobe():
 def test_q_a_representacao_nao_encerra_a_sessao():
     sessao = SessaoFalsa()
 
-    for erro in (None, RecusaDoPortal("x"), AntiBotEsgotado("x"),
-                 RepresentacaoNaoConfirmada("x")):
-        pedir(sessao, executar_que(erro))
+    for situacao in (REPRESENTADO, RECUSA_DO_CNPJ, ANTI_BOT_ESGOTADO, NAO_CONFIRMADO):
+        pedir(sessao, executar_que(ResultadoDaRepresentacao(situacao)))
 
     assert sessao.encerrada is False, "a fronteira nao e dona da sessao"
 
@@ -188,7 +202,7 @@ def test_q_so_a_pagina_da_sessao_atravessa_para_o_legado():
 
     pedir(sessao, executar)
 
-    pagina, _ = executar.recebido
+    pagina = executar.recebido[0]
     assert pagina is sessao.pagina
     assert pagina is not sessao, "a sessao inteira nao desce para a navegacao"
 
@@ -196,10 +210,8 @@ def test_q_so_a_pagina_da_sessao_atravessa_para_o_legado():
 # ── Mensagens seguras ─────────────────────────────────────────────────────────
 
 def test_nenhum_desfecho_carrega_cnpj_ou_texto_do_portal():
-    sentinela = "Portal recusou CNPJ 11111111000191: 'ACME PARTICIPACOES vencida'"
-    resultado = pedir(
-        SessaoFalsa(), executar_que(RecusaDoPortal(sentinela, status_coluna_d=None))
-    )
+    resultado = pedir(SessaoFalsa(), executar_que(
+        ResultadoDaRepresentacao(RECUSA_DO_CNPJ, status_coluna_d=None)))
 
     for campo in (resultado.situacao, str(resultado.status_coluna_d)):
         for proibido in ("11111111000191", "ACME", "PARTICIPACOES"):

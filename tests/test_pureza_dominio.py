@@ -29,7 +29,8 @@ CERTIFICADOS = "certificados_windows.py"
 CAPTCHA = "captcha.py"
 FISCAL = "consulta_fiscal.py"
 NAVEGADOR = "navegador.py"
-INTEGRACOES = {PLANILHA, CERTIFICADOS, CAPTCHA, FISCAL, NAVEGADOR}
+REPRESENTACAO = "representacao.py"
+INTEGRACOES = {PLANILHA, CERTIFICADOS, CAPTCHA, FISCAL, NAVEGADOR, REPRESENTACAO}
 NUCLEO = [m for m in AUTOMATION if m.name not in INTEGRACOES]
 
 # Nada disso pode aparecer no nucleo.
@@ -123,7 +124,7 @@ def test_so_as_integracoes_de_browser_conhecem_o_navegador():
     """Page e Locator atravessam as duas fronteiras que falam com o navegador —
     captcha e consulta fiscal. Nao passam dali."""
     culpados = {m.name for m in AUTOMATION if _importa(m, {"patchright", "playwright"})}
-    assert culpados == {CAPTCHA, FISCAL, NAVEGADOR}, f"encontrado {culpados}"
+    assert culpados == {CAPTCHA, FISCAL, NAVEGADOR, REPRESENTACAO}, f"encontrado {culpados}"
 
 
 def test_a_fronteira_do_captcha_nao_le_o_ambiente_nem_o_fork():
@@ -414,25 +415,51 @@ REPRESENTACAO = "representacao.py"
 
 
 def test_a_representacao_nao_conhece_login_nem_policy():
-    """§16: recebe sessao pronta. Nao autentica, nao garante policy, nao toca
-    registro nem UAC."""
+    """Recebe sessao pronta. Nao autentica, nao garante policy, nao toca registro
+    nem UAC. Depois da 8A2 ela e integracao de browser, entao patchright entra."""
     modulo = RAIZ / "automation" / REPRESENTACAO
     assert not _importa(modulo, {"winreg", "ctypes", "subprocess", "cert_windows",
-                                 "servicos_rf_login", "resolvedor_captcha",
-                                 "patchright", "playwright", "os"})
+                                 "resolvedor_captcha", "os", "main"})
 
     codigo = _codigo_sem_docstrings(modulo)
-    for proibido in ("autenticar", "fazer_login", "garantir_policy",
+    for proibido in ("autenticar(", "fazer_login(", "garantir_policy(",
                      "ResultadoDaPolicy", "policy_certificado", "SessaoReceita",
                      "os.environ", "print("):
         assert proibido not in codigo, f"a representacao conhece {proibido}."
 
 
 def test_a_representacao_nao_e_dona_da_sessao():
+    """Por CHAMADA: o JavaScript do portal usa `closest`, e citar nao e usar."""
     codigo = _codigo_sem_docstrings(RAIZ / "automation" / REPRESENTACAO)
 
-    for proibido in ("close", "stop", "encerrar", "logout"):
+    for proibido in (".close(", ".stop(", ".encerrar(", "logout("):
         assert proibido not in codigo, f"a representacao chama {proibido}."
+
+
+def test_a_representacao_e_autocontida():
+    """O criterio da 8A2: nada em automation/ importa main."""
+    for modulo in AUTOMATION:
+        assert not _importa(modulo, {"main"}), f"{modulo.name} importa main."
+
+    fonte = (RAIZ / "main.py").read_text(encoding="utf-8-sig")
+    # `avatar-dropdown-trigger` continua em main: e usado por `_fazer_logout`,
+    # que pertence ao teardown da sessao e nao foi migrado (TRANSITIONAL_SESSION_LIFECYCLE).
+    for marca in ("_MAX_TENTATIVAS_REPR", "input-representar-cpfcnpj",
+                  "_INTERVALO_TROCA", "hcaptcha", "mensagemErro", "ni-pessoa",
+                  "formularioRepresentacao"):
+        assert marca not in fonte, f"main.py ainda tem {marca}."
+
+
+def test_o_intervalo_de_troca_mora_na_representacao():
+    """STATEFUL_INTEGRATION_RATE_LIMIT: so a integracao sabe o instante do
+    clique, entao o relogio mora com ela. O app nao fornece callback de timing."""
+    from automation import representacao
+
+    assert representacao._INTERVALO_TROCA == 30
+    assert hasattr(representacao, "_ultimo_troca_cnpj")
+
+    fonte = (RAIZ / "main.py").read_text(encoding="utf-8-sig")
+    assert "marcar_troca" not in fonte
 
 
 def test_main_nao_passa_mais_page_para_o_fluxo_por_cnpj():
@@ -444,15 +471,18 @@ def test_main_nao_passa_mais_page_para_o_fluxo_por_cnpj():
     assert "processar_cnpj(sessao, cnpj, row, caminho_planilha)" in fonte
 
 
-def test_o_legado_sinaliza_desfecho_por_tipo_e_nao_por_exception_nua():
-    """Depois da 8A, nenhum `raise Exception(` sobrou em trocar_perfil_procurador."""
-    fonte = (RAIZ / "main.py").read_text(encoding="utf-8-sig")
-    inicio = fonte.index("def trocar_perfil_procurador")
-    trecho = fonte[inicio:fonte.index("def verificar_pendencias")]
+def test_desfecho_esperado_nao_viaja_como_exception_no_codigo_novo():
+    """A 8A2 foi alem: as exceptions transitorias sumiram da implementacao.
 
-    assert "raise Exception(" not in trecho
-    assert trecho.count("representacao.AntiBotEsgotado") == 2
-    assert trecho.count("representacao.RepresentacaoNaoConfirmada") == 2
+    `AntiBotEsgotado` e `RepresentacaoNaoConfirmada` continuam existindo apenas
+    como LEGACY_ADAPTER_CONTROL_FLOW, para callers antigos — mas nada em
+    automation/ as levanta.
+    """
+    for modulo in AUTOMATION:
+        codigo = _codigo_sem_docstrings(modulo)
+        for proibido in ("raise AntiBotEsgotado", "raise RepresentacaoNaoConfirmada",
+                         "raise FalhaPermanente"):
+            assert proibido not in codigo, f"{modulo.name} usa {proibido}."
 
 
 # ── Fatia 8B1 e 8B2: a consulta fiscal ───────────────────────────────────────

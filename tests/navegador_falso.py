@@ -139,6 +139,9 @@ class ContextoDeEventos:
     def on(self, evento, callback):
         self.ouvintes.append((evento, callback))
 
+    def remove_listener(self, evento, callback):
+        self.ouvintes = [x for x in self.ouvintes if x != (evento, callback)]
+
 
 class PaginaDeRepresentacao:
     """Page falsa para `trocar_perfil_procurador`.

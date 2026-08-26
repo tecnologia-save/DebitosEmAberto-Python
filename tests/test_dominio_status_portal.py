@@ -145,8 +145,13 @@ def test_o_inline_saiu_de_main():
     """A regra nao esta mais escrita duas vezes dentro da navegacao."""
     import pathlib
 
-    fonte = (pathlib.Path(__file__).resolve().parents[1] / "main.py").read_text(
+    principal = (pathlib.Path(__file__).resolve().parents[1] / "main.py").read_text(
         encoding="utf-8-sig"
     )
-    assert '"automatizado" in' not in fonte
-    assert "_classificar_mensagem(" in fonte
+    assert '"automatizado" in' not in principal
+
+    # A classificacao acompanhou a representacao para automation/ na 8A2.
+    repr_fonte = (
+        pathlib.Path(__file__).resolve().parents[1] / "automation" / "representacao.py"
+    ).read_text(encoding="utf-8")
+    assert "status_portal.classificar_mensagem(" in repr_fonte

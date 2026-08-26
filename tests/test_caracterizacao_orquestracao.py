@@ -86,7 +86,7 @@ def diario(monkeypatch):
     monkeypatch.setattr(main.cert_windows, "iniciar_guarda_detalhado", policy)
     monkeypatch.setattr(main, "_fechar_navegador", fechar)
     monkeypatch.setattr(main, "atualizar_env_certificado", lambda cn: None)
-    monkeypatch.setattr(main, "_recuperar_apos_recusa", lambda page: True)
+    monkeypatch.setattr(main.representacao, "recuperar_apos_recusa", lambda page: True)
     monkeypatch.setattr(
         main, "processar_cnpj",
         lambda sessao, cnpj, row, caminho: reg.anotar("cnpj", cnpj, sessao.marca) or "concluido",
@@ -206,7 +206,7 @@ def test_g_recusa_do_cnpj_mantem_a_sessao_para_o_proximo(diario, monkeypatch):
 
 
 def test_g_recusa_com_sessao_irrecuperavel_fecha_e_reloga(diario, monkeypatch):
-    monkeypatch.setattr(main, "_recuperar_apos_recusa", lambda page: False)
+    monkeypatch.setattr(main.representacao, "recuperar_apos_recusa", lambda page: False)
 
     def recusar_o_primeiro(sessao, cnpj, row, caminho):
         diario.anotar("cnpj", cnpj, sessao.marca)
