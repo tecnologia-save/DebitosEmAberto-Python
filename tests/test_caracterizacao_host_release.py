@@ -79,23 +79,29 @@ def test_a_falha_em_hklm_nao_chega_ao_app(monkeypatch):
             raise PermissionError("acesso negado ao registro")
 
     monkeypatch.setattr(cert_windows.winreg, "DeleteKey", so_hkcu)
-    monkeypatch.setattr(maquina, "liberar_policy_do_windows",
-                        cert_windows.limpar_autoselect)
+    monkeypatch.setattr(cert_windows, "policy_existe", lambda: True)
 
     emitidos = []
-    execucao(emitidos.append).liberar_policy()
+    ex = execucao(emitidos.append)
+    ex.liberar_policy()
 
-    assert emitidos == [], "nenhum evento — a falha em HKLM é invisível"
+    assert [e.codigo for e in emitidos] == [eventos.POLICY_NAO_REMOVIDA]
+    assert ex.policy_propria is True, (
+        "continua NOSSA: quem for liberar o host precisa saber que ficou estado"
+    )
 
 
-def test_o_evento_de_falha_e_inalcancavel_pelo_caminho_real():
-    """POLICY_NAO_REMOVIDA existe, e o unico jeito de dispara-lo e a primitiva
-    levantar — o que ela nao faz. Eu criei um alarme que nao toca."""
+def test_o_evento_de_falha_passou_a_ser_alcancavel():
+    """ANTES: o unico jeito de disparar POLICY_NAO_REMOVIDA era a primitiva
+    levantar — o que ela nunca faz. Eu tinha criado um alarme que nao tocava.
+
+    AGORA: a decisao vem da CONFIRMACAO, e nao de uma exception.
+    """
     fonte = inspect.getsource(app._Execucao.liberar_policy)
 
-    assert "except OSError" in fonte
-    assert "policy_existe" not in fonte, "não confere se a policy realmente saiu"
-    assert eventos.POLICY_NAO_REMOVIDA in eventos.CODIGOS
+    assert "except OSError" not in fonte
+    assert "if maquina.liberar_policy_do_windows():" in fonte
+    assert "POLICY_NAO_REMOVIDA" in fonte
 
 
 def test_a_confirmacao_seria_possivel_com_o_que_ja_existe():
@@ -108,18 +114,21 @@ def test_a_confirmacao_seria_possivel_com_o_que_ja_existe():
     assert "_COLMEIAS" in fonte and "any(" in fonte
 
 
-def test_app_retorna_com_a_policy_possivelmente_viva(monkeypatch):
-    """§1 A e B. A sequencia que impede o release do host:
+def test_o_app_deixa_de_fingir_que_limpou(monkeypatch):
+    """ANTES: `liberar_policy` zerava `policy_propria` antes de tentar, e o app
+    considerava o assunto encerrado mesmo que a policy continuasse instalada.
 
-        A adquire lock -> escreve policy -> cleanup falha em silencio
-        -> app retorna -> lock libera -> policy de A continua instalada
+    AGORA o estado reflete a maquina, e e ele que a 12C vai consultar.
     """
-    monkeypatch.setattr(maquina, "liberar_policy_do_windows", lambda: None)
+    monkeypatch.setattr(maquina, "liberar_policy_do_windows", lambda: False)
+    ex = execucao(lambda e: None)
+    ex.liberar_policy()
+    assert ex.policy_propria is True, "não saiu; continua sendo nossa"
 
+    monkeypatch.setattr(maquina, "liberar_policy_do_windows", lambda: True)
     ex = execucao()
     ex.liberar_policy()
-
-    assert ex.policy_propria is False, "o app considera o assunto encerrado"
+    assert ex.policy_propria is False, "saiu, confirmado"
 
 
 # ── §4 · bug nosso no cleanup substitui a causa ───────────────────────────────
@@ -140,8 +149,12 @@ def test_bug_no_cleanup_da_policy_apaga_a_causa_primaria(monkeypatch):
             execucao().liberar_policy()
 
 
-def test_falha_do_emissor_no_cleanup_da_policy_tambem_apaga_a_causa(monkeypatch):
-    """§5. Mesma lacuna, um nivel mais fundo."""
+def test_falha_do_emissor_no_cleanup_da_policy_nao_apaga_mais_a_causa(monkeypatch):
+    """§5. Mesma lacuna da anterior, um nivel mais fundo — e fechada junto.
+
+    Tres falhas empilhadas: a primaria, o bug no cleanup da policy, e um bug no
+    proprio adapter ao relatar o segundo.
+    """
     monkeypatch.setattr(
         maquina, "liberar_policy_do_windows",
         lambda: (_ for _ in ()).throw(PermissionError("acesso negado")),
@@ -150,19 +163,25 @@ def test_falha_do_emissor_no_cleanup_da_policy_tambem_apaga_a_causa(monkeypatch)
     def emissor_quebrado(evento):
         raise AttributeError("bug no adapter de apresentação")
 
-    with pytest.raises(AttributeError, match="bug no adapter"):
+    with pytest.raises(RuntimeError, match="ERRO PRIMARIO"):
         try:
             raise RuntimeError("ERRO PRIMARIO: o portal caiu")
         finally:
-            execucao(emissor_quebrado).liberar_policy()
+            execucao(emissor_quebrado).liberar_policy_sem_apagar_a_causa()
 
 
-def test_a_protecao_ja_existe_para_a_sessao_e_nao_para_a_policy():
-    """O contraste, na fonte: um caminho tem a protecao, o outro nao."""
+def test_os_dois_caminhos_de_cleanup_tem_a_mesma_protecao():
+    """ANTES: a sessao tinha a protecao da fatia 10, a policy nao. AGORA os dois
+    caminhos usam o mesmo principio, e nos MESMOS dois ramos de `executar`."""
     fonte = (RAIZ / "automation" / "app.py").read_text(encoding="utf-8")
 
-    assert "encerrar_sessao_sem_apagar_a_causa" in fonte
-    assert "liberar_policy_sem_apagar_a_causa" not in fonte
+    assert "encerrar_sessao_sem_apagar_a_causa()" in fonte
+    assert "liberar_policy_sem_apagar_a_causa()" in fonte
+
+    inicio = fonte.index("    except BaseException:")
+    ramo = fonte[inicio:fonte.index("        raise", inicio)]
+    assert "encerrar_sessao_sem_apagar_a_causa()" in ramo
+    assert "liberar_policy_sem_apagar_a_causa()" in ramo
 
 
 # ── §2 · privilegio ───────────────────────────────────────────────────────────
@@ -267,16 +286,43 @@ def test_todas_as_saidas_de_falha_param_o_playwright():
     assert all("p.stop()" in janela for _, janela in saidas)
 
 
-def test_nenhuma_saida_de_falha_fecha_o_contexto():
-    """LOGIN_RESOURCE_CLEANUP_GAP, com os numeros.
+def test_todas_as_saidas_de_falha_fecham_o_contexto():
+    """LOGIN_RESOURCE_CLEANUP_GAP, fechado.
 
-    Se `p.stop()` libera o perfil e a porta 9222 e comportamento do
-    Playwright/Chrome, e nao do nosso codigo. Para um lock de host, "talvez" nao
-    basta.
+    ANTES: as sete saidas chamavam `p.stop()` e NENHUMA chamava
+    `context.close()`. Se `p.stop()` sozinho libera o perfil e a porta 9222 e
+    comportamento do Playwright/Chrome, e nao do nosso codigo — e para um lock de
+    host "talvez" nao basta.
+
+    AGORA o contexto e fechado explicitamente. Autorizado pelo §13: o contexto ja
+    existe, o caminho vai retornar falha, e o chamador nunca recebera ownership
+    dele.
     """
     saidas = _saidas_de_falha()
 
-    assert all("context.close()" not in janela for _, janela in saidas)
+    assert all("context.close()" in janela for _, janela in saidas)
+
+
+def test_o_fechamento_e_o_stop_tem_guardas_separadas():
+    """§14: uma falha ao fechar o contexto nao pode impedir a parada do
+    Playwright — senao a correcao trocaria um vazamento por outro."""
+    fonte = (RAIZ / "servicos_rf_login" / "login.py").read_text(encoding="utf-8")
+
+    assert fonte.count("context.close()") == 7
+    for janela in (j for _, j in _saidas_de_falha()):
+        fecha = janela.index("context.close()")
+        para = janela.index("p.stop()")
+        assert fecha < para, "contexto primeiro, como no caminho de sucesso"
+        assert "except Exception:" in janela[fecha:para], "cada um com sua guarda"
+
+
+def test_o_fluxo_de_sucesso_do_fork_nao_foi_tocado():
+    """A correcao entra SO nos caminhos que retornam falha."""
+    fonte = (RAIZ / "servicos_rf_login" / "login.py").read_text(encoding="utf-8")
+    final = fonte[fonte.index("return p, context, page"):]
+
+    assert "context.close()" not in final
+    assert fonte.count("return p, context, page") == 1
 
 
 def test_o_caminho_de_sucesso_fecha_os_dois():

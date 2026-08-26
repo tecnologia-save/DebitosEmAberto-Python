@@ -160,16 +160,24 @@ def test_c_botao_govbr_ausente_devolve_none_e_para_o_playwright(
     assert falso.parado is True
 
 
-def test_c_o_contexto_nao_e_fechado_nos_caminhos_de_none(perfil, monkeypatch):
-    """LOGIN_POSSIBLE_DEFECT: os caminhos de falha chamam `p.stop()` mas NUNCA
-    `context.close()`. O Playwright para, e o perfil do Chrome fica como ficou."""
+def test_c_o_contexto_e_fechado_nos_caminhos_de_none(perfil, monkeypatch):
+    """LOGIN_RESOURCE_CLEANUP_GAP — resolvido na fatia 12B.1.
+
+    ANTES: os caminhos de falha chamavam `p.stop()` mas NUNCA `context.close()`.
+    O Playwright parava, e se o perfil do Chrome e a porta 9222 eram liberados
+    dependia do Playwright, nao do nosso codigo — "talvez", que nao serve para
+    um lock de host.
+
+    AGORA o contexto e fechado explicitamente. Este teste exercita o caminho de
+    verdade, com dublês: e a prova comportamental, e nao so a textual.
+    """
     pagina = PaginaFalsa(ao_navegar=ErroDeNavegacao("timeout"))
     falso, _ = montar(monkeypatch, pagina)
     monkeypatch.setattr(login_rf, "registrar_erro", lambda m: None)
 
     login_rf.main(project_dir=perfil, cert_subject_cn=CN)
 
-    assert falso.contexto.fechado is False
+    assert falso.contexto.fechado is True
 
 
 def test_d_todas_as_causas_terminam_no_mesmo_none():

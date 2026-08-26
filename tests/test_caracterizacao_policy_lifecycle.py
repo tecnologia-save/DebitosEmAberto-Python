@@ -256,11 +256,16 @@ def test_i_o_app_libera_a_policy_por_ultimo():
     houver navegador vivo, a policy ainda esta em uso.
     """
     fonte = inspect.getsource(app.executar)
-    trecho = fonte[fonte.index("finally:"):]
 
-    assert "salvar()" in trecho and "descartar()" in trecho
-    assert "liberar_policy()" in trecho
-    assert trecho.index("descartar()") < trecho.index("liberar_policy()")
+    # A liberacao mudou de lugar na 12B.1: saiu do `finally` para os dois ramos
+    # de desfecho, porque so ali da para distinguir "ha falha em voo" de "nao ha"
+    # sem consultar `sys.exc_info()`.
+    ramo_normal = fonte[fonte.index("    else:"):fonte.index("    finally:")]
+    assert "encerrar_sessao()" in ramo_normal
+    assert "liberar_policy()" in ramo_normal
+    assert ramo_normal.index("encerrar_sessao()") < ramo_normal.index("liberar_policy()"), (
+        "enquanto houver navegador vivo, a policy ainda está em uso"
+    )
 
 
 # ── F · o guardiao depois de uma limpeza normal ───────────────────────────────
@@ -388,14 +393,14 @@ def test_a_policy_propria_e_removida_no_fim(monkeypatch):
     """ATIVADA: esta execução provocou a escrita, então ela sai antes do retorno."""
     remocoes = []
     monkeypatch.setattr(app.maquina, "liberar_policy_do_windows",
-                        lambda: remocoes.append(1))
+                        lambda: remocoes.append(1) or True)
 
     ex = execucao()
     ex.policy_propria = True
     ex.liberar_policy()
 
     assert remocoes == [1]
-    assert ex.policy_propria is False, "não tenta remover duas vezes"
+    assert ex.policy_propria is False, "saiu, CONFIRMADO — não tenta de novo"
 
 
 def test_a_policy_de_outro_NAO_e_removida(monkeypatch):
@@ -468,10 +473,7 @@ def test_falha_ao_remover_vira_evento_e_nao_interrompe(monkeypatch):
     """O guardião ainda é fallback, e o operador precisa saber que a policy ficou."""
     from automation import eventos
 
-    monkeypatch.setattr(
-        app.maquina, "liberar_policy_do_windows",
-        lambda: (_ for _ in ()).throw(PermissionError("acesso negado ao registro")),
-    )
+    monkeypatch.setattr(app.maquina, "liberar_policy_do_windows", lambda: False)
     emitidos = []
     ex = execucao(emitidos.append)
     ex.policy_propria = True
@@ -480,8 +482,7 @@ def test_falha_ao_remover_vira_evento_e_nao_interrompe(monkeypatch):
 
     (evento,) = emitidos
     assert evento.codigo == eventos.POLICY_NAO_REMOVIDA
-    assert evento.tipo_da_falha == "PermissionError"
-    assert "acesso negado" not in str(evento), "o nome da classe, nunca a mensagem"
+    assert ex.policy_propria is True, "o estado reflete a máquina"
 
 
 def test_a_falha_de_remocao_nao_apaga_a_causa_primaria(monkeypatch):
@@ -489,7 +490,7 @@ def test_a_falha_de_remocao_nao_apaga_a_causa_primaria(monkeypatch):
     pode tomar o lugar do erro que interrompeu a execução."""
     monkeypatch.setattr(
         app.maquina, "liberar_policy_do_windows",
-        lambda: (_ for _ in ()).throw(PermissionError("acesso negado")),
+        lambda: (_ for _ in ()).throw(TypeError("bug de cleanup")),
     )
     ex = execucao()
     ex.policy_propria = True
@@ -498,7 +499,7 @@ def test_a_falha_de_remocao_nao_apaga_a_causa_primaria(monkeypatch):
         try:
             raise RuntimeError("ERRO PRIMARIO: o portal caiu")
         finally:
-            ex.liberar_policy()
+            ex.liberar_policy_sem_apagar_a_causa()
 
 
 def test_a_frase_da_falha_nao_carrega_registro_nem_cn():
@@ -526,8 +527,15 @@ def test_no_retorno_de_executar_a_policy_propria_ja_saiu():
     fonte = inspect.getsource(app.executar)
 
     assert "liberar_policy()" in fonte
-    assert fonte.index("_percorrer(execucao, itens)") < fonte.index("liberar_policy()")
-    assert "finally:" in fonte[: fonte.index("liberar_policy()")], "roda mesmo em falha"
+    assert "liberar_policy_sem_apagar_a_causa()" in fonte, "e no ramo com falha em voo"
+    assert fonte.index("_percorrer(execucao, itens)") < fonte.index("liberar_policy")
+
+    # E o que a 12B.1 acrescentou: a confirmacao. Se a policy NAO saiu,
+    # `policy_propria` continua True — e e isso que a 12C precisa consultar
+    # antes de liberar o host.
+    assert "if maquina.liberar_policy_do_windows():" in inspect.getsource(
+        app._Execucao.liberar_policy
+    )
 
 
 # ── §16 · §17 · §18 · o que mais precisa estar quieto no momento do release ───
@@ -562,23 +570,21 @@ def test_o_caminho_de_sucesso_devolve_perfil_e_porta():
     assert fonte.index("contexto") < fonte.index("playwright"), "contexto primeiro"
 
 
-def test_o_caminho_de_falha_de_login_nao_fecha_o_contexto():
-    """§18 · LOGIN_RESOURCE_CLEANUP_GAP, e ele é o RESÍDUO desta fatia.
+def test_o_caminho_de_falha_de_login_passou_a_fechar_o_contexto():
+    """§18 · LOGIN_RESOURCE_CLEANUP_GAP — era o RESIDUO da 12B, fechado na 12B.1.
 
-    Todo `return None` de `fazer_login` chama `p.stop()` e nenhum chama
-    `context.close()`. Se `p.stop()` libera o perfil e a porta é comportamento do
-    Playwright/Chrome — não do nosso código — e portanto
-    UNKNOWN_REQUIRING_VALIDATION.
+    Todo `return None` de `fazer_login` chamava `p.stop()` e nenhum chamava
+    `context.close()`. Agora os sete fecham, cada um com sua propria guarda: uma
+    falha ao fechar nao impede a parada do Playwright.
 
-    Consequência para a 12C: o limite de liberação do lock está definido para a
-    policy e para o caminho de sucesso, e continua ABERTO para o caminho de
-    falha de login. Não corrigido aqui: é o fork.
+    O detalhe da caracterizacao completa esta em
+    tests/test_caracterizacao_host_release.py.
     """
     fonte = (RAIZ / "servicos_rf_login" / "login.py").read_text(encoding="utf-8")
     corpo = fonte[fonte.index("p = sync_playwright().start()"):]
 
-    assert corpo.count("p.stop()") >= 6, "vários caminhos de falha param o Playwright"
-    assert "context.close()" not in corpo, "e nenhum fecha o contexto"
+    assert corpo.count("p.stop()") >= 7
+    assert corpo.count("context.close()") == 7
 
 
 def test_o_app_nao_depende_do_fork_para_fechar_o_que_ele_mesmo_abriu():

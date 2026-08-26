@@ -684,6 +684,14 @@ def main(
     except Exception as e:
         print(f"  -> erro no goto: {type(e).__name__}: {e}")
         registrar_erro(f"Login: erro ao abrir URL (1ª navegação). {type(e).__name__}: {e}")
+        # LOGIN_RESOURCE_CLEANUP_GAP (fatia 12B.1): o contexto existe e o
+        # chamador nunca recebera ownership dele — fecha-lo aqui e a unica
+        # forma de garantir que o perfil e a porta 9222 saem com a falha.
+        # Guardas separadas: uma falha ao fechar nao pode impedir o stop.
+        try:
+            context.close()
+        except Exception:
+            pass
         try:
             p.stop()
         except Exception:
@@ -715,6 +723,14 @@ def main(
             print(f"     screenshot: {shot}")
         except Exception:
             pass
+        # LOGIN_RESOURCE_CLEANUP_GAP (fatia 12B.1): o contexto existe e o
+        # chamador nunca recebera ownership dele — fecha-lo aqui e a unica
+        # forma de garantir que o perfil e a porta 9222 saem com a falha.
+        # Guardas separadas: uma falha ao fechar nao pode impedir o stop.
+        try:
+            context.close()
+        except Exception:
+            pass
         try:
             p.stop()
         except Exception:
@@ -737,6 +753,14 @@ def main(
         else:
             registrar_erro("Login: captcha não resolvido após 'Entrar com gov.br'.")
             print("[captcha] 3 tentativas falharam. Abortando.")
+            # LOGIN_RESOURCE_CLEANUP_GAP (fatia 12B.1): o contexto existe e o
+            # chamador nunca recebera ownership dele — fecha-lo aqui e a unica
+            # forma de garantir que o perfil e a porta 9222 saem com a falha.
+            # Guardas separadas: uma falha ao fechar nao pode impedir o stop.
+            try:
+                context.close()
+            except Exception:
+                pass
             try:
                 p.stop()
             except Exception:
@@ -747,6 +771,14 @@ def main(
     if not _ja_logado(page) and _acesso_bloqueado(page):
         if not _recuperar_acesso_bloqueado(page, api_key=gemini_api_key):
             registrar_erro("Login: acesso bloqueado após 'Entrar com gov.br' — recuperação falhou.")
+            # LOGIN_RESOURCE_CLEANUP_GAP (fatia 12B.1): o contexto existe e o
+            # chamador nunca recebera ownership dele — fecha-lo aqui e a unica
+            # forma de garantir que o perfil e a porta 9222 saem com a falha.
+            # Guardas separadas: uma falha ao fechar nao pode impedir o stop.
+            try:
+                context.close()
+            except Exception:
+                pass
             try:
                 p.stop()
             except Exception:
@@ -773,6 +805,14 @@ def main(
                     shot = str(project_dir / "_debug_cert_button.png")
                     page.screenshot(path=shot, full_page=True)
                     print(f"     screenshot: {shot}")
+                except Exception:
+                    pass
+                # LOGIN_RESOURCE_CLEANUP_GAP (fatia 12B.1): o contexto existe e o
+                # chamador nunca recebera ownership dele — fecha-lo aqui e a unica
+                # forma de garantir que o perfil e a porta 9222 saem com a falha.
+                # Guardas separadas: uma falha ao fechar nao pode impedir o stop.
+                try:
+                    context.close()
                 except Exception:
                     pass
                 try:
@@ -825,6 +865,14 @@ def main(
             if not _recuperar_acesso_bloqueado(page, api_key=gemini_api_key):
                 if tentativa == MAX_TENTATIVAS_CERT:
                     registrar_erro("Login: acesso bloqueado após certificado — recuperação esgotada.")
+                    # LOGIN_RESOURCE_CLEANUP_GAP (fatia 12B.1): o contexto existe e o
+                    # chamador nunca recebera ownership dele — fecha-lo aqui e a unica
+                    # forma de garantir que o perfil e a porta 9222 saem com a falha.
+                    # Guardas separadas: uma falha ao fechar nao pode impedir o stop.
+                    try:
+                        context.close()
+                    except Exception:
+                        pass
                     try:
                         p.stop()
                     except Exception:
@@ -851,6 +899,14 @@ def main(
                     shot = str(project_dir / "_debug_pos_cert.png")
                     page.screenshot(path=shot, full_page=True)
                     print(f"     screenshot: {shot}")
+                except Exception:
+                    pass
+                # LOGIN_RESOURCE_CLEANUP_GAP (fatia 12B.1): o contexto existe e o
+                # chamador nunca recebera ownership dele — fecha-lo aqui e a unica
+                # forma de garantir que o perfil e a porta 9222 saem com a falha.
+                # Guardas separadas: uma falha ao fechar nao pode impedir o stop.
+                try:
+                    context.close()
                 except Exception:
                     pass
                 try:

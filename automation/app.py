@@ -144,11 +144,31 @@ class _Execucao:
         """
         if not self.policy_propria:
             return
-        self.policy_propria = False
+        if maquina.liberar_policy_do_windows():
+            self.policy_propria = False
+            return
+        # A policy CONTINUA na maquina. O caso conhecido e HKLM: o guardiao a
+        # escreveu elevado, e este processo nao tem privilegio para remove-la.
+        # `policy_propria` fica True de proposito — quem for liberar o host
+        # precisa saber que ainda ha estado nosso instalado.
+        self.emitir(eventos.POLICY_NAO_REMOVIDA)
+
+    def liberar_policy_sem_apagar_a_causa(self) -> None:
+        """Libera a policy quando JA existe uma falha em curso.
+
+        Mesmo princípio de `encerrar_sessao_sem_apagar_a_causa`, e pelo mesmo
+        motivo: um bug aqui — ou no adapter que relata este bug — substituiria a
+        falha que obrigou o encerramento. A causa vence; a falha do cleanup vira
+        evento, e quando nem o relato funciona nao ha para onde contar.
+        """
         try:
-            maquina.liberar_policy_do_windows()
-        except OSError as erro:
-            self.emitir(eventos.POLICY_NAO_REMOVIDA, tipo_da_falha=type(erro).__name__)
+            self.liberar_policy()
+        except Exception as erro:  # noqa: BLE001 — ver docstring
+            try:
+                self.emitir(eventos.POLICY_NAO_REMOVIDA,
+                            tipo_da_falha=type(erro).__name__)
+            except Exception:  # noqa: BLE001 — nem o relato pode vencer a causa
+                return
 
     def registrar(self, codigo: str, metodo: str, posicao: int, *args) -> None:
         """Pede uma gravacao semantica e relata o que aconteceu."""
@@ -562,14 +582,14 @@ def executar(
         # Ha falha em voo — inclusive Ctrl+C. O teardown acontece, e um bug nele
         # nao pode tomar o lugar da causa.
         execucao.encerrar_sessao_sem_apagar_a_causa()
+        execucao.liberar_policy_sem_apagar_a_causa()
         raise
     else:
         # Caminho normal: se o teardown tiver um bug nosso, ele aparece como o
         # que e. Nao ha causa para proteger.
         execucao.encerrar_sessao()
+        # Depois da sessao: enquanto houver navegador vivo, a policy esta em uso.
+        execucao.liberar_policy()
     finally:
         execucao.salvar()
         sessao_planilha.descartar()
-        # Por ultimo, e depois de a sessao ter sido encerrada nos dois ramos
-        # acima: enquanto houver navegador vivo, a policy ainda esta em uso.
-        execucao.liberar_policy()

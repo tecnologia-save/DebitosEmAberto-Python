@@ -616,9 +616,10 @@ def test_fora_da_preservacao_o_emissor_continua_propagando(monkeypatch):
 def test_a_supressao_do_emissor_existe_num_ponto_so():
     """Nao ha supressao generalizada.
 
-    Depois da fatia 11 sobraram DUAS capturas largas, ambas de cleanup: o
-    teardown que nao apaga a causa, e o relato desse teardown. SO a segunda nao
-    faz nada com o erro — e e a unica que nao tem para onde contar.
+    Todas as capturas largas do modulo sao de cleanup, e vem em pares: o
+    cleanup que nao apaga a causa, e o relato desse cleanup. So o segundo de
+    cada par nao faz nada com o erro — e e o unico que nao tem para onde contar,
+    porque o emissor era o canal.
     """
     arvore = ast.parse((RAIZ / "automation" / "app.py").read_text(encoding="utf-8"))
     largas = [
@@ -628,14 +629,16 @@ def test_a_supressao_do_emissor_existe_num_ponto_so():
     ]
     # Eram tres ate a fatia 11; o APP_RETRY_CATCHALL_LEGACY foi embora e sobraram
     # as duas do cleanup, cada uma documentada no proprio corpo.
-    assert len(largas) == 2
+    assert len(largas) == 4, "duas do teardown de sessão, duas do da policy"
 
     mudos = [h for h in largas
              if all(isinstance(c, (ast.Return, ast.Pass)) for c in h.body)]
-    assert len(mudos) == 1, "so o relato do teardown e mudo"
+    assert len(mudos) == 2, "so o relato de cada cleanup e mudo"
 
-    dentro = [
+    donos = {
         f.name for f in ast.walk(arvore)
-        if isinstance(f, ast.FunctionDef) and mudos[0] in list(ast.walk(f))
-    ]
-    assert "encerrar_sessao_sem_apagar_a_causa" in dentro
+        if isinstance(f, ast.FunctionDef)
+        and any(m in list(ast.walk(f)) for m in mudos)
+    }
+    assert donos == {"encerrar_sessao_sem_apagar_a_causa",
+                     "liberar_policy_sem_apagar_a_causa"}

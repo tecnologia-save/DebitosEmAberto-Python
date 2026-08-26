@@ -127,7 +127,7 @@ def garantir_policy_do_windows(cn: str) -> ResultadoDaPolicy:
     return cert_windows.iniciar_guarda_detalhado(cn)
 
 
-def liberar_policy_do_windows() -> None:
+def liberar_policy_do_windows() -> bool:
     """Remove a policy do Chrome desta maquina.
 
     Chamada SO quando a execucao provocou a escrita — ver
@@ -138,7 +138,14 @@ def liberar_policy_do_windows() -> None:
     O guardiao continua existindo como fallback de CRASH. Esta funcao e o
     caminho NORMAL — a diferenca importa porque o guardiao so age quando o
     processo inteiro morre, e um adapter reutilizavel nao morre.
+
+    Devolve se a policy REALMENTE saiu, e nao se a tentativa aconteceu.
+    `limpar_autoselect` engole o erro por colmeia e devolve `None`: uma falha de
+    permissao em HKLM some ali dentro, e ate a fatia 12B.1 o chamador acreditava
+    ter limpado. `policy_existe()` le as DUAS colmeias — a confirmacao sempre
+    esteve disponivel, so nao era consultada.
     """
     import cert_windows
 
     cert_windows.limpar_autoselect()
+    return not cert_windows.policy_existe()
