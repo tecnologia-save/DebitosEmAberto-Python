@@ -69,7 +69,7 @@ def test_a_chave_tambem_chega_ao_login_por_parametro(monkeypatch):
         recebidas.update(kwargs)
         return None
 
-    monkeypatch.setattr(maquina, "preparar_ambiente_do_certificado", lambda cn, k: None)
+    monkeypatch.setattr(maquina, "preparar_ambiente_do_certificado", lambda cn: None)
     monkeypatch.setitem(
         __import__("sys").modules, "servicos_rf_login",
         type("M", (), {"fazer_login": staticmethod(espiao)}),
@@ -93,7 +93,7 @@ def test_maquina_nao_escreve_a_chave_no_ambiente(monkeypatch, tmp_path):
     monkeypatch.setattr(maquina, "diretorio_de_perfil", lambda: str(tmp_path))
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
-    maquina.preparar_ambiente_do_certificado("ALFA FICTICIA:11111111000191", CHAVE)
+    maquina.preparar_ambiente_do_certificado("ALFA FICTICIA:11111111000191")
 
     import os
 
@@ -101,22 +101,68 @@ def test_maquina_nao_escreve_a_chave_no_ambiente(monkeypatch, tmp_path):
     assert os.environ["CERT_SUBJECT_CN"] == "ALFA FICTICIA:11111111000191"
 
 
-def test_a_leitura_do_env_e_so_para_preservar_o_que_ja_estava_la(monkeypatch, tmp_path):
-    """§5 A, com a nuance: o ARQUIVO e lido, mas nenhum valor lido vira config.
+def test_o_env_do_usuario_nao_e_reescrito_por_limpeza(monkeypatch, tmp_path):
+    """§0C: uma chave que JA esta no arquivo continua la, intacta.
 
-    A chave gravada e sempre a que chegou por parametro — e quando o arquivo ja
-    tem uma, ela e preservada intacta em vez de sobrescrita.
+    O arquivo e lido para PRESERVAR o que ele traz — nenhum valor lido vira
+    configuracao do caminho novo.
     """
     env = tmp_path / ".env"
     env.write_text("GEMINI_API_KEY=CHAVE-QUE-JA-ESTAVA\nOUTRA=coisa\n", encoding="utf-8")
     monkeypatch.setattr(maquina, "diretorio_de_perfil", lambda: str(tmp_path))
 
-    maquina.preparar_ambiente_do_certificado("ALFA:11111111000191", CHAVE)
+    maquina.preparar_ambiente_do_certificado("ALFA:11111111000191")
 
     conteudo = env.read_text(encoding="utf-8")
-    assert "GEMINI_API_KEY=CHAVE-QUE-JA-ESTAVA" in conteudo, "preservada, nao trocada"
+    assert "GEMINI_API_KEY=CHAVE-QUE-JA-ESTAVA" in conteudo, "preservada, nao apagada"
     assert "OUTRA=coisa" in conteudo
-    assert CHAVE not in conteudo
+
+
+def test_a_automacao_nao_escreve_mais_o_segredo_em_disco(monkeypatch, tmp_path):
+    """SECRET_PERSISTED_TO_DISK, resolvido para o caminho novo.
+
+    Ate a fatia 10 uma chave ausente do arquivo era ACRESCENTADA nele, em texto
+    puro. Nenhum consumidor do caminho novo lia dali. O operador continua podendo
+    fornecer um `.env`; a automacao parou de criar um.
+    """
+    env = tmp_path / ".env"
+    env.write_text("OUTRA=coisa\n", encoding="utf-8")
+    monkeypatch.setattr(maquina, "diretorio_de_perfil", lambda: str(tmp_path))
+
+    maquina.preparar_ambiente_do_certificado("ALFA:11111111000191")
+
+    conteudo = env.read_text(encoding="utf-8")
+    assert "GEMINI_API_KEY" not in conteudo
+    assert "CERT_SUBJECT_CN=ALFA:11111111000191" in conteudo
+
+
+def test_a_funcao_nem_recebe_mais_o_segredo():
+    """A costura foi separada: preparar o certificado nao e assunto de chave."""
+    parametros = list(inspect.signature(maquina.preparar_ambiente_do_certificado).parameters)
+
+    assert parametros == ["cert_subject_cn"]
+
+
+def test_o_cert_subject_cn_vai_para_os_DOIS_lugares(monkeypatch, tmp_path):
+    """LEGACY_RUNTIME_STATE_TRANSPORT, e o motivo foi verificado no fork.
+
+    `fazer_login` chama `load_dotenv(..., override=True)`: escrever so no
+    ambiente do processo nao basta, porque o arquivo sobrescreve o ambiente no
+    meio da propria execucao.
+    """
+    import os
+
+    monkeypatch.setattr(maquina, "diretorio_de_perfil", lambda: str(tmp_path))
+
+    maquina.preparar_ambiente_do_certificado("ALFA:11111111000191")
+
+    assert os.environ["CERT_SUBJECT_CN"] == "ALFA:11111111000191"
+    assert "CERT_SUBJECT_CN=ALFA:11111111000191" in (
+        tmp_path / ".env"
+    ).read_text(encoding="utf-8")
+
+    fonte_do_fork = (RAIZ / "servicos_rf_login" / "login.py").read_text(encoding="utf-8")
+    assert 'load_dotenv(dotenv_path=project_dir / ".env", override=True)' in fonte_do_fork
 
 
 def test_o_residuo_do_modo_pfx_continua_sendo_removido(monkeypatch, tmp_path):
@@ -125,7 +171,7 @@ def test_o_residuo_do_modo_pfx_continua_sendo_removido(monkeypatch, tmp_path):
     env.write_text("CERT_PFX_PATH=c:/velho.pfx\nCERT_PFX_PASSPHRASE=x\n", encoding="utf-8")
     monkeypatch.setattr(maquina, "diretorio_de_perfil", lambda: str(tmp_path))
 
-    maquina.preparar_ambiente_do_certificado("ALFA:11111111000191", CHAVE)
+    maquina.preparar_ambiente_do_certificado("ALFA:11111111000191")
 
     conteudo = env.read_text(encoding="utf-8")
     assert "CERT_PFX_PATH" not in conteudo
@@ -524,3 +570,67 @@ def test_a_falha_de_save_no_cleanup_final_nao_apaga_a_causa(monkeypatch):
                      emitir_evento=lambda e: codigos.append(e.codigo))
 
     assert eventos.SALVAMENTO_PLANILHA_FALHOU in codigos, "a falha de save foi relatada"
+
+
+# ── §0A · nem o relato da falha de cleanup pode apagar a causa ────────────────
+
+def test_emissor_que_levanta_durante_a_preservacao_nao_apaga_a_causa(monkeypatch):
+    """PRIMARY_FAILURE_EVENT_EMISSION_MASKING, reproduzido e corrigido.
+
+    Tres falhas empilhadas: a primaria, o bug de teardown, e um bug no proprio
+    adapter de eventos ao relatar o segundo. Antes, a terceira chegava ao caller.
+    """
+    monkeypatch.setattr(navegador, "encerrar_no_portal",
+                        lambda page: (_ for _ in ()).throw(TypeError("bug de teardown")))
+
+    def emissor_quebrado(evento):
+        raise AttributeError("bug no adapter de apresentação")
+
+    ex = execucao(emissor_quebrado)
+    sessao = ex.sessao
+
+    with pytest.raises(RuntimeError, match="ERRO PRIMARIO"):
+        try:
+            raise RuntimeError("ERRO PRIMARIO: o portal caiu")
+        finally:
+            ex.encerrar_sessao_sem_apagar_a_causa()
+
+    assert sessao.encerrada is True, "os recursos saem mesmo assim"
+
+
+def test_fora_da_preservacao_o_emissor_continua_propagando(monkeypatch):
+    """A protecao vale SO no caminho cujo proposito e nao apagar a causa.
+
+    Em qualquer outro lugar um bug no adapter e um bug, e sobe.
+    """
+    ex = execucao(lambda evento: (_ for _ in ()).throw(AttributeError("bug no adapter")))
+
+    with pytest.raises(AttributeError, match="bug no adapter"):
+        ex.emitir(eventos.LOGIN_CONCLUIDO)
+
+
+def test_a_supressao_do_emissor_existe_num_ponto_so():
+    """Nao ha supressao generalizada.
+
+    O modulo tem tres capturas largas, e cada uma esta documentada:
+    APP_RETRY_CATCHALL_LEGACY, o teardown que nao apaga a causa, e o relato
+    desse teardown. SO a ultima nao faz nada com o erro — e e a unica que nao
+    tem para onde contar.
+    """
+    arvore = ast.parse((RAIZ / "automation" / "app.py").read_text(encoding="utf-8"))
+    largas = [
+        no for no in ast.walk(arvore)
+        if isinstance(no, ast.ExceptHandler)
+        and isinstance(no.type, ast.Name) and no.type.id == "Exception"
+    ]
+    assert len(largas) == 3
+
+    mudos = [h for h in largas
+             if all(isinstance(c, (ast.Return, ast.Pass)) for c in h.body)]
+    assert len(mudos) == 1, "so o relato do teardown e mudo"
+
+    dentro = [
+        f.name for f in ast.walk(arvore)
+        if isinstance(f, ast.FunctionDef) and mudos[0] in list(ast.walk(f))
+    ]
+    assert "encerrar_sessao_sem_apagar_a_causa" in dentro

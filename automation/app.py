@@ -161,12 +161,27 @@ class _Execucao:
 
         Usado SO nos dois pontos onde ha falha em voo. No caminho normal quem
         vale e `encerrar_sessao`, e la um bug de teardown sobe.
+
+        E se o relato tambem falhar
+        ---------------------------
+        PRIMARY_FAILURE_EVENT_EMISSION_MASKING: um bug no adapter de eventos,
+        aqui dentro, tomava o lugar da causa exatamente como o bug de teardown
+        tomava — so que um nivel mais fundo. O emissor e o UNICO canal de relato
+        que existe; quando ele proprio quebra, nao ha para onde contar, e
+        insistir custaria a causa.
+
+        Este `return` e o unico ponto do projeto onde uma falha do emissor e
+        engolida, e ele existe so por isto. Em qualquer outro lugar — inclusive
+        no `emitir` logo acima — um bug no adapter sobe como o bug que e.
         """
         try:
             self.encerrar_sessao()
         except Exception as erro:  # noqa: BLE001 — ver docstring
-            self.emitir(eventos.FALHA_AO_ENCERRAR_SESSAO,
-                        tipo_da_falha=type(erro).__name__)
+            try:
+                self.emitir(eventos.FALHA_AO_ENCERRAR_SESSAO,
+                            tipo_da_falha=type(erro).__name__)
+            except Exception:  # noqa: BLE001 — ver "e se o relato tambem falhar"
+                return
 
     def buscar_certificado(self, nome: str):
         return domain.buscar_certificado(

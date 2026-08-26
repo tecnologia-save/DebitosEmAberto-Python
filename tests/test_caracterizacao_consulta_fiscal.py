@@ -12,8 +12,7 @@ from typing import ClassVar
 import pytest
 from navegador_falso import PaginaFiscal
 
-import main
-from automation import app, eventos, planilha
+from automation import app, apresentacao_eventos, eventos, planilha
 from automation import consulta_fiscal as fiscal
 from automation.captcha import ConfigCaptcha
 
@@ -183,7 +182,7 @@ def test_q_status_nao_reconhecido_nao_grava_nada(escritas, capsys):
     # o portal passou a usar.
     assert capsys.readouterr().out == "", "o app não imprime; ele emite o fato"
 
-    frase = main._frase(
+    frase = apresentacao_eventos.frase(
         eventos.EventoOperacional(eventos.SITUACAO_FISCAL_NAO_RECONHECIDA, posicao=0)
     )
     assert "não reconhecido" in frase

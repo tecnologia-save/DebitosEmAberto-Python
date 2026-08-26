@@ -33,29 +33,38 @@ def diretorio_de_perfil() -> str:
     return str(Path(__file__).resolve().parent.parent)
 
 
-def preparar_ambiente_do_certificado(cert_subject_cn: str, api_key: str) -> None:
-    """TRANSITIONAL_LEGACY_ENV — grava CERT_SUBJECT_CN no .env e no processo.
+def preparar_ambiente_do_certificado(cert_subject_cn: str) -> None:
+    """LEGACY_RUNTIME_STATE_TRANSPORT — leva CERT_SUBJECT_CN ate o fork.
 
-    O fork le `CERT_SUBJECT_CN` do ambiente para montar a flag
-    --auto-select-certificate-for-urls do Chrome. Ele proprio ja regrava a
-    variavel a partir do parametro, mas o ARQUIVO continua sendo escrito porque
-    e o que sobrevive entre execucoes — remover isso seria mudanca funcional
-    disfarcada de limpeza.
+    Nao e segredo: e qual certificado esta execucao usa. Vai para dois lugares
+    porque o fork le dos dois, e nesta ordem:
 
-    A chave do Gemini entra por PARAMETRO, e nao mais de `os.environ`: e o mesmo
-    valor que o chamador ja resolveu, com uma leitura de ambiente a menos. O
-    caminho novo NAO depende deste arquivo — desde a 9B.1 a chave desce ate o
-    solver por parametro, e este `.env` so alimenta o `load_dotenv` da PROXIMA
-    execucao.
+        1. `os.environ`, que o fork consulta ao montar a flag
+           --auto-select-certificate-for-urls do Chrome;
+        2. o ARQUIVO `.env`, porque `fazer_login` chama
+           `load_dotenv(..., override=True)` e SOBRESCREVE o ambiente do processo
+           com o conteudo do arquivo. Sem a linha no arquivo, o valor que
+           acabamos de por no ambiente seria apagado no meio da propria
+           execucao.
 
-    SECRET_PERSISTED_TO_DISK — registrado, nao corrigido
-    ----------------------------------------------------
-    Quando o arquivo ainda nao tem `GEMINI_API_KEY`, ela e gravada nele em texto
-    puro. E comportamento do legado, preservado: e o que faz a chave sobreviver
-    entre execucoes quando ela veio so por variavel de ambiente. Remover isso
-    seria mudanca funcional disfarcada de limpeza, e nao e desta microfatia.
+    Este segundo motivo foi verificado no fork, e nao suposto: escrever so no
+    ambiente nao basta.
 
-    Condicao de remocao: quando o runner assumir o transporte do segredo.
+    O SEGREDO NAO PASSA POR AQUI
+    ----------------------------
+    Ate a fatia 10 esta funcao tambem gravava `GEMINI_API_KEY` no arquivo, em
+    texto puro, quando ela ainda nao estivesse la — SECRET_PERSISTED_TO_DISK.
+    Nenhum consumidor do caminho novo lia dali: a chave desce por parametro ate
+    o solver desde a 9B.1. O unico leitor era o entrypoint desktop legado, e ele
+    continua podendo LER um `.env` que o operador forneceu.
+
+    A distincao e a que importa: o operador configurar um `.env` e uma coisa; a
+    automacao escrever o segredo em disco sozinha e outra. A segunda saiu.
+
+    Uma chave que JA esteja no arquivo e preservada intacta — o `.env` do
+    usuario nao e reescrito por limpeza.
+
+    Condicao de remocao: quando o fork deixar de ler o ambiente.
     """
     env_path = Path(diretorio_de_perfil()) / ".env"
     existentes: dict[str, str] = {}
@@ -64,8 +73,6 @@ def preparar_ambiente_do_certificado(cert_subject_cn: str, api_key: str) -> None
             if "=" in linha and not linha.startswith("#"):
                 chave, _, valor = linha.partition("=")
                 existentes[chave.strip()] = valor.strip()
-    if "GEMINI_API_KEY" not in existentes:
-        existentes["GEMINI_API_KEY"] = api_key
     # Residuo do modo antigo: se sobrassem no .env, o login tentaria o .pfx.
     existentes.pop("CERT_PFX_PATH", None)
     existentes.pop("CERT_PFX_PASSPHRASE", None)
@@ -89,7 +96,7 @@ def abrir_sessao(
     """
     from servicos_rf_login import fazer_login
 
-    preparar_ambiente_do_certificado(certificado.subject_cn, api_key)
+    preparar_ambiente_do_certificado(certificado.subject_cn)
     config = ConfigLogin(diretorio_perfil=diretorio_de_perfil(),
                          gemini_api_key=api_key)
     return login.autenticar(

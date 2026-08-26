@@ -16,8 +16,7 @@ from contextlib import redirect_stdout
 import pytest
 from casos_certificado import CERTS, CERTS_UM_SO
 
-import main
-from automation import certificados_windows, eventos
+from automation import apresentacao_eventos, certificados_windows, eventos
 from automation.domain import buscar_certificado
 
 
@@ -129,7 +128,7 @@ def test_ambiguidade_recusa_em_vez_de_escolher():
 def test_a_mensagem_de_ambiguidade_lista_os_candidatos():
     _, r = resolver("D")
     assert len(r.ambiguidade) == 2
-    assert "identifique só um deles" in main._frase(
+    assert "identifique só um deles" in apresentacao_eventos.frase(
         eventos.EventoOperacional(eventos.CERTIFICADO_AMBIGUO, posicao=0,
                                   quantidade=len(r.ambiguidade))
     ), "a orientação ao operador sobreviveu, agora no adapter de apresentação"
@@ -211,4 +210,4 @@ def test_o_defeito_do_diagnostico_que_imprimia_a_identidade_sumiu():
     assert r.chave is not None or r.ambigua
 
     evento = eventos.EventoOperacional(eventos.CERTIFICADO_AMBIGUO, posicao=0, quantidade=2)
-    assert "BERNARDO" not in (main._frase(evento) or "").upper()
+    assert "BERNARDO" not in (apresentacao_eventos.frase(evento) or "").upper()

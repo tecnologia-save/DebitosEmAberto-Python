@@ -12,7 +12,7 @@ import pathlib
 
 import pytest
 
-from automation import app, eventos, planilha
+from automation import app, apresentacao_eventos, eventos, planilha
 from automation.boundary import EntradaDebitosEmAberto
 from automation.captcha import ConfigCaptcha
 from automation.consulta_fiscal import (
@@ -542,18 +542,16 @@ def _evento_completo(codigo):
 @pytest.mark.parametrize("codigo", sorted(eventos.CODIGOS))
 def test_todo_codigo_tem_frase(codigo):
     """Um codigo sem frase e um fato que o operador nunca ve."""
-    import main
 
-    assert main._frase(_evento_completo(codigo)), codigo
+    assert apresentacao_eventos.frase(_evento_completo(codigo)), codigo
 
 
 @pytest.mark.parametrize("codigo", sorted(eventos.CODIGOS))
 def test_nenhuma_frase_inventa_identificador(codigo):
     """O renderer so pode dizer o que o evento carrega — e o evento nao carrega
     identificador nenhum."""
-    import main
 
-    frase = main._frase(_evento_completo(codigo))
+    frase = apresentacao_eventos.frase(_evento_completo(codigo))
     for proibido in (CNPJ, "ALFA", "FICTICIA", "AIzaSy", "0A01"):
         assert proibido not in frase, codigo
 
@@ -561,14 +559,13 @@ def test_nenhuma_frase_inventa_identificador(codigo):
 def test_a_frase_do_save_orienta_a_acao():
     """O `tipo_da_falha` existe por isto: PermissionError significa "feche o
     Excel", e e essa acao que recupera o progresso."""
-    import main
 
-    frase = main._frase(
+    frase = apresentacao_eventos.frase(
         EventoOperacional(eventos.SALVAMENTO_PLANILHA_FALHOU, tipo_da_falha="PermissionError")
     )
     assert "Excel" in frase
 
-    outra = main._frase(
+    outra = apresentacao_eventos.frase(
         EventoOperacional(eventos.SALVAMENTO_PLANILHA_FALHOU, tipo_da_falha="ValueError")
     )
     assert "Excel" not in outra, "a orientação é do PermissionError, não de toda falha"

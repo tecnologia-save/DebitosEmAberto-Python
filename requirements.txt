@@ -1,7 +1,29 @@
-patchright
-pandas
-openpyxl
-python-dotenv
-google-genai
-Pillow
-pywinauto>=0.6.9
+# Dependências de RUNTIME da automação — fonte de verdade ÚNICA.
+#
+# A plataforma instala a partir deste arquivo. Só entram imports DIRETOS do
+# caminho que executa de verdade: transitivas são resolvidas pelo instalador, e
+# listá-las aqui cria duas versões da verdade.
+#
+# O SDK da plataforma NÃO entra: ele é injetado em runtime.
+# Ferramentas de desenvolvimento NÃO entram.
+#
+# O que NÃO é dependência Python e por isso não está aqui, apesar de obrigatório:
+# PowerShell, Google Chrome e o Windows Certificate Store. São runtime externo do
+# sistema operacional — instalá-los não é assunto de `pip`, e fingir que é
+# esconderia um requisito de máquina atrás de um manifest de biblioteca.
+#
+# DEPENDENCY_REQUIRED_BY_NEW_RUNTIME — o caminho runner/local → app importa direto
+patchright              # navegador; automation/{navegador,captcha,consulta_fiscal}
+pandas                  # leitura e ordenação da planilha; automation/planilha.py
+openpyxl                # escrita nas abas e colunas; automation/planilha.py
+#
+# DEPENDENCY_REQUIRED_BY_NEW_RUNTIME — via os forks que o caminho novo chama
+python-dotenv           # servicos_rf_login carrega o .env do perfil no login
+google-genai            # resolvedor_captcha; é o que resolve o captcha
+#
+# OPTIONAL_LIBRARY_CAPABILITY — import guardado, mas o caminho é real
+Pillow                  # recorte das imagens do captcha no resolvedor
+pywinauto>=0.6.9        # janela nativa de certificado quando a policy não ativa
+#
+# ecac_login continua DEAD_CODE_CANDIDATE e não acrescenta nenhuma linha aqui:
+# tudo o que ele importa já é exigido pelo caminho vivo.

@@ -1,21 +1,22 @@
-﻿"""Ponto de entrada — Automação Débitos em Aberto.
+﻿"""LEGACY_DESKTOP_ENTRYPOINT — Automação Débitos em Aberto.
 
-Fluxo:
-    1. Abre janela para seleção da planilha (ui_upload)
-    2. Lê a aba 'Empresas' da planilha:
-         Coluna A = CNPJ
-         Coluna B = EMPRESA
-         Coluna C = CERTIFICADO
-         Coluna D = resultado (preenchida pela automação)
-    3. Ordena pela coluna C (certificado) para minimizar logins no eCAC
-    4. Para o primeiro CNPJ de cada grupo de certificado:
-         - Login no eCAC via LoginEcac
-         - Navega para servicos.receitafederal.gov.br e autentica
-    5. Para cada CNPJ (incluindo os subsequentes do mesmo certificado):
-         - Aguarda intervalo mínimo de 30s entre trocas de CNPJ no portal
-         - Representa o CNPJ como Procurador no portal
-         - Navega para a página de pendências
-         - Verifica status e escreve resultado na coluna D
+NÃO é mais o entrypoint arquitetural. A aplicação vive em `automation/app.py`, e
+os dois adapters definitivos são:
+
+    runner.py    a plataforma
+    local.py     `python local.py --planilha ...`  ← o fluxo local recomendado
+
+Este arquivo continua existindo por três coisas que só ele faz, e que quebrariam
+se ele virasse um alias do `local.py`:
+
+    1. a janela do Tkinter que escolhe a planilha (ui_upload);
+    2. o dispatch de `--guard`, que no executável congelado é o próprio .exe
+       relançado elevado pelo guardião de policy;
+    3. LEGACY_SECRET_LOADING, inclusive a chave embutida no binário pelo .spec —
+       fallback que os entrypoints novos deliberadamente NÃO têm.
+
+O que ele NÃO tem mais: laço, retry, sessão, certificado, planilha. Tudo isso é
+do app, e ele o chama pela mesma fronteira pública que os outros dois.
 """
 
 import argparse
@@ -102,7 +103,7 @@ def _resolver_gemini_key() -> tuple[str, str]:
 # ── Fronteiras da aplicação ───────────────────────────────────────────────────
 # As reexportações de `status_portal` saíram com a orquestração: quem afirmava
 # sobre elas aqui era a caracterização do laço, e o laço mudou de casa.
-from automation import app, captcha, eventos                                # noqa: E402
+from automation import app, apresentacao_eventos, captcha, eventos        # noqa: E402
 from automation.boundary import (                                           # noqa: E402
     EntradaDebitosEmAberto,
     EntradaInvalida,
@@ -126,135 +127,23 @@ def _config_captcha() -> captcha.ConfigCaptcha:
 
 
 # ── Apresentação dos eventos ──────────────────────────────────────────────────
+# As frases vivem em automation/apresentacao_eventos.py, compartilhadas com
+# runner.py e local.py: três implementações das mesmas frases seriam três
+# oportunidades de vazar algo diferente.
 
-def _frase(e) -> str | None:
-    """Um fato da aplicação vira a linha que o operador lê. `None` = não mostrar.
 
-    Aqui, e só aqui, o vocabulário volta a ser humano. O app emite CÓDIGOS: ele
-    não sabe que existe console, nem `--log`, nem português.
+class Renderer(apresentacao_eventos.Apresentador):
+    """Adapter de apresentação do entrypoint desktop legado.
 
-    Nenhuma frase tem CNPJ, empresa ou CN — o app não os envia. Quando o
-    operador precisa achar a linha, ele recebe a POSIÇÃO e abre a planilha nela.
+    Acrescenta ao apresentador comum o registro PERSISTENTE da falha de
+    gravação, que já existia aqui: só o tipo do erro, porque a mensagem do
+    openpyxl carrega o caminho completo do arquivo.
     """
-    E = eventos
-    onde = "" if e.posicao is None else f"linha {e.posicao + 1}"
-    de = "" if e.total is None else f"/{e.total}"
-
-    if e.codigo == E.ITEM_INICIADO:
-        return f"\n  [{onde}{de}] Processando..."
-    if e.codigo == E.ITEM_IGNORADO_SEM_CNPJ:
-        return f"  [{onde}{de}] CNPJ inválido/vazio. Ignorando linha."
-    if e.codigo == E.ITEM_JA_ENCERRADO:
-        return f"    → [{onde}] Status terminal na coluna D. Nada a processar."
-    if e.codigo == E.ITEM_JA_CONCLUIDO:
-        return f"    → [{onde}] Já totalmente processada. Pulando."
-    if e.codigo == E.RETOMADA_PULA_DCTFWEB:
-        return "    → Débitos DCTFWeb já concluídos. Fará apenas Processos Fiscais."
-    if e.codigo == E.RETOMADA_PULA_PROCESSOS:
-        return "    → Processos Fiscais já concluídos. Fará apenas Débitos DCTFWeb."
-
-    if e.codigo == E.CERTIFICADO_INICIADO:
-        return f"\n{'═' * 60}\n  Certificado da {onde} em diante\n{'═' * 60}"
-    if e.codigo == E.CERTIFICADO_NAO_INSTALADO:
-        return (f"  [!] O certificado pedido na {onde} não está instalado nesta "
-                "máquina. Abra a planilha nessa linha para ver qual é.")
-    if e.codigo == E.CERTIFICADO_AMBIGUO:
-        return (f"  [!] O nome de certificado da {onde} corresponde a "
-                f"{e.quantidade} certificados instalados.\n"
-                "       Escreva na planilha um nome que identifique só um deles.")
-    if e.codigo == E.LEITURA_DE_CERTIFICADOS_FALHOU:
-        return ("  [!] Não foi possível ler o repositório de certificados desta "
-                "máquina.\n"
-                "       Isso NÃO significa que não há certificado "
-                "instalado — a leitura em si falhou.")
-    if e.codigo == E.CERTIFICADOS_INDISPONIVEIS:
-        return ("  [!] Nenhum certificado com chave privada, válido e não arquivado,\n"
-                "      foi encontrado em Cert:\\CurrentUser\\My.\n"
-                "      Instale o certificado no Windows antes de rodar a automação.")
-    if e.codigo == E.POLICY_NAO_CONFIAVEL:
-        return ("    [!] Policy de auto-seleção não ficou ativa (UAC negado?). "
-                "A janela de certificado será resolvida por UI.")
-    if e.codigo == E.POLICY_PERMANECERA_NA_MAQUINA:
-        return ("    [!] A policy do Chrome já existia e continuará na máquina "
-                "depois desta execução.")
-    if e.codigo == E.LOGIN_CONCLUIDO:
-        return "    [✓] Login no portal concluído."
-    if e.codigo == E.LOGIN_FALHOU:
-        return f"    [!] Login não autenticou. Pulando a {onde}."
-
-    if e.codigo == E.CNPJ_RECUSADO_PELO_PORTAL:
-        return f"    [!] O portal recusou o CNPJ da {onde}. Linha encerrada."
-    if e.codigo == E.SESSAO_RECUPERADA_APOS_RECUSA:
-        return "    [✓] Sessão mantida — seguindo para o próximo CNPJ deste certificado."
-    if e.codigo == E.SESSAO_NAO_RECUPERADA_APOS_RECUSA:
-        return "    [!] Sessão não recuperada após a recusa. Fechando o navegador."
-    if e.codigo == E.FALHA_AO_ENCERRAR_SESSAO:
-        return (f"    [!] O encerramento da sessão falhou ({e.tipo_da_falha}). "
-                "A falha original acima é a que importa.")
-    if e.codigo == E.ITEM_FALHOU:
-        resta = "Reabrindo sessão e retentando" if e.tentativa < e.maximo else "Pulando"
-        return (f"    [!] Falha ao processar a {onde} "
-                f"(tentativa {e.tentativa}/{e.maximo}). {resta}...")
-    if e.codigo == E.ITEM_ESGOTOU_RETENTATIVAS:
-        return f"    [!] Máximo de tentativas atingido na {onde}."
-    if e.codigo == E.SITUACAO_FISCAL_NAO_RECONHECIDA:
-        return (f"    [!] Status de pendências não reconhecido na {onde}. "
-                "Nada foi gravado — a linha voltará pendente.")
-
-    if e.codigo == E.DEBITOS_REGISTRADOS:
-        if e.quantidade is None:
-            return "    [✓] Coluna D → concluída pelo Processo Fiscal."
-        return (f"    [✓] {e.quantidade} linha(s) de débito DCTFWeb em "
-                f"{e.paginas} página(s) — gravadas, coluna D concluída.")
-    if e.codigo == E.PROCESSOS_REGISTRADOS:
-        return (f"    [✓] {e.quantidade} linha(s) de processo fiscal em "
-                f"{e.paginas} página(s) — gravadas, coluna E concluída.")
-    if e.codigo == E.SEM_DEBITOS_REGISTRADO:
-        return "    [✓] Sem débitos."
-    if e.codigo == E.DEBITOS_NAO_COMPENSAVEIS_REGISTRADO:
-        return "    [✓] Débitos não compensáveis."
-    if e.codigo == E.SEM_PROCESSOS_REGISTRADO:
-        return "    [✓] Sem processos."
-    if e.codigo == E.RECUSA_REGISTRADA:
-        return "    [✓] Motivo da recusa gravado na planilha."
-    if e.codigo == E.LINHA_NAO_ENCONTRADA_NA_PLANILHA:
-        return (f"    [!] A {onde} não foi encontrada na planilha para escrita. "
-                "O status foi descartado.")
-    if e.codigo == E.SALVAMENTO_PLANILHA_FALHOU:
-        acao = (" — feche o arquivo no Excel e a próxima gravação recupera."
-                if e.tipo_da_falha == "PermissionError" else "")
-        return f"    [!] Falha ao salvar a planilha ({e.tipo_da_falha}){acao}"
-
-    if e.codigo == E.REDE_NAO_ESTABILIZOU:
-        return "    [!] A página não estabilizou no tempo; a extração seguiu assim mesmo."
-    if e.codigo == E.PAGINACAO_NAO_ALTERADA:
-        return "    [!] Não foi possível alterar os itens por página."
-    return None
-
-
-class Renderer:
-    """Adapter de apresentação: EventoOperacional → console (e `--log` via Tee).
-
-    É o único lugar que imprime, e o app não sabe que ele existe. Guarda uma só
-    coisa: se os certificados faltaram — o processo precisa terminar com código
-    1 nesse caso, e a fronteira do app devolve `None` de propósito.
-    """
-
-    def __init__(self) -> None:
-        self.abortou = False
 
     def __call__(self, evento) -> None:
-        if evento.codigo in (eventos.CERTIFICADOS_INDISPONIVEIS,
-                             eventos.LEITURA_DE_CERTIFICADOS_FALHOU):
-            self.abortou = True
+        super().__call__(evento)
         if evento.codigo == eventos.SALVAMENTO_PLANILHA_FALHOU:
-            # Registro PERSISTENTE da falha, preservado do adapter antigo. Só o
-            # tipo: a mensagem do openpyxl carrega o caminho completo do arquivo,
-            # e isto aqui vai para um log em disco.
             registrar_erro(f"Planilha: falha ao salvar. {evento.tipo_da_falha}")
-        frase = _frase(evento)
-        if frase is not None:
-            print(frase)
 
 
 # ── Entrada ───────────────────────────────────────────────────────────────────
