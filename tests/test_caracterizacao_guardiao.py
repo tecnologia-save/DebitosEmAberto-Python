@@ -470,3 +470,53 @@ def test_10_nenhum_cn_nem_caminho_de_registro_entra_no_evento():
     for proibido in (CN_A, CN_B, "Software", "HKCU", "HKLM", "AutoSelect"):
         assert proibido not in frase
     assert "guardião" in frase
+
+
+# ── §1 · o guardião abandona quando o cleanup não confirma ────────────────────
+
+def test_o_guardiao_desiste_depois_de_dez_tentativas_e_encerra():
+    """O que a 12C precisa corrigir.
+
+    Se a policy continua escrita depois das dez tentativas, ele registra
+    `removeu=False` — e sai assim mesmo. Fica uma policy OWNED sem nenhum
+    processo elevado responsavel por ela.
+    """
+    fonte = (RAIZ / "cert_windows.py").read_text(encoding="utf-8")
+    guarda = fonte[fonte.index("def guardiao("):fonte.index("def _lancar_guardiao")]
+
+    assert "for _ in range(10):" in guarda
+    assert "removeu = False" in guarda
+    depois = guarda[guarda.index("_log(f\"limpeza removeu={removeu}\")"):]
+    assert "while" not in depois, "nao volta a tentar"
+    assert "raise" not in depois, "e nao avisa ninguem"
+
+
+def test_o_guardiao_escreve_a_policy_antes_de_qualquer_verificacao():
+    """§13: hoje a mutacao vem PRIMEIRO.
+
+    `definir_autoselect` roda no topo, antes de `OpenProcess`. Se o processo pai
+    ja morreu — ou morrer nesse intervalo — a policy e escrita assim mesmo, e
+    quem a herda e a proxima execucao.
+    """
+    fonte = (RAIZ / "cert_windows.py").read_text(encoding="utf-8")
+    guarda = fonte[fonte.index("def guardiao("):fonte.index("def _lancar_guardiao")]
+
+    assert guarda.index("definir_autoselect(cn)") < guarda.index("OpenProcess")
+
+
+def test_nao_existe_lease_de_host_em_lugar_nenhum():
+    """O estado ANTES da 12C: nenhum entrypoint impede uma segunda execucao.
+
+    `cert_windows` fica de fora da varredura de `CreateEventW`: ele ja cria um
+    evento nomeado desde a 12B.2, mas aquele e o CANAL DE LIMPEZA de uma policy
+    — outro objeto, outro proposito, e nao um lease de host.
+    """
+    for arquivo in ("runner.py", "local.py", "main.py"):
+        fonte = (RAIZ / arquivo).read_text(encoding="utf-8-sig")
+        for marca in ("CreateEventW", "ERROR_ALREADY_EXISTS", "exclusividade"):
+            assert marca not in fonte, f"{arquivo} ja fala de {marca}"
+
+    for arquivo in ("runner.py", "local.py", "main.py", "cert_windows.py"):
+        fonte = (RAIZ / arquivo).read_text(encoding="utf-8-sig")
+        for marca in ("ERROR_ALREADY_EXISTS", "host-v1", "ExecucaoJaAtiva"):
+            assert marca not in fonte, f"{arquivo} ja fala de {marca}"
