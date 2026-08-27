@@ -104,6 +104,33 @@ Procedimento na VM, **sem autenticar**:
 Isso valida `LOGIN_RESOURCE_CLEANUP_GAP` em runtime. Não foi automatizado aqui
 porque depende de configuração de rede da VM, que o harness não deve mexer.
 
+### Legibilidade das colmeias (fatia 13A.2)
+
+A 13A.2 fez `UNREADABLE` deixar de ser tratado como `ABSENT` em toda decisão de
+identidade. A consequência é fail-closed: uma colmeia que não pode ser lida
+recusa o startup, recusa a instalação e segura o host —
+**`UNREADABLE_HIVE_BLOCKS_STARTUP`**, classificado como
+`KNOWN_FAIL_CLOSED_RUNTIME_CONSTRAINT`, pendente de validação.
+
+Se as colmeias forem legíveis no runtime normal, o custo é zero. Se não forem, o
+desenho é **seguro porém bloqueado**, e é a 12E que decide qual dos dois. Quatro
+cenários, e nenhum deles é opcional:
+
+| | Cenário | Decide |
+|---|---|---|
+| **A** | processo comum consegue ler a policy em HKCU? | viabilidade do caminho normal |
+| **B** | processo comum consegue ler a policy em HKLM? | idem, e é o caso provável de bloqueio |
+| **C** | depois de o guardião elevado escrever HKLM, o parent comum consegue inventariá-la? | se a confirmação de `ATIVADA` é alcançável sem handshake novo |
+| **D** | um `AccessDenied` real é classificado `UNREADABLE` e não `ABSENT`? | se a distinção do código corresponde ao Windows |
+
+O `D` é o único que testa o código; os outros três testam a máquina. Se o `C`
+falhar, a escolha registrada na 13A.2 foi deliberada: **o parent não confirma**
+(fail-safe, possivelmente inviável) em vez de ampliar o protocolo para o
+guardião comunicar a confirmação. Ampliar sem medir seria escolher a opção que
+faz o fluxo funcionar, e não a que se sabe correta.
+
+---
+
 ### §31 · §32 · UAC recusado e UAC interativo
 
 O grupo `policy` e o grupo `crash` **abrem prompt de UAC**. Alguém precisa

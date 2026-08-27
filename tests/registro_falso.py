@@ -80,7 +80,13 @@ class RegistroFalso:
         """
         valores = list(self.dados[chave.colmeia][chave.caminho].items())
         if indice >= len(valores):
-            raise OSError(259, "no more data")
+            # Como o winreg de verdade sinaliza: ERROR_NO_MORE_ITEMS em
+            # `winerror`. E o unico OSError que significa "acabou" — qualquer
+            # outro significa que a leitura falhou, e o codigo precisa poder
+            # distinguir os dois.
+            fim = OSError(22, "no more data")
+            fim.winerror = 259
+            raise fim
         nome, valor = valores[indice]
         return nome, valor, self.REG_SZ
 

@@ -70,8 +70,13 @@ _COLMEIAS = (
 # valores saem sempre iguais. Quem tem o CN reconstrói o que escreveu, e não
 # precisa guardar cópia de nada.
 
-_AUSENTE = object()
-_ALHEIO = object()
+# ERROR_NO_MORE_ITEMS. E o unico OSError que a enumeracao pode tratar como
+# "acabou": qualquer outro e ignorancia, e ignorancia nao e ausencia.
+ERROR_NO_MORE_ITEMS = 259
+
+_AUSENTE = object()     # o valor nao existe
+_ALHEIO = object()      # existe, lemos, e nao e nosso
+_ILEGIVEL = object()    # a leitura falhou; nao sabemos o que ha
 
 
 def _valores_esperados(cn: str) -> dict[str, str]:
@@ -85,14 +90,26 @@ def _valores_esperados(cn: str) -> dict[str, str]:
 def _valor_atual(key, nome: str):
     """O conteúdo de um valor, ou um sentinela.
 
-    `_AUSENTE` e `_ALHEIO` são coisas diferentes e a distinção é o eixo da
-    fatia: ausente pode ser preenchido, alheio não pode ser tocado. Tipo
-    inesperado é alheio — o que não sabemos ler não é nosso.
+    Três respostas, e as três são necessárias:
+
+        `_AUSENTE`   o valor não existe. Pode ser preenchido.
+        `_ALHEIO`    existe, lemos, e não é nosso. Não pode ser tocado.
+        `_ILEGIVEL`  a leitura falhou. Não sabemos o que há.
+
+    Até a fatia 13A.2 as duas últimas eram uma só, e pior: qualquer `OSError`
+    virava `_AUSENTE`. Um valor que não conseguíssemos ler passava por vago —
+    e vago, para a escrita, significa "pode preencher". Ignorância não é
+    ausência, e aqui ela deixava de não ser.
+
+    Tipo inesperado continua sendo `_ALHEIO`: lemos, e o que lemos não é nosso.
+    Isso é MALFORMED, e é diferente de UNREADABLE.
     """
     try:
         valor, tipo = winreg.QueryValueEx(key, nome)
-    except OSError:
+    except FileNotFoundError:
         return _AUSENTE
+    except OSError:
+        return _ILEGIVEL
     if tipo != winreg.REG_SZ or not isinstance(valor, str):
         return _ALHEIO
     return valor
@@ -177,6 +194,16 @@ def definir_autoselect(cn: str) -> str:
     do proprio passo 2, um terceiro ainda pode escrever. O que mudou e o que
     acontece depois — o passo 3 percebe e desfaz o nosso, em vez de o resultado
     divergente ficar instalado e ser aceito como valido.
+
+    E DAI A REDACAO EXATA DA GARANTIA. Nao e "a automacao nao pode produzir
+    divergencia": se a compensacao falhar, residuo owned parcial PODE ficar
+    fisicamente no host. O que se garante e mais estreito e mais verdadeiro:
+
+        nenhuma instalacao ACEITA COMO VALIDA deixa divergencia criada por nos.
+
+    Quando a compensacao falha o desfecho e `RESIDUO_OWNED`, e ele ja diz tudo o
+    que precisa ser dito: a instalacao nao e aceita, o browser nao comeca, o
+    guardiao continua sendo o dono, e o host continua fail-closed.
     """
     esperados = _valores_esperados(cn)
 
@@ -317,7 +344,10 @@ def policy_owned_existe(cn: str) -> bool:
             return True
         try:
             for nome, esperado in esperados.items():
-                if _valor_atual(key, nome) == esperado:
+                atual = _valor_atual(key, nome)
+                # `_ILEGIVEL` responde True pelo mesmo motivo que a colmeia
+                # inteira ilegivel responde: pode ser nosso, e nao sabemos.
+                if atual is _ILEGIVEL or atual == esperado:
                     return True
         finally:
             winreg.CloseKey(key)
@@ -436,17 +466,26 @@ def _inventariar(rotulo: str, raiz) -> policy_certificado.ColmeiaDaPolicy:
         return policy_certificado.ColmeiaDaPolicy(rotulo, existe=True, legivel=False)
 
     regras = []
+    completa = False
     try:
         indice = 0
         while True:
             try:
                 nome, bruto, _ = winreg.EnumValue(key, indice)
-            except OSError:
+            except OSError as erro:
+                # ERROR_NO_MORE_ITEMS e o fim da lista. Qualquer outro erro e
+                # ignorancia: parar nele e devolver o que ja tinhamos seria
+                # entregar uma lista TRUNCADA como se fosse a colmeia inteira,
+                # e quem a lesse acreditaria ter visto tudo.
+                completa = getattr(erro, "winerror", None) == ERROR_NO_MORE_ITEMS
                 break
             regras.append(_interpretar(nome, bruto))
             indice += 1
     finally:
         winreg.CloseKey(key)
+
+    if not completa:
+        return policy_certificado.ColmeiaDaPolicy(rotulo, existe=True, legivel=False)
     return policy_certificado.ColmeiaDaPolicy(
         rotulo, existe=True, regras=tuple(regras)
     )
