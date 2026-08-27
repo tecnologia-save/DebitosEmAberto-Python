@@ -5,7 +5,11 @@ em tmp_path a cada teste. Todos os CNPJs, nomes e certificados sao ficticios.
 """
 import openpyxl
 
-CABECALHO_EMPRESAS = ["CNPJ", "EMPRESA", "CERTIFICADO", "DCTFWEB", "PROCESSOS"]
+# Fatia 14A: passou a ser o cabecalho PROVADO por `PLANILHA MODELO.xlsx`.
+# Antes daqui ele era invencao nossa — 'DCTFWEB' e 'PROCESSOS' nao existem em
+# artefato nenhum do projeto, e a validacao de schema os recusaria.
+CABECALHO_EMPRESAS = ["CNPJ", "EMPRESA", "CERTIFICADO", "DÉBITOS",
+                      "PROCESSOS FISCAIS"]
 
 # Sentinelas ficticias — nenhuma corresponde a empresa ou documento real.
 ALFA = ("11111111000191", "ALFA FICTICIA LTDA", "CERT ALFA")

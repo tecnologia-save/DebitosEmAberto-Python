@@ -64,6 +64,22 @@ STATUS_SEM_DEBITOS = "Sem débitos"
 STATUS_DEBITOS_NAO_COMPENSAVEIS = "Débitos não compensáveis"
 STATUS_SEM_PROCESSOS = "Sem Processos"
 
+# O CABECALHO da aba 'Empresas', nas quatro posicoes que o codigo usa.
+#
+# A evidencia e `PLANILHA MODELO.xlsx`, versionado no repositorio, vazio de
+# dados e apontado pelo README como a base a usar. Nao foi inventado aqui.
+#
+# A coluna B ('EMPRESA') fica de fora de proposito: o codigo nunca a le, e
+# exigi-la recusaria planilhas que hoje funcionam. Um deslocamento em B nao
+# passa despercebido mesmo assim — ele empurra CERTIFICADO para a posicao D, e
+# e a conferencia de C que o pega.
+CABECALHO_EMPRESAS = {
+    COL_CNPJ: "CNPJ",
+    COL_CERTIFICADO: "CERTIFICADO",
+    COL_STATUS_DCTFWEB: "DÉBITOS",
+    COL_STATUS_PROCESSOS: "PROCESSOS FISCAIS",
+}
+
 CABECALHO_DEBITOS = [
     "CNPJ", "TIPO", "TRIBUTO", "Rec.", "PA/Ex.",
     "Dt.Vcto.", "Valor Original", "Saldo Devedor",
@@ -72,6 +88,27 @@ CABECALHO_PROCESSOS = [
     "CNPJ", "TIPO", "RECEITA", "PA/Ex.", "Dt.Vcto.",
     "Valor Original", "Saldo Devedor", "Processo de Crédito",
 ]
+
+# Ate onde as DUAS fontes concordam sobre o cabecalho de cada aba de detalhe.
+#
+# `Débitos`: o modelo tem nove colunas e as oito primeiras sao exatamente estas.
+# A nona, 'Informações Complementares', o codigo nunca preenche.
+#
+# `Processos Fiscais`: duas posicoes ficam de fora, e por motivos diferentes.
+#
+# A QUINTA porque as grafias divergem alem do espaco — o codigo escreve
+# 'Dt.Vcto.' e o modelo traz 'Dt. Vcto', sem o ponto final. Normalizar
+# pontuacao para faze-las coincidir seria inventar uma regra que nenhuma das
+# duas fontes sustenta.
+#
+# A OITAVA porque as fontes discordam sobre o que aquela coluna SIGNIFICA: o
+# modelo a chama de 'Informações Complementares' e o codigo escreve
+# 'Processo de Crédito' ali. DETALHE_PROCESSOS_CABECALHO_DIVERGENTE, registrado
+# e nao corrigido — a decisao sobre qual das duas vale nao e desta fatia.
+#
+# A setima diverge so por um espaco no fim, e essa a comparacao resolve.
+CONFERIDAS_DEBITOS = (0, 1, 2, 3, 4, 5, 6, 7)
+CONFERIDAS_PROCESSOS = (0, 1, 2, 3, 5, 6)
 
 CAMPOS_DEBITO = (
     "cnpj", "tipo", "tributo", "receita", "pa_ex", "dt_vcto", "valor_original", "saldo",
@@ -320,8 +357,24 @@ class SessaoPlanilha:
         return self.estado["wb"] is None or self.estado["caminho"] != caminho
 
     def abrir(self, caminho: str) -> None:
+        """Abre o workbook — e so o adota se a estrutura dele conferir.
+
+        A conferencia acontece AQUI porque este e o ponto onde o recurso que
+        sera mutado entra. O pre-voo tambem a faz, mais cedo e sem navegador
+        aberto; a daqui e a que nenhum caminho contorna.
+
+        Uma planilha recusada nao chega a virar estado da sessao: o workbook e
+        fechado e nada nesta sessao passa a apontar para ele.
+        """
+        wb = openpyxl.load_workbook(caminho)
+        try:
+            validar_schema(wb)
+        except PlanilhaIndisponivel:
+            wb.close()
+            raise
+
         self.estado["caminho"] = caminho
-        self.estado["wb"] = openpyxl.load_workbook(caminho)
+        self.estado["wb"] = wb
         self.estado["sujo"] = False
 
     def descartar(self) -> None:
@@ -522,6 +575,76 @@ class PlanilhaIndisponivel(Exception):
     """
 
 
+def _normalizar_cabecalho(valor) -> str:
+    """Espaco e caixa. E so isso.
+
+    As duas normalizacoes sao as que o proprio modelo demonstra: ele traz 'Dt.
+    Vcto' onde o codigo escreve 'Dt.Vcto.', 'Saldo Devedor ' com espaco no fim,
+    e mistura CAIXA ALTA na aba 'Empresas' com Caixa de Titulo nas de detalhe.
+    E um arquivo editado a mao, e espaco e caixa variam.
+
+    O que NAO se faz aqui: acento, semelhanca, substring, aproximacao. Nenhum
+    deles tem evidencia, e cada um transformaria um erro de estrutura numa
+    escolha silenciosa de coluna — que e exatamente o problema desta fatia.
+    """
+    return " ".join(str(valor if valor is not None else "").split()).upper()
+
+
+def _cabecalho_da_aba(ws) -> list:
+    """A primeira linha, ou vazio se a aba nao tem linha nenhuma."""
+    return list(next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ()))
+
+
+def _conferir(ws, esperado: dict) -> None:
+    """`esperado` mapeia POSICAO (0-based) -> texto do cabecalho."""
+    lido = _cabecalho_da_aba(ws)
+
+    for posicao, texto in esperado.items():
+        atual = lido[posicao] if posicao < len(lido) else None
+        if _normalizar_cabecalho(atual) != _normalizar_cabecalho(texto):
+            # A mensagem nomeia a ABA e a COLUNA, que sao do formato, e nunca o
+            # que foi lido: uma celula de cabecalho trocada pode conter qualquer
+            # coisa que estivesse na planilha.
+            raise PlanilhaIndisponivel(
+                f"A planilha não está no formato esperado: a aba '{ws.title}' "
+                f"não tem a coluna {chr(ord('A') + posicao)} esperada."
+            )
+
+
+def validar_schema(wb) -> None:
+    """A ESTRUTURA da planilha, conferida antes de qualquer mutacao.
+
+    Por que cabecalho, e nao posicao nua
+    ------------------------------------
+    As posicoes A/C/D/E vem do codigo original e ficam. O que muda e que elas
+    deixam de ser aceitas sem prova: uma coluna a mais no inicio desloca as
+    quatro, e ate aqui isso passava em silencio — a automacao lia o numero da
+    filial como CNPJ e escrevia o status por cima do certificado.
+
+    Isto NAO procura as colunas. Nao ha "onde sera que esta o CNPJ", nem
+    "se D nao parece DCTF, tenta E". Ou a planilha esta no formato conhecido, ou
+    e recusada. Descobrir automaticamente trocaria um erro barulhento por uma
+    escolha errada e silenciosa.
+
+    Estrutura nao e conteudo. Uma planilha meio processada — D preenchida e E
+    vazia, ou o contrario — esta no formato e continua valendo.
+    """
+    if ABA_EMPRESAS not in wb.sheetnames:
+        raise PlanilhaIndisponivel(f"A planilha não tem a aba '{ABA_EMPRESAS}'.")
+
+    _conferir(wb[ABA_EMPRESAS], CABECALHO_EMPRESAS)
+
+    # As abas de detalhe so existem se ja houve execucao — ou se vieram do
+    # modelo. Quando existem, o append escreve nelas: conferir antes e o que
+    # impede o CNPJ de ir parar sob a coluna de outra pessoa.
+    for nome, cabecalho, posicoes in (
+        (ABA_DEBITOS, CABECALHO_DEBITOS, CONFERIDAS_DEBITOS),
+        (ABA_PROCESSOS, CABECALHO_PROCESSOS, CONFERIDAS_PROCESSOS),
+    ):
+        if nome in wb.sheetnames:
+            _conferir(wb[nome], {i: cabecalho[i] for i in posicoes})
+
+
 def validar_recurso(caminho: str) -> None:
     """Pre-voo: da para ler E gravar esta planilha antes de abrir o navegador?
 
@@ -559,7 +682,6 @@ def validar_recurso(caminho: str) -> None:
         raise PlanilhaIndisponivel("O arquivo não é uma planilha .xlsx válida.") from None
 
     try:
-        if ABA_EMPRESAS not in wb.sheetnames:
-            raise PlanilhaIndisponivel(f"A planilha não tem a aba '{ABA_EMPRESAS}'.")
+        validar_schema(wb)
     finally:
         wb.close()

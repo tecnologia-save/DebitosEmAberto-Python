@@ -141,7 +141,10 @@ def test_a_workbook_minimo_valido(planilha):
     df = ler_e_ordenar(planilha)
 
     assert len(df) == 3
-    assert list(df.columns) == ["CNPJ", "EMPRESA", "CERTIFICADO", "DCTFWEB", "PROCESSOS"]
+    # Fatia 14A: o cabecalho sintetico passou a ser o do `PLANILHA MODELO.xlsx`.
+    # Antes era invencao nossa, e a validacao de schema o recusaria.
+    assert list(df.columns) == ["CNPJ", "EMPRESA", "CERTIFICADO", "DÉBITOS",
+                                "PROCESSOS FISCAIS"]
 
 
 def test_b_a_aba_empresas_e_lida_por_nome(planilha):
@@ -160,10 +163,15 @@ def test_c_aba_empresas_ausente_na_leitura_pandas(tmp_path):
 
 
 def test_c_aba_empresas_ausente_no_acesso_openpyxl(tmp_path):
-    """Caminho diferente, erro diferente: openpyxl levanta KeyError."""
+    """ANTES: `openpyxl` levantava `KeyError` la dentro, ao procurar a aba —
+    depois de o workbook ja estar aberto e adotado pela sessao.
+
+    Fatia 14A: quem recusa agora e a abertura, com o erro de ENTRADA do
+    projeto. O `KeyError` cru nunca mais chega a quem chamou.
+    """
     caminho = str(criar_planilha(tmp_path / "sem_aba.xlsx", aba="Outra"))
 
-    with pytest.raises(KeyError):
+    with pytest.raises(planilha_mod.PlanilhaIndisponivel):
         mapa_status(caminho)
 
 
@@ -191,13 +199,39 @@ def test_d_as_colunas_sao_posicionais_e_nao_nomeadas(tmp_path):
     assert df.columns[2] == "EMPRESA", "e isto como a coluna do certificado"
 
 
-def test_d_menos_de_cinco_colunas_nao_quebra_a_leitura_de_status(tmp_path):
-    """mapa_status protege o acesso com len(linha) > 3."""
+def test_d_menos_de_cinco_colunas_agora_e_RECUSADO(tmp_path):
+    """ANTES: `mapa_status` protegia o acesso com `len(linha) > 3` e devolvia
+    `("", "")` — a planilha sem as colunas de status era tratada como uma
+    planilha inteiramente pendente, e a automacao escrevia em colunas que nao
+    existiam no cabecalho.
+
+    Fatia 14A: falta coluna, falta formato. PLANILHA_SCHEMA_FAIL_CLOSED.
+
+    A protecao `len(linha) > 3` continua no codigo: ela vale para a LINHA, que
+    pode ser mais curta que o cabecalho numa planilha valida.
+    """
     caminho = tmp_path / "curta.xlsx"
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Empresas"
     ws.append(["CNPJ", "EMPRESA", "CERTIFICADO"])
+    ws.append([ALFA[0], ALFA[1], ALFA[2]])
+    wb.save(caminho)
+    wb.close()
+
+    with pytest.raises(planilha_mod.PlanilhaIndisponivel):
+        mapa_status(str(caminho))
+
+
+def test_d_e_uma_LINHA_mais_curta_que_o_cabecalho_continua_valendo(tmp_path):
+    """O outro lado, e o que a recusa acima nao pode ter levado junto: o
+    cabecalho tem as cinco colunas e a linha tem tres. Isso e planilha em
+    branco, nao planilha incompativel."""
+    caminho = tmp_path / "linha_curta.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Empresas"
+    ws.append(["CNPJ", "EMPRESA", "CERTIFICADO", "DÉBITOS", "PROCESSOS FISCAIS"])
     ws.append([ALFA[0], ALFA[1], ALFA[2]])
     wb.save(caminho)
     wb.close()
