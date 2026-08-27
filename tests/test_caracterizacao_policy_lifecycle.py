@@ -227,13 +227,21 @@ def test_d_stale_com_OUTRO_cn_e_sobrescrita_e_a_execucao_passa_a_ter_guardiao():
     )
 
 
-def test_d_a_escrita_apaga_os_valores_anteriores_da_chave():
-    """Na primitiva real: `definir_autoselect` percorre os valores 1..n e os
-    apaga antes de escrever os seus."""
-    fonte = (RAIZ / "cert_windows.py").read_text(encoding="utf-8")
-    escrita = fonte[fonte.index("def definir_autoselect"):fonte.index("def limpar_autoselect")]
+def test_d_a_escrita_NAO_apaga_mais_os_valores_anteriores():
+    """ANTES: `definir_autoselect` percorria 1..n apagando antes de escrever os
+    seus, e um valor alheio nesse intervalo desaparecia.
 
-    assert "winreg.DeleteValue(key, str(i))" in escrita
+    AGORA (13A) ela confere e so preenche o que esta ausente. Nenhum
+    `DeleteValue` no caminho da escrita.
+    """
+    fonte = (RAIZ / "cert_windows.py").read_text(encoding="utf-8")
+    escrita = fonte[
+        fonte.index("def definir_autoselect"):fonte.index("def remover_autoselect_owned")
+    ]
+
+    assert "DeleteValue" not in escrita
+    assert "if _conflita(key, esperados):" in escrita
+    assert "is _AUSENTE" in escrita, "so escreve o que nao existe"
 
 
 # ── E · I · nao existe cleanup normal ─────────────────────────────────────────
@@ -266,7 +274,7 @@ def test_i_a_policy_sobrevive_ao_retorno_de_app_executar():
     fonte = (RAIZ / "cert_windows.py").read_text(encoding="utf-8")
 
     guarda = fonte[fonte.index("def guardiao("):fonte.index("def _lancar_guardiao")]
-    assert "_limpar_confirmando(_log)" in guarda
+    assert "_limpar_confirmando(cn, _log)" in guarda
     assert "WaitForMultipleObjects" in guarda, (
         "a limpeza deixou de depender da morte do processo: o pedido tambem acorda"
     )
@@ -321,7 +329,8 @@ def test_f_a_limpeza_do_guardiao_insiste_ate_dez_vezes():
     helper = fonte[fonte.index("def _limpar_confirmando"):fonte.index("def guardiao(")]
 
     assert "for _ in range(10):" in helper
-    assert "if not policy_existe():" in helper
+    # Fatia 13A: confirma a ausencia do que E NOSSO, e nao de qualquer estado.
+    assert "if not policy_owned_existe(cn):" in helper
 
 
 # ── H · HKCU e HKLM divergentes ───────────────────────────────────────────────
@@ -352,7 +361,7 @@ def test_h_o_protocolo_passou_a_receber_o_ESTADO_e_nao_so_um_cn():
     parametros = list(inspect.signature(policy_certificado.garantir_policy).parameters)
 
     assert parametros == ["cn", "avaliar_inicio", "ler_cn_atual",
-                          "lancar_guardiao", "aguardar", "policy_ja_e_nossa"]
+                          "lancar_guardiao", "aguardar"]
 
     # E a avaliacao vem ANTES do unico ponto que escreve no registro.
     fonte = inspect.getsource(policy_certificado.garantir_policy)

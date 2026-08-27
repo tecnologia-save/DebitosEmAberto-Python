@@ -59,40 +59,188 @@ _COLMEIAS = (
 
 # ── Operações de registro (podem exigir elevação) ─────────────────────────────
 
-def definir_autoselect(cn: str) -> None:
-    """Escreve a policy para o Chrome auto-selecionar o certificado pelo CN.
+# ── Estado OWNED: o que esta execução escreve, e só isso ──────────────────────
+#
+# O host lease da fatia 12C exclui outras execuções de DebitosEmAberto. Ele NÃO
+# exclui administrador, GPO, Chrome management nem outra ferramenta — nenhum
+# deles pede o nosso lease antes de escrever nesta chave. Logo o lease não prova
+# posse dos valores; o único que prova é o conteúdo.
+#
+# E ele prova bem, porque o nosso estado é determinístico: dado o CN, os sete
+# valores saem sempre iguais. Quem tem o CN reconstrói o que escreveu, e não
+# precisa guardar cópia de nada.
 
-    Grava em HKCU e HKLM. Basta uma das duas dar certo; um erro de permissão na
-    outra é esperado e não interrompe.
+_AUSENTE = object()
+_ALHEIO = object()
+
+
+def _valores_esperados(cn: str) -> dict[str, str]:
+    """Os valores que ESTA execução escreve para `cn`. Nome -> payload."""
+    return {
+        str(indice): json.dumps({"pattern": url, "filter": {"SUBJECT": {"CN": cn}}})
+        for indice, url in enumerate(CERT_URLS, 1)
+    }
+
+
+def _valor_atual(key, nome: str):
+    """O conteúdo de um valor, ou um sentinela.
+
+    `_AUSENTE` e `_ALHEIO` são coisas diferentes e a distinção é o eixo da
+    fatia: ausente pode ser preenchido, alheio não pode ser tocado. Tipo
+    inesperado é alheio — o que não sabemos ler não é nosso.
     """
-    entradas = [
-        json.dumps({"pattern": url, "filter": {"SUBJECT": {"CN": cn}}})
-        for url in CERT_URLS
-    ]
-    gravadas = []
+    try:
+        valor, tipo = winreg.QueryValueEx(key, nome)
+    except OSError:
+        return _AUSENTE
+    if tipo != winreg.REG_SZ or not isinstance(valor, str):
+        return _ALHEIO
+    return valor
+
+
+def _conflita(key, esperados: dict[str, str]) -> bool:
+    """True se algum nome nosso já está ocupado por conteúdo que não é nosso."""
+    return any(
+        _valor_atual(key, nome) not in (_AUSENTE, esperado)
+        for nome, esperado in esperados.items()
+    )
+
+
+def definir_autoselect(cn: str) -> bool:
+    """Instala a policy SEM destruir o que não é nosso. True se alguma colmeia
+    ficou com o nosso estado completo.
+
+    Até a fatia 13A isto apagava `1`, `2`, `3`... até o primeiro buraco e
+    escrevia por cima de `1..N`. Qualquer regra alheia nesse intervalo — de um
+    administrador, de uma GPO, de outra ferramenta — desaparecia sem aviso, e a
+    decisão que autorizava a escrita tinha sido tomada noutro processo, antes de
+    uma elevação de UAC (POLICY_WRITE_TOCTOU_EXTERNAL_STATE_RISK).
+
+    Agora é CONFERIR e depois ESCREVER, por colmeia:
+
+        nome ausente               -> escreve
+        nome com o nosso conteúdo  -> já está certo, não toca
+        nome com outro conteúdo    -> NÃO sobrescreve; esta colmeia sai inteira
+
+    A colmeia sai inteira, e não valor a valor, para não deixar meia policy
+    instalada: metade das URLs apontando para o nosso CN e metade para outro é
+    pior do que nenhuma.
+
+    Ainda há uma janela entre conferir e escrever, agora medida em operações de
+    registro em vez de um prompt de UAC. Fica registrada, e não escondida.
+    """
+    esperados = _valores_esperados(cn)
+    gravadas, conflitantes = [], []
     for rotulo, raiz in _COLMEIAS:
         try:
             key = winreg.CreateKeyEx(raiz, REG_PATH, 0, winreg.KEY_ALL_ACCESS)
-            try:
-                i = 1
-                while True:
-                    try:
-                        winreg.DeleteValue(key, str(i))
-                        i += 1
-                    except OSError:
-                        break
-                for idx, entry in enumerate(entradas, 1):
-                    winreg.SetValueEx(key, str(idx), 0, winreg.REG_SZ, entry)
-                gravadas.append(rotulo)
-            finally:
-                winreg.CloseKey(key)
         except OSError as e:
             print(f"[wincert] {rotulo} indisponivel ({e.__class__.__name__}).")
+            continue
+        try:
+            if _conflita(key, esperados):
+                conflitantes.append(rotulo)
+                continue
+            for nome, valor in esperados.items():
+                if _valor_atual(key, nome) is _AUSENTE:
+                    winreg.SetValueEx(key, nome, 0, winreg.REG_SZ, valor)
+            gravadas.append(rotulo)
+        finally:
+            winreg.CloseKey(key)
 
+    if conflitantes:
+        print(f"[wincert] {'+'.join(conflitantes)}: ja ha configuracao de outra "
+              "origem nestes valores; nada foi sobrescrito.")
     if gravadas:
         print(f"[wincert] AutoSelect configurado em {'+'.join(gravadas)} para: {cn}")
     else:
         print(f"[wincert] FALHA: nao foi possivel escrever a policy para: {cn}")
+    return bool(gravadas)
+
+
+def remover_autoselect_owned(cn: str) -> None:
+    """Remove SÓ os valores que ainda são exatamente os que escrevemos.
+
+    Compare-and-delete, e nunca `DeleteKey`. Três consequências deliberadas:
+
+    - valor extra que outra origem acrescentou (`8`, `RegraDaEmpresa`)
+      permanece — a fatia 13A existe por causa dele;
+    - valor com nome nosso cujo conteúdo alguém trocou permanece: o nosso já
+      não está lá, e a posse daquele nome terminou quando foi sobrescrito.
+      Restaurar o nosso seria destruir o de outra pessoa;
+    - a chave pode ficar vazia, e fica. Conferir que está vazia e só então
+      apagá-la abriria uma corrida nova, para um ganho puramente cosmético — e
+      a decisão de startup já trata chave vazia como host limpo.
+
+    `limpar_autoselect` continua existindo para o `--clean` manual, que é outra
+    coisa: lá quem manda apagar tudo é uma pessoa.
+    """
+    esperados = _valores_esperados(cn)
+    removidas = []
+    for rotulo, raiz in _COLMEIAS:
+        try:
+            key = winreg.OpenKeyEx(raiz, REG_PATH, 0, winreg.KEY_ALL_ACCESS)
+        except OSError:
+            continue
+        try:
+            for nome, esperado in esperados.items():
+                if _valor_atual(key, nome) != esperado:
+                    continue
+                try:
+                    winreg.DeleteValue(key, nome)
+                    removidas.append(rotulo)
+                except OSError:
+                    # Sem privilégio para remover. Quem percebe é a confirmação,
+                    # que lê depois — engolir aqui e mentir lá é o defeito que a
+                    # fatia 12D.1 tirou do caminho.
+                    pass
+        finally:
+            winreg.CloseKey(key)
+    if removidas:
+        print(f"[wincert] Policy desta execucao removida de "
+              f"{'+'.join(sorted(set(removidas)))}.")
+
+
+def policy_owned_existe(cn: str) -> bool:
+    """Ainda resta algum valor que ESTA execução instalou?
+
+    É a pergunta do ciclo de vida OWNED, e não é a mesma de `policy_existe`:
+
+        policy_existe        "existe algum estado de policy no host?"
+        policy_owned_existe  "existe estado que ainda é nosso?"
+
+    Depois da remoção não destrutiva as duas divergem de propósito. Estado
+    externo que decidimos preservar responde True à primeira e False à segunda,
+    e é a segunda que decide se o host pode ser devolvido — senão preservar uma
+    regra alheia prenderia o host para sempre.
+
+    Colmeia ilegível responde True: ignorância não é ausência, e pode haver
+    estado nosso ali (UNREADABLE_HIVE_BLOCKS_HOST_RELEASE).
+    """
+    esperados = _valores_esperados(cn)
+    for _, raiz in _COLMEIAS:
+        try:
+            key = winreg.OpenKeyEx(raiz, REG_PATH, 0, winreg.KEY_READ)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return True
+        try:
+            for nome, esperado in esperados.items():
+                if _valor_atual(key, nome) == esperado:
+                    return True
+        finally:
+            winreg.CloseKey(key)
+    return False
+
+
+def policy_owned_ainda_existe(controle) -> bool:
+    """O mesmo, para quem só tem o controle do guardião.
+
+    Existe para que `maquina` não precise abrir o token: quem sabe o que há
+    dentro dele é este módulo, que o criou.
+    """
+    return policy_owned_existe(controle.cn)
 
 
 def limpar_autoselect() -> None:
@@ -289,15 +437,24 @@ class ControleDoGuardiao:
     """O que permite PEDIR limpeza a um guardiao especifico.
 
     Opaco para quem o recebe: o protocolo em automation/policy_certificado.py
-    nunca o inspeciona, e o app so o carrega. Nao guarda CN, CNPJ nem segredo —
-    so o nome do canal e o handle do evento.
+    nunca o inspeciona, e o app so o carrega.
+
+    Desde a fatia 13A ele guarda o CN, e isso mudou de proposito. A limpeza
+    deixou de apagar a chave inteira e passou a comparar valor a valor com o que
+    aquele guardiao escreveu — e o CN e exatamente o que permite reconstruir
+    esses valores, sem guardar copia de payload nenhum.
+
+    Nao entra no `__repr__`: um CN identifica a empresa e nao pode cair em log.
+    DEFESA ADICIONAL, nao garantia — acesso direto ao atributo continua expondo,
+    e e por isso que so `cert_windows` o le.
     """
 
-    __slots__ = ("evento", "nome")
+    __slots__ = ("evento", "nome", "cn")
 
-    def __init__(self, evento, nome: str):
+    def __init__(self, evento, nome: str, cn: str):
         self.evento = evento
         self.nome = nome
+        self.cn = cn
 
     def __repr__(self) -> str:
         return "ControleDoGuardiao(...)"
@@ -344,11 +501,17 @@ INTERVALO_REPETICAO_S = 30
 REPETICOES_APOS_A_MORTE = 20
 
 
-def _limpar_confirmando(_log) -> bool:
-    """Remove a policy e CONFIRMA que ela saiu. Dez tentativas curtas."""
+def _limpar_confirmando(cn: str, _log) -> bool:
+    """Remove o que ESTA execucao instalou e CONFIRMA que saiu.
+
+    Fatia 13A: `limpar_autoselect` (DeleteKey da chave inteira) saiu daqui. O
+    que se remove agora sao os valores owned, e o que se confirma e a ausencia
+    DELES — nao a ausencia de qualquer estado. Estado externo preservado nao e
+    motivo para segurar o host.
+    """
     for _ in range(10):
-        limpar_autoselect()
-        if not policy_existe():
+        remover_autoselect_owned(cn)
+        if not policy_owned_existe(cn):
             _log("limpeza confirmada")
             return True
         time.sleep(0.5)
@@ -398,13 +561,36 @@ def guardiao(pid: int, cn: str, canal: str = "") -> None:
     # O pai estava vivo quando ja tinhamos o lease. Dai em diante a morte dele
     # nao destroi o objeto: o nosso handle o mantem.
 
+    # REVALIDACAO IMEDIATA (fatia 13A). A decisao que autoriza esta escrita foi
+    # tomada no processo principal, ANTES da elevacao — antes de um prompt de
+    # UAC que pode ter ficado minutos na tela. Ela nao vale para sempre: quem
+    # decide se ainda e seguro escrever e quem esta a um passo de escrever.
+    decisao = policy_certificado.avaliar_estado_inicial(
+        inventario_da_policy(), cn, tuple(CERT_URLS)
+    )
+    if decisao.decisao == policy_certificado.RECUSAR:
+        _log("estado do host mudou depois da decisao; abortando sem escrever")
+        _k32.CloseHandle(h)
+        _k32.CloseHandle(lease)
+        return
+
+    escreveu = False
     try:
-        definir_autoselect(cn)
+        escreveu = definir_autoselect(cn)
         # Registra em QUAL colmeia caiu: se só HKCU tiver valor e o processo
         # principal não enxergar, é sinal de elevação em outra conta de usuário
-        _log(f"policy escrita | {diagnostico()}")
+        _log(f"policy escrita={escreveu} | {diagnostico()}")
     except Exception as e:
         _log(f"erro definir: {type(e).__name__}: {e}")
+
+    if not escreveu:
+        # Nao instalamos nada, entao nao possuimos nada — e um guardiao que nao
+        # possui estado nao pode segurar o host. O processo principal descobre
+        # pela ausencia da policy, e reavalia.
+        _log("nada foi escrito; abortando sem assumir posse")
+        _k32.CloseHandle(h)
+        _k32.CloseHandle(lease)
+        return
     evento = _k32.OpenEventW(SYNCHRONIZE, False, canal) if canal else None
     _log(f"canal -> {evento}")
     try:
@@ -418,7 +604,7 @@ def guardiao(pid: int, cn: str, canal: str = "") -> None:
                 pai_morreu = True
             _log(f"acordou ({'pid morreu' if pai_morreu else 'limpeza pedida'})")
 
-            if _limpar_confirmando(_log):
+            if _limpar_confirmando(cn, _log):
                 break
 
             # NAO confirmado. Nao encerramos: uma policy OWNED sem processo
@@ -431,7 +617,7 @@ def guardiao(pid: int, cn: str, canal: str = "") -> None:
             _log("FAIL-CLOSED: policy owned continua; host permanece ocupado")
             for _ in range(REPETICOES_APOS_A_MORTE):
                 time.sleep(INTERVALO_REPETICAO_S)
-                if _limpar_confirmando(_log):
+                if _limpar_confirmando(cn, _log):
                     break
             else:
                 # Esgotou. NAO fechamos o lease: uma policy owned sem processo
@@ -481,7 +667,7 @@ def _lancar_guardiao(cn: str) -> ControleDoGuardiao | None:
               wait_ms=None) != 0:
         _k32.CloseHandle(evento)
         return None
-    return ControleDoGuardiao(evento, nome)
+    return ControleDoGuardiao(evento, nome, cn)
 
 
 def pedir_limpeza(controle: ControleDoGuardiao) -> None:
@@ -495,18 +681,13 @@ def pedir_limpeza(controle: ControleDoGuardiao) -> None:
     _k32.SetEvent(controle.evento)
 
 
-def iniciar_guarda_detalhado(
-    cn: str, policy_ja_e_nossa: bool = False
-) -> policy_certificado.ResultadoDaPolicy:
+def iniciar_guarda_detalhado(cn: str) -> policy_certificado.ResultadoDaPolicy:
     """Garante a policy e devolve COMO ela ficou — inclusive quem vai limpá-la.
 
     O protocolo vive em automation/policy_certificado.py; aqui ficam as
     primitivas do Windows e o que vai para o console.
 
-    `policy_ja_e_nossa` atravessa até o protocolo sem ser interpretado aqui: é o
-    chamador que sabe se detém o controle do guardião que escreveu a policy
-    atual, e só ele pode afirmar posse.
-    """
+"""
     resultado = policy_certificado.garantir_policy(
         cn,
         avaliar_inicio=lambda: policy_certificado.avaliar_estado_inicial(
@@ -515,7 +696,6 @@ def iniciar_guarda_detalhado(
         ler_cn_atual=policy_cn,
         lancar_guardiao=_lancar_guardiao,
         aguardar=lambda: time.sleep(policy_certificado.INTERVALO_SONDAGEM_S),
-        policy_ja_e_nossa=policy_ja_e_nossa,
     )
 
     if resultado.situacao == policy_certificado.JA_ATIVA:

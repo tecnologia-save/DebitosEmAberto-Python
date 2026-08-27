@@ -138,8 +138,15 @@ def test_a_policy_e_um_valor_so_para_a_maquina_inteira():
     for marca in ("pid", "getpid", "uuid", "owner", "session"):
         assert marca not in fonte.split("REG_PATH")[1][:400], f"nenhum {marca} no caminho"
 
-    escrita = fonte[fonte.index("def definir_autoselect"):fonte.index("def limpar_autoselect")]
-    assert "winreg.DeleteValue(key, str(i))" in escrita, "apaga o que estava la"
+    # Fatia 13A: a escrita deixou de apagar o que estava la — agora ela recusa a
+    # colmeia inteira quando um nome nosso ja esta ocupado por outro conteudo. O
+    # risco de concorrencia continua sendo o caminho fixo e sem dono; o que saiu
+    # foi a parte destrutiva.
+    escrita = fonte[
+        fonte.index("def definir_autoselect"):fonte.index("def remover_autoselect_owned")
+    ]
+    assert "DeleteValue" not in escrita
+    assert "if _conflita(key, esperados):" in escrita
 
 
 def test_a_policy_vai_para_as_duas_colmeias_inclusive_a_da_maquina():

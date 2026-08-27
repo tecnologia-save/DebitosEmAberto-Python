@@ -48,8 +48,15 @@ class RegistroFalso:
 
     def OpenKeyEx(self, colmeia, caminho, reservado, acesso):
         """LEITURA nunca e barrada: sem elevacao o HKLM continua legivel — o que
-        falha e escrever nele. E essa assimetria que produz colmeias divergentes."""
+        falha e escrever nele. E essa assimetria que produz colmeias divergentes.
+
+        Abrir para ESCRITA numa colmeia protegida falha, e falha aqui: e assim
+        que o Windows se comporta, e e o que permite exercitar uma remocao de
+        valor que nao consegue acontecer.
+        """
         self.operacoes.append(("OpenKeyEx", colmeia, caminho))
+        if acesso == self.KEY_ALL_ACCESS and colmeia in self.protegidas:
+            raise PermissionError(f"acesso de escrita negado a {colmeia}")
         if caminho not in self.dados[colmeia]:
             raise FileNotFoundError(caminho)
         return Chave(colmeia, caminho)

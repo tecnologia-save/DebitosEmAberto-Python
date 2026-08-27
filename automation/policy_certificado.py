@@ -107,6 +107,10 @@ COLMEIAS_DIVERGENTES = "as duas colmeias discordam entre si"
 CONTEUDO_NAO_RECONHECIDO = "conteúdo em formato não reconhecido"
 REGRAS_ADICIONAIS = "há regras além das que a automação escreve"
 COLMEIA_ILEGIVEL = "uma das colmeias não pôde ser lida"
+# Este nao e sobre configuracao alheia: e sobre a NOSSA, que ficou. Cabe no
+# mesmo erro porque a consequencia para quem opera e a mesma — ha configuracao
+# de auto-selecao neste host que a execucao nao pode usar nem remover.
+POLICY_ANTERIOR_NAO_REMOVIDA = "a configuração anterior desta execução não saiu"
 
 
 class ConfiguracaoDeHostIncompativel(Exception):
@@ -279,7 +283,6 @@ def garantir_policy(
     ler_cn_atual: Callable[[], str],
     lancar_guardiao: Callable[[str], int],
     aguardar: Callable[[], None],
-    policy_ja_e_nossa: bool = False,
 ) -> ResultadoDaPolicy:
     """Garante que o Chrome vai auto-selecionar o certificado de `cn`.
 
@@ -297,22 +300,21 @@ def garantir_policy(
     `avaliar_inicio` roda ANTES de `lancar_guardiao`, que e a unica coisa aqui
     que escreve no registro. Nao ha caminho que escreva sem passar por ela.
 
-    `policy_ja_e_nossa` e a unica forma de pular essa avaliacao, e existe porque
-    dentro de UMA execucao a posse e demonstravel: quem chama detem o controle
-    do guardiao que escreveu a policy anterior. E o caso da troca de certificado
-    quando a liberacao nao confirmou — a policy que ainda esta la e nossa, com
-    handle e tudo, e recusa-la seria a automacao se barrando a si mesma. Entre
-    execucoes distintas nao ha nada equivalente, e por isso o padrao e False.
+    NAO HA MAIS EXCECAO (fatia 13A). Ate aqui existia `policy_ja_e_nossa`: dentro
+    de uma execucao a posse era demonstravel, e isso autorizava a escrita a passar
+    por cima da policy anterior — a nossa. Com a escrita nao destrutiva ninguem
+    passa por cima de nada, nem da propria; o que sai, sai por comparacao no
+    momento da remocao. Quando a remocao anterior nao confirma, quem para e o
+    chamador, antes de pedir policy nova.
     """
-    if not policy_ja_e_nossa:
-        decisao = avaliar_inicio()
-        if decisao.decisao == RECUSAR:
-            raise ConfiguracaoDeHostIncompativel(decisao.motivo)
-        if decisao.decisao == EMPRESTAR:
-            # EMPRESTADA, e nao nossa: nenhum guardiao e lancado, nada e escrito
-            # e nada sera removido no fim. Ver POLICY_STALE_OWNERSHIP_GAP — so
-            # que agora e uma escolha, e nao um acidente de leitura.
-            return ResultadoDaPolicy(JA_ATIVA, tem_guardiao=False)
+    decisao = avaliar_inicio()
+    if decisao.decisao == RECUSAR:
+        raise ConfiguracaoDeHostIncompativel(decisao.motivo)
+    if decisao.decisao == EMPRESTAR:
+        # EMPRESTADA, e nao nossa: nenhum guardiao e lancado, nada e escrito
+        # e nada sera removido no fim. Ver POLICY_STALE_OWNERSHIP_GAP — so
+        # que agora e uma escolha, e nao um acidente de leitura.
+        return ResultadoDaPolicy(JA_ATIVA, tem_guardiao=False)
 
     controle = lancar_guardiao(cn)
     if controle is None:
@@ -323,8 +325,20 @@ def garantir_policy(
             return ResultadoDaPolicy(ATIVADA, tem_guardiao=True, controle=controle)
         aguardar()
 
-    # O guardiao subiu mas a policy nao ficou visivel DESTE processo — e o Chrome,
-    # que roda no mesmo contexto, tambem nao a veria. Elevacao em outra conta.
+    # O guardiao subiu e a policy nao apareceu. Antes de degradar, PERGUNTAR POR
+    # QUE (fatia 13A): desde que ele revalida o host antes de escrever, uma das
+    # razoes possiveis e que o estado mudou entre a decisao daqui e a escrita de
+    # la — e nesse caso degradar seria abrir o Chrome com configuracao de outra
+    # pessoa, exatamente o que o RECUSAR existe para impedir.
+    #
+    # O canal e o proprio registro: nao ha IPC novo, so uma segunda leitura.
+    segunda = avaliar_inicio()
+    if segunda.decisao == RECUSAR:
+        raise ConfiguracaoDeHostIncompativel(segunda.motivo)
+
+    # Nao foi isso. Continua sendo o caso conhecido: a policy nao ficou visivel
+    # DESTE processo — e o Chrome, que roda no mesmo contexto, tambem nao a
+    # veria. Elevacao em outra conta.
     return ResultadoDaPolicy(NAO_APARECEU, tem_guardiao=True, controle=controle)
 
 

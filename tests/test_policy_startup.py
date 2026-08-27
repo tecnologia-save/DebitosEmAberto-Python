@@ -308,22 +308,25 @@ def test_emprestar_nunca_chega_a_escrever():
     assert resultado.sera_limpa is False, "e nada sera removido no fim"
 
 
-def test_a_posse_dentro_da_execucao_pula_a_avaliacao_e_so_ela():
-    """`policy_ja_e_nossa` e a unica porta, e ela nao pula mais nada."""
+def test_nao_ha_mais_porta_para_pular_a_avaliacao():
+    """ANTES (12D): `policy_ja_e_nossa=True` pulava a avaliacao inteira, porque
+    a posse dentro da execucao autorizava sobrescrever a policy anterior.
+
+    AGORA (13A) a escrita nao sobrescreve nada, entao nao ha o que autorizar. A
+    avaliacao acontece SEMPRE, e e a unica porta para `lancar_guardiao`.
+    """
     avaliacoes = []
 
     resultado = policy_certificado.garantir_policy(
         CN_NOSSO,
-        avaliar_inicio=lambda: avaliacoes.append(1),
+        avaliar_inicio=lambda: avaliacoes.append(1) or decidir(),
         ler_cn_atual=lambda: CN_NOSSO,
         lancar_guardiao=lambda cn: object(),
         aguardar=lambda: None,
-        policy_ja_e_nossa=True,
     )
 
-    assert avaliacoes == []
+    assert avaliacoes == [1], "avaliou, e nao ha argumento que evite isso"
     assert resultado.situacao == policy_certificado.ATIVADA
-    assert resultado.tem_guardiao is True, "continua sendo nossa, e sera limpa"
 
 
 # ── O erro que o operador ve ──────────────────────────────────────────────────

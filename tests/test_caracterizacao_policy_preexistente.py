@@ -54,7 +54,7 @@ def semear(registro, colmeia, cn):
     }
 
 
-def protocolo(cn, lancamentos, nossa=False):
+def protocolo(cn, lancamentos):
     """`garantir_policy` com a leitura real e um guardiao falso que ESCREVE.
 
     E por isso que os testes abaixo veem o efeito no registro, e nao apenas a
@@ -73,7 +73,6 @@ def protocolo(cn, lancamentos, nossa=False):
         ler_cn_atual=cert_windows.policy_cn,
         lancar_guardiao=lancar,
         aguardar=lambda: None,
-        policy_ja_e_nossa=nossa,
     )
 
 
@@ -384,30 +383,25 @@ def test_i_a_limpeza_continua_levando_tudo_e_por_isso_nao_a_alcancamos(registro)
 
 # ── J · posse dentro da execucao ──────────────────────────────────────────────
 
-def test_j_a_nossa_propria_policy_nao_e_recusada_no_meio_da_execucao(registro):
-    """A posse DENTRO de uma execucao e demonstravel: quem chama detem o
-    controle do guardiao que escreveu a policy anterior. Sem esta porta, uma
-    liberacao que nao confirmou faria a automacao se barrar a si mesma na troca
-    de certificado."""
-    semear(registro, "HKCU", CN_ALHEIO)
-    lancamentos = []
+def test_j_nem_a_nossa_propria_policy_e_sobrescrita(registro):
+    """ANTES (12D): existia `policy_ja_e_nossa`. Dentro de uma execucao a posse
+    era demonstravel — quem chamava detinha o controle do guardiao que escreveu
+    a policy anterior — e isso autorizava a escrita a passar por cima dela.
 
-    resultado = protocolo(CN_NOSSO, lancamentos, nossa=True)
-
-    assert resultado.situacao == policy_certificado.ATIVADA
-    assert lancamentos == [CN_NOSSO]
-
-
-def test_j_e_o_padrao_e_nao_ter_essa_posse(registro):
-    """Entre execucoes distintas nao ha nada equivalente ao controle do
-    guardiao, e por isso o padrao e False."""
+    AGORA (13A) ninguem passa por cima de nada. A escrita e nao destrutiva, o
+    que sai sai por comparacao no momento da remocao, e a porta desapareceu:
+    quando a remocao anterior nao confirma, quem para e o chamador, antes de
+    pedir policy nova.
+    """
     import inspect
 
-    parametro = inspect.signature(
-        policy_certificado.garantir_policy
-    ).parameters["policy_ja_e_nossa"]
+    parametros = list(
+        inspect.signature(policy_certificado.garantir_policy).parameters
+    )
 
-    assert parametro.default is False
+    assert "policy_ja_e_nossa" not in parametros
+    assert parametros == ["cn", "avaliar_inicio", "ler_cn_atual",
+                          "lancar_guardiao", "aguardar"]
 
 
 def test_j_a_execucao_seguinte_a_um_crash_duplo_para_em_vez_de_herdar(registro):

@@ -112,9 +112,7 @@ def abrir_sessao(
     )
 
 
-def garantir_policy_do_windows(
-    cn: str, policy_ja_e_nossa: bool = False
-) -> ResultadoDaPolicy:
+def garantir_policy_do_windows(cn: str) -> ResultadoDaPolicy:
     """TRANSITIONAL — a policy desta maquina, com as primitivas ja existentes.
 
     `cert_windows` fica fora de `automation/` e conhece registro, UAC e o
@@ -125,14 +123,11 @@ def garantir_policy_do_windows(
     auto-selecao no host que esta execucao nao instalou e nao pode usar com
     seguranca (fatia 12D). Nada e escrito antes dessa decisao.
 
-    `policy_ja_e_nossa` diz que o chamador DETEM o controle do guardiao que
-    escreveu a policy atual. So dentro de uma execucao isso e demonstravel.
-
     Findings da fatia 7A ainda abertos: GLOBAL_CERT_POLICY_CONCURRENCY_RISK.
     """
     import cert_windows
 
-    return cert_windows.iniciar_guarda_detalhado(cn, policy_ja_e_nossa)
+    return cert_windows.iniciar_guarda_detalhado(cn)
 
 
 def liberar_policy_do_windows(controle: object) -> bool:
@@ -155,6 +150,10 @@ def liberar_policy_do_windows(controle: object) -> bool:
     return policy_certificado.liberar_policy(
         controle,
         pedir_limpeza=cert_windows.pedir_limpeza,
-        policy_ainda_existe=cert_windows.policy_existe,
+        # A pergunta e "sobrou estado NOSSO?", e nao "sobrou estado?" (fatia
+        # 13A). Desde que a limpeza deixou de apagar a chave inteira, uma regra
+        # externa que preservamos de proposito continua no host — e prende-lo
+        # por causa dela seria transformar preservacao em bloqueio.
+        policy_ainda_existe=lambda: cert_windows.policy_owned_ainda_existe(controle),
         aguardar=lambda: time.sleep(policy_certificado.INTERVALO_LIBERACAO_S),
     )

@@ -62,15 +62,20 @@ def test_a_as_urls_cobrem_govbr_e_receita(registro):
     assert any("receita.fazenda.gov.br" in u for u in cert_windows.CERT_URLS)
 
 
-def test_a_reescrita_substitui_os_valores_contiguos(registro):
-    """A limpeza apaga 1, 2, 3... ate o primeiro buraco — nao a chave inteira."""
+def test_a_reescrita_NAO_substitui_mais_os_valores(registro):
+    """ANTES: a escrita apagava 1, 2, 3... ate o primeiro buraco e escrevia por
+    cima; um segundo `definir_autoselect` trocava o CN da chave.
+
+    AGORA (13A) ela e nao destrutiva: nome ocupado por conteudo que nao e o
+    nosso ESPERADO faz a colmeia inteira ser deixada como esta. Trocar de
+    certificado passa a exigir remover a policy anterior primeiro.
+    """
     cert_windows.definir_autoselect(CN_A)
 
-    cert_windows.definir_autoselect(CN_B)
+    assert cert_windows.definir_autoselect(CN_B) is False
 
     valores = registro.valores("HKCU", CAMINHO)
-    assert len(valores) == len(cert_windows.CERT_URLS)
-    assert json.loads(valores["1"])["filter"]["SUBJECT"]["CN"] == CN_B
+    assert json.loads(valores["1"])["filter"]["SUBJECT"]["CN"] == CN_A
 
 
 def test_a_defeito_valor_fora_da_sequencia_sobrevive_a_reescrita(registro):
@@ -102,7 +107,7 @@ def test_a_nenhuma_colmeia_disponivel_apenas_avisa(monkeypatch, capsys):
     """Nao levanta: o chamador descobre pela leitura, nao por exception."""
     registro_com(monkeypatch, protegidas=("HKCU", "HKLM"))
 
-    assert cert_windows.definir_autoselect(CN_A) is None
+    assert cert_windows.definir_autoselect(CN_A) is False
     assert "FALHA" in capsys.readouterr().out
 
 
@@ -144,25 +149,31 @@ def test_b_diagnostico_mostra_as_duas_colmeias(monkeypatch):
 def test_p_as_colmeias_podem_discordar(registro):
     """PARTIAL_POLICY_STATE: nada garante que HKCU e HKLM concordem.
 
-    Basta a limpeza falhar numa delas e a escrita seguinte falhar na outra.
+    ANTES a propria automacao produzia a divergencia — escrever CN_A, congelar
+    HKLM, escrever CN_B, e as colmeias ficavam apontando para certificados
+    diferentes. Desde a 13A a nossa escrita nao sobrescreve mais nada, entao a
+    divergencia so entra de fora. O estado continua possivel; a automacao
+    deixou de ser uma das formas de cria-lo.
     """
     cert_windows.definir_autoselect(CN_A)
-    registro.protegidas = {"HKLM"}          # HKLM congela em CN_A
-    cert_windows.definir_autoselect(CN_B)   # HKCU passa a CN_B
+    registro.dados["HKLM"][CAMINHO]["1"] = json.dumps(
+        {"pattern": cert_windows.CERT_URLS[0], "filter": {"SUBJECT": {"CN": CN_B}}}
+    )
 
-    assert json.loads(registro.valores("HKCU", CAMINHO)["1"])["filter"]["SUBJECT"]["CN"] == CN_B
-    assert json.loads(registro.valores("HKLM", CAMINHO)["1"])["filter"]["SUBJECT"]["CN"] == CN_A
+    assert json.loads(registro.valores("HKCU", CAMINHO)["1"])["filter"]["SUBJECT"]["CN"] == CN_A
+    assert json.loads(registro.valores("HKLM", CAMINHO)["1"])["filter"]["SUBJECT"]["CN"] == CN_B
 
 
 def test_p_policy_cn_reporta_apenas_a_primeira_colmeia_nao_vazia(registro):
     """E a consequencia perigosa do teste acima: com as colmeias discordando,
     `policy_cn()` responde HKCU e nao diz que HKLM tem OUTRO CN."""
     cert_windows.definir_autoselect(CN_A)
-    registro.protegidas = {"HKLM"}
-    cert_windows.definir_autoselect(CN_B)
+    registro.dados["HKLM"][CAMINHO]["1"] = json.dumps(
+        {"pattern": cert_windows.CERT_URLS[0], "filter": {"SUBJECT": {"CN": CN_B}}}
+    )
 
-    assert cert_windows.policy_cn() == CN_B, "so HKCU"
-    assert "HKLM=" + CN_A in cert_windows.diagnostico(), "o diagnostico ve, o policy_cn nao"
+    assert cert_windows.policy_cn() == CN_A, "so HKCU"
+    assert "HKLM=" + CN_B in cert_windows.diagnostico(), "o diagnostico ve, o policy_cn nao"
 
 
 def test_p_limpeza_parcial_deixa_a_outra_colmeia(monkeypatch):
@@ -400,14 +411,24 @@ def test_m_esperar_pelo_cn_e_nao_pela_existencia_torna_a_troca_segura(
 
     Fatia 12D: o host começa LIMPO e é o guardião que escreve o CN errado. Antes
     a policy de CN_B já estava lá desde o início; hoje esse estado é recusado
-    antes do polling, e a asserção sobre o polling é a mesma."""
+    antes do polling, e a asserção sobre o polling é a mesma.
+
+    Fatia 13A: o desfecho ficou MELHOR que `False`. Quando o polling estoura, o
+    protocolo reavalia o host antes de degradar — e o que ele encontra e uma
+    policy completa de outro certificado. Isso e recusa, e nao "policy nao
+    apareceu": degradar aqui abriria o Chrome com o certificado errado, que e
+    exatamente o que este teste sempre existiu para impedir.
+    """
     def guardiao_confuso(args, wait_ms=None):
         cert_windows.definir_autoselect(CN_B)
         return 0
 
     monkeypatch.setattr(cert_windows, "_runas", guardiao_confuso)
 
-    assert cert_windows.iniciar_guarda(CN_A) is False
+    with pytest.raises(policy_certificado.ConfiguracaoDeHostIncompativel) as erro:
+        cert_windows.iniciar_guarda(CN_A)
+
+    assert erro.value.motivo == policy_certificado.OUTRO_CERTIFICADO
 
 
 # ── J · O · o guardião e a limpeza cega ───────────────────────────────────────
@@ -454,7 +475,10 @@ def test_j_o_guardiao_escreve_espera_o_pid_e_limpa(registro, guardiao_isolado, m
     cert_windows.guardiao(4242, CN_A)
 
     assert k32.esperas == [0xFFFFFFFF], "espera indefinidamente pelo PID"
-    assert cert_windows.policy_existe() is False, "limpou ao fim"
+    # Fatia 13A: a limpeza remove os valores OWNED e deixa a chave, que pode ter
+    # ficado vazia. `policy_existe` responde "ha estado"; a pergunta do ciclo de
+    # vida e a outra.
+    assert cert_windows.policy_owned_existe(CN_A) is False, "limpou o que era nosso"
 
 
 def test_o_o_guardiao_limpa_sem_olhar_de_quem_e_a_policy(
@@ -488,8 +512,8 @@ def test_j_a_limpeza_insiste_ate_dez_vezes(registro, guardiao_isolado, monkeypat
     próprio lease do host, que nunca é sinalizado. Sem CPU, sem laço, e o host
     continua ocupado. HOST_EXCLUSIVITY_FAIL_CLOSED.
     """
-    monkeypatch.setattr(cert_windows, "limpar_autoselect", lambda: None)
-    monkeypatch.setattr(cert_windows, "policy_existe", lambda: True)
+    monkeypatch.setattr(cert_windows, "remover_autoselect_owned", lambda cn: None)
+    monkeypatch.setattr(cert_windows, "policy_owned_existe", lambda cn: True)
     dormidas = []
     monkeypatch.setattr(cert_windows.time, "sleep", lambda s: dormidas.append(s))
 

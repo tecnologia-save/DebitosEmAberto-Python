@@ -52,174 +52,256 @@ def test_2_cria_a_chave_quando_ela_nao_existe(registro):
     assert registro.tem("HKCU", CAMINHO)
 
 
-def test_2_nao_enumera_nada_antes_de_escrever(registro):
-    """Ele nao pergunta o que existe. Apaga por indice e escreve por cima."""
+def test_2_agora_ele_CONFERE_antes_de_escrever(registro):
+    """ANTES: nao perguntava o que existia — apagava por indice e escrevia por
+    cima. AGORA le cada nome nosso antes de tocar em qualquer um."""
     fonte = inspect.getsource(cert_windows.definir_autoselect)
 
-    assert "EnumValue" not in fonte
-    assert "inventario_da_policy" not in fonte
-    assert "DeleteValue" in fonte
+    assert "DeleteValue" not in fonte, "nenhuma remocao no caminho da escrita"
+    assert "if _conflita(key, esperados):" in fonte
+    assert "is _AUSENTE" in fonte, "so preenche o que falta"
 
 
-def test_2_apaga_1_2_3_ate_o_primeiro_buraco(registro):
-    """A limpeza previa e um laco por indice que para na primeira ausencia."""
-    registro.dados["HKCU"][CAMINHO] = {"1": "x", "2": "y", "5": externo()}
-
-    cert_windows.definir_autoselect(CN_A)
-
-    apagados = [op for op in registro.operacoes if op[0] == "SetValueEx"]
-    assert apagados, "escreveu"
-    # "1" e "2" foram apagados; "3" falhou e interrompeu o laco.
-    assert set(registro.valores("HKCU", CAMINHO)) == {
+def test_2_o_estado_owned_e_deterministico_e_dispensa_guardar_copia(registro):
+    """E o que torna a comparacao possivel sem inventar marcador de dono: dado o
+    CN, os valores saem sempre iguais."""
+    assert cert_windows._valores_esperados(CN_A) == cert_windows._valores_esperados(CN_A)
+    assert cert_windows._valores_esperados(CN_A) != cert_windows._valores_esperados(CN_B)
+    assert set(cert_windows._valores_esperados(CN_A)) == {
         str(i) for i in range(1, QUANTAS + 1)
     }
 
 
-def test_2_set_value_sobrescreve_os_nomes_de_1_a_N(registro):
-    """Mesmo o que o laco de apagar nao alcancou: `SetValueEx` escreve por cima
-    de 1..N, e um valor externo nesse intervalo desaparece de qualquer jeito."""
+def test_2_nome_ocupado_por_conteudo_alheio_faz_a_colmeia_inteira_ser_deixada(
+    registro,
+):
+    """ANTES: `SetValueEx` escrevia por cima de 1..N e o valor externo sumia.
+
+    AGORA a colmeia sai inteira — e sai inteira, e nao valor a valor, para nao
+    deixar meia policy instalada: metade das URLs no nosso CN e metade no de
+    outra pessoa seria pior do que nenhuma.
+    """
+    registro.dados["HKCU"][CAMINHO] = {"5": externo()}
+    registro.protegidas = {"HKLM"}
+
+    assert cert_windows.definir_autoselect(CN_A) is False
+
+    assert registro.valores("HKCU", CAMINHO) == {"5": externo()}, "nada mudou"
+
+
+def test_2_a_outra_colmeia_ainda_e_escrita(registro):
+    """Conflito e por colmeia. HKLM limpo continua recebendo a nossa policy."""
     registro.dados["HKCU"][CAMINHO] = {"5": externo()}
 
+    assert cert_windows.definir_autoselect(CN_A) is True
+
+    assert registro.valores("HKCU", CAMINHO) == {"5": externo()}
+    assert len(registro.valores("HKLM", CAMINHO)) == QUANTAS
+
+
+def test_2_valor_nosso_que_ja_esta_certo_nao_e_reescrito(registro):
+    """Idempotente: escrever duas vezes o mesmo CN nao produz escrita nenhuma na
+    segunda."""
     cert_windows.definir_autoselect(CN_A)
+    registro.operacoes.clear()
 
-    lido = json.loads(registro.valores("HKCU", CAMINHO)["5"])
-    assert lido["filter"]["SUBJECT"]["CN"] == CN_A, "o valor externo se foi"
-    assert "intranet" not in json.dumps(registro.valores("HKCU", CAMINHO))
+    assert cert_windows.definir_autoselect(CN_A) is True
 
-
-def test_2_valor_fora_do_intervalo_sobrevive(registro):
-    """Nome acima de N: o laco para antes e o `SetValueEx` nao o alcanca."""
-    registro.dados["HKCU"][CAMINHO] = {"99": externo()}
-
-    cert_windows.definir_autoselect(CN_A)
-
-    assert registro.valores("HKCU", CAMINHO)["99"] == externo()
-
-
-def test_2_nome_nao_numerico_sobrevive(registro):
-    registro.dados["HKCU"][CAMINHO] = {"RegraDaEmpresa": externo()}
-
-    cert_windows.definir_autoselect(CN_A)
-
-    assert "RegraDaEmpresa" in registro.valores("HKCU", CAMINHO)
-
-
-def test_2_a_ordem_e_hkcu_e_depois_hklm(registro):
-    cert_windows.definir_autoselect(CN_A)
-
-    criacoes = [op for op in registro.operacoes if op[0] == "CreateKeyEx"]
-    assert [op[1] for op in criacoes] == ["HKCU", "HKLM"]
-
-
-def test_2_uma_colmeia_indisponivel_nao_interrompe_a_outra(monkeypatch):
-    falso = RegistroFalso(protegidas=("HKLM",))
-    monkeypatch.setattr(cert_windows, "winreg", falso)
-    monkeypatch.setattr(cert_windows, "_COLMEIAS", (("HKCU", "HKCU"), ("HKLM", "HKLM")))
-
-    cert_windows.definir_autoselect(CN_A)
-
-    assert falso.tem("HKCU", CAMINHO)
-    assert not falso.tem("HKLM", CAMINHO)
+    assert not [op for op in registro.operacoes if op[0] == "SetValueEx"]
 
 
 # ── §4 · a janela entre a decisao e a escrita ─────────────────────────────────
 
-def test_4_estado_externo_surgido_na_janela_e_SOBRESCRITO(registro):
-    """POLICY_WRITE_TOCTOU_EXTERNAL_STATE_RISK.
+def test_4_estado_externo_surgido_na_janela_NAO_e_mais_sobrescrito(registro):
+    """POLICY_WRITE_TOCTOU_EXTERNAL_STATE_RISK, fechado no lado da escrita.
 
-    A decisao de startup viu o host vazio e disse CRIAR. Entre a decisao e a
-    escrita — que acontece noutro processo, depois de uma elevacao de UAC —
-    alguem instalou uma regra no indice 1. A nossa escrita a apaga sem olhar.
+    ANTES: a decisao de startup via o host vazio e dizia CRIAR; entre a decisao e
+    a escrita — noutro processo, depois de um prompt de UAC — alguem instalava
+    uma regra no indice 1, e a nossa escrita a apagava sem olhar.
+
+    AGORA a escrita confere, encontra conteudo que nao e o nosso, e nao escreve.
     """
     registro.dados["HKCU"][CAMINHO] = {"1": externo()}
 
     cert_windows.definir_autoselect(CN_A)
 
-    lido = json.loads(registro.valores("HKCU", CAMINHO)["1"])
-    assert lido["filter"]["SUBJECT"]["CN"] == CN_A
+    assert registro.valores("HKCU", CAMINHO)["1"] == externo()
 
 
-def test_4_e_o_guardiao_nao_revalida_nada_antes_de_escrever(registro):
-    """A autorizacao vem da decisao do processo principal, tomada antes da
-    elevacao. Entre ela e esta linha nao ha nenhuma segunda leitura."""
+def test_4_e_o_guardiao_REVALIDA_antes_de_escrever(registro):
+    """ANTES: a autorizacao vinha da decisao do processo principal, tomada antes
+    da elevacao, e entre ela e a escrita nao havia nenhuma segunda leitura.
+
+    AGORA a revalidacao acontece ja elevado, a um passo da escrita: quem decide
+    se ainda e seguro escrever e quem esta prestes a escrever.
+    """
     fonte = inspect.getsource(cert_windows.guardiao)
     antes = fonte[: fonte.index("definir_autoselect(cn)")]
 
-    assert "avaliar_estado_inicial" not in antes
-    assert "inventario_da_policy" not in antes
+    assert "avaliar_estado_inicial(" in antes
+    assert "inventario_da_policy()" in antes
+    assert "abortando sem escrever" in antes
 
 
-def test_4_a_janela_e_real_porque_a_escrita_mora_noutro_processo(registro):
-    """Nao e uma janela teorica de microssegundos: entre a decisao e a escrita
-    ha um `ShellExecuteExW` com verbo runas, um prompt de UAC e a subida de um
-    processo novo."""
-    fonte = inspect.getsource(cert_windows._lancar_guardiao)
+def test_4_sao_duas_camadas_e_a_segunda_e_a_garantia(registro):
+    """A revalidacao encurta a janela; a escrita nao destrutiva a fecha. Mesmo
+    que alguem escreva entre as duas, nada nosso passa por cima."""
+    fonte = inspect.getsource(cert_windows.definir_autoselect)
 
-    assert "_runas(" in fonte
-    assert "--guard" in fonte
+    assert "if _conflita(key, esperados):" in fonte
+    assert "DeleteValue" not in fonte
 
 
-# ── §3 · o que a limpeza faz com o que nao e nosso ────────────────────────────
+def test_4_a_janela_continua_existindo_e_fica_registrada(registro):
+    """Entre `_conflita` e o `SetValueEx` ainda ha um intervalo. Ele deixou de
+    ser um prompt de UAC e passou a ser um punhado de chamadas de registro —
+    menor, e nao inexistente."""
+    fonte = inspect.getsource(cert_windows.definir_autoselect)
 
-def test_3_a_limpeza_apaga_a_chave_inteira(registro):
+    assert "janela" in fonte.lower(), "o docstring nomeia o que resta"
+
+
+# ── §9 · §10 · §15 · a limpeza por comparacao ────────────────────────────────
+
+def test_9_remove_o_que_e_nosso(registro):
     cert_windows.definir_autoselect(CN_A)
+
+    cert_windows.remover_autoselect_owned(CN_A)
+
+    assert registro.valores("HKCU", CAMINHO) == {}
+    assert cert_windows.policy_owned_existe(CN_A) is False
+
+
+def test_9_nunca_chama_DeleteKey(registro):
+    """GUARDIAN_CLEANUP_DELETES_WHOLE_KEY: a chamada saiu do caminho owned."""
+    cert_windows.definir_autoselect(CN_A)
+    registro.operacoes.clear()
+
+    cert_windows.remover_autoselect_owned(CN_A)
+
+    assert not [op for op in registro.operacoes if op[0] == "DeleteKey"]
+    # Marcador de CHAMADA: a propria docstring da funcao diz "nunca DeleteKey".
+    fonte = inspect.getsource(cert_windows.remover_autoselect_owned)
+    assert "winreg.DeleteKey(" not in fonte
+
+
+def test_10_valor_extra_de_outra_origem_e_preservado(registro):
+    """Nos escrevemos 1..N; alguem acrescentou outro. Ele fica."""
+    cert_windows.definir_autoselect(CN_A)
+    registro.dados["HKCU"][CAMINHO]["RegraDaEmpresa"] = externo()
+
+    cert_windows.remover_autoselect_owned(CN_A)
+
+    assert registro.valores("HKCU", CAMINHO) == {"RegraDaEmpresa": externo()}
+
+
+def test_15_nome_nosso_sobrescrito_por_terceiro_e_preservado(registro):
+    """Escrevemos `1`; alguem trocou o conteudo. O nosso ja nao esta la, e a
+    posse daquele nome terminou na sobrescrita. Restaurar o nosso seria destruir
+    o de outra pessoa."""
+    cert_windows.definir_autoselect(CN_A)
+    registro.dados["HKCU"][CAMINHO]["1"] = externo()
+
+    cert_windows.remover_autoselect_owned(CN_A)
+
+    assert registro.valores("HKCU", CAMINHO) == {"1": externo()}
+
+
+def test_11_a_chave_pode_ficar_vazia_e_fica(registro):
+    """Conferir que esta vazia e so entao apaga-la abriria uma corrida nova, por
+    um ganho cosmetico. E a decisao de startup ja trata chave vazia como host
+    limpo."""
+    from automation import policy_certificado
+
+    cert_windows.definir_autoselect(CN_A)
+    cert_windows.remover_autoselect_owned(CN_A)
+
+    assert registro.valores("HKCU", CAMINHO) == {}, "sem valores"
+    assert CAMINHO in registro.dados["HKCU"], "e a chave continua existindo"
+    assert policy_certificado.avaliar_estado_inicial(
+        cert_windows.inventario_da_policy(), CN_A, tuple(cert_windows.CERT_URLS)
+    ).decisao == policy_certificado.CRIAR
+
+
+# ── §12 · §14 · §18 · a confirmacao owned ─────────────────────────────────────
+
+def test_12_estado_externo_NAO_conta_como_estado_nosso(registro):
+    """A distincao que a fatia inteira existe para fazer."""
+    registro.dados["HKCU"][CAMINHO] = {"RegraDaEmpresa": externo()}
+
+    assert cert_windows.policy_existe() is True, "ha estado no host"
+    assert cert_windows.policy_owned_existe(CN_A) is False, "e nao e nosso"
+
+
+def test_12_estado_nosso_conta(registro):
+    cert_windows.definir_autoselect(CN_A)
+
+    assert cert_windows.policy_owned_existe(CN_A) is True
+    assert cert_windows.policy_owned_existe(CN_B) is False, "de outro CN, nao"
+
+
+def test_12_colmeia_ilegivel_continua_fail_closed(registro, monkeypatch):
+    """UNREADABLE_HIVE_BLOCKS_HOST_RELEASE nao foi resolvido aqui: ignorancia
+    sobre uma colmeia pode esconder estado nosso."""
+    def negar(colmeia, caminho, reservado, acesso):
+        if colmeia == "HKLM":
+            raise PermissionError("acesso negado")
+        raise FileNotFoundError(caminho)
+
+    monkeypatch.setattr(registro, "OpenKeyEx", negar)
+
+    assert cert_windows.policy_owned_existe(CN_A) is True
+
+
+def test_12_o_controle_do_guardiao_carrega_o_CN_e_nao_o_mostra(registro):
+    """ANTES: `ControleDoGuardiao` guardava so o canal, e nada permitia
+    reconstruir o estado escrito por aquele guardiao.
+
+    AGORA carrega o CN — que e tudo o que a comparacao precisa, e menos do que
+    guardar copia dos payloads. Fora do `repr`, porque um CN identifica a
+    empresa. DEFESA ADICIONAL, nao garantia: acesso ao atributo continua expondo,
+    e por isso so `cert_windows` o le.
+    """
+    controle = cert_windows.ControleDoGuardiao(evento=1, nome="canal", cn=CN_A)
+
+    assert controle.cn == CN_A
+    assert CN_A not in repr(controle)
+    assert "11111111000191" not in repr(controle)
+
+
+def test_14_a_confirmacao_ignora_o_externo_e_enxerga_o_nosso(registro):
+    """§14: CLEANUP_CONFIRMED quando nenhum valor ainda existente e nosso — e
+    nao quando a chave sumiu, nem quando nao sobrou nada de ninguem."""
+    cert_windows.definir_autoselect(CN_A)
+    registro.dados["HKCU"][CAMINHO]["RegraDaEmpresa"] = externo()
+
+    assert cert_windows._limpar_confirmando(CN_A, lambda _m: None) is True
+    assert registro.valores("HKCU", CAMINHO) == {"RegraDaEmpresa": externo()}
+
+
+def test_18_fail_closed_nao_significa_bloquear_por_estado_alheio(registro):
+    """A distincao obrigatoria do §18: nao liberar enquanto o NOSSO permanece;
+    e nao ficar preso porque preservamos o de outra pessoa."""
+    registro.dados["HKCU"][CAMINHO] = {"RegraDaEmpresa": externo()}
+
+    assert cert_windows._limpar_confirmando(CN_A, lambda _m: None) is True
+
+
+def test_17_o_crash_path_usa_a_MESMA_regra(registro):
+    """Nao ha uma limpeza para o caminho normal e outra para o crash: os dois
+    passam por `_limpar_confirmando`, e ela e a nao destrutiva."""
+    guarda = inspect.getsource(cert_windows.guardiao)
+
+    assert guarda.count("_limpar_confirmando(cn, _log)") == 2
+    assert "limpar_autoselect()" not in guarda, "o DeleteKey saiu do guardiao"
+
+
+def test_26_o_clean_manual_continua_apagando_tudo(registro):
+    """`limpar_autoselect` nao foi tocada: ela e a ferramenta do operador, e la
+    quem manda apagar a chave inteira e uma pessoa."""
+    cert_windows.definir_autoselect(CN_A)
+    registro.dados["HKCU"][CAMINHO]["RegraDaEmpresa"] = externo()
 
     cert_windows.limpar_autoselect()
 
     assert not registro.tem("HKCU", CAMINHO)
-    assert ("DeleteKey", "HKCU", CAMINHO) in registro.operacoes
-
-
-def test_3_e_leva_junto_o_valor_externo(registro):
-    """GUARDIAN_CLEANUP_DELETES_WHOLE_KEY, medido: a escrita PRESERVA o valor
-    fora do intervalo, e a limpeza o remove."""
-    cert_windows.definir_autoselect(CN_A)
-    registro.dados["HKCU"][CAMINHO]["99"] = externo()
-
-    cert_windows.limpar_autoselect()
-
-    assert not registro.tem("HKCU", CAMINHO), "a regra alheia foi junto"
-
-
-def test_3_a_limpeza_nao_compara_nada(registro):
-    """Nao ha leitura antes da remocao: `DeleteKey` e incondicional."""
-    fonte = inspect.getsource(cert_windows.limpar_autoselect)
-
-    assert "DeleteKey" in fonte
-    assert "DeleteValue" not in fonte
-    assert "QueryValueEx" not in fonte and "EnumValue" not in fonte
-
-
-def test_3_o_guardiao_usa_essa_limpeza_no_caminho_normal_e_no_de_crash(registro):
-    fonte = inspect.getsource(cert_windows)
-    helper = fonte[fonte.index("def _limpar_confirmando"):fonte.index("def guardiao(")]
-
-    assert "limpar_autoselect()" in helper
-    assert "_limpar_confirmando(_log)" in inspect.getsource(cert_windows.guardiao)
-
-
-# ── §12 · a confirmacao de hoje nao distingue nosso de alheio ─────────────────
-
-def test_12_a_confirmacao_pergunta_por_estado_QUALQUER(registro):
-    """Depois da 12D.1 ela e forte — e forte demais para o lifecycle OWNED:
-    um valor externo que decidissemos preservar prenderia o host para sempre."""
-    registro.dados["HKCU"][CAMINHO] = {"RegraDaEmpresa": externo()}
-
-    assert cert_windows.policy_existe() is True, "e nada disso e nosso"
-
-
-def test_12_nao_existe_nenhuma_nocao_de_valor_OWNED_hoje(registro):
-    fonte = inspect.getsource(cert_windows)
-
-    # Marcadores de CHAMADA, e nao a palavra solta: "owned" ja aparece numa
-    # frase de log da fatia 12C, e assertiva de texto que bate em prosa e o
-    # erro que este projeto ja cometeu vezes demais.
-    for marca in ("policy_owned_existe(", "remover_autoselect_owned(",
-                  "_valores_esperados("):
-        assert marca not in fonte, f"nao ha {marca} ainda"
-
-
-def test_12_e_o_controle_do_guardiao_nao_carrega_com_o_que_comparar(registro):
-    """`ControleDoGuardiao` guarda o canal, e nada que permita reconstruir o
-    estado que aquele guardiao escreveu."""
-    assert cert_windows.ControleDoGuardiao.__slots__ == ("evento", "nome")

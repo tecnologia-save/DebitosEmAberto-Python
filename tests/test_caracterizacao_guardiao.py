@@ -227,7 +227,8 @@ def test_e_o_cleanup_normal_passou_a_ser_pedido_ao_elevado():
 
     assert "policy_certificado.liberar_policy(" in codigo
     assert "cert_windows.pedir_limpeza" in codigo
-    assert "cert_windows.policy_existe" in codigo
+    # Fatia 13A: a confirmacao pergunta por estado NOSSO, e nao por estado.
+    assert "cert_windows.policy_owned_ainda_existe(controle)" in codigo
     assert "limpar_autoselect" not in codigo, "o processo comum nao remove mais"
 
 
@@ -279,9 +280,10 @@ def test_f_o_crash_path_limpa_e_e_a_razao_de_o_guardiao_existir():
     helper = fonte[fonte.index("def _limpar_confirmando"):fonte.index("def guardiao(")]
 
     assert "finally:" in guarda
-    assert "_limpar_confirmando(_log)" in guarda
+    assert "_limpar_confirmando(cn, _log)" in guarda
     assert "for _ in range(10):" in helper
-    assert "if not policy_existe():" in helper, "ele ja confirma o que removeu"
+    # Fatia 13A: o que ele confirma e a ausencia do que ELE instalou.
+    assert "if not policy_owned_existe(cn):" in helper, "confirma o que removeu"
 
 
 def test_f_a_confirmacao_do_guardiao_agora_DECIDE_o_que_ele_faz():
@@ -293,7 +295,7 @@ def test_f_a_confirmacao_do_guardiao_agora_DECIDE_o_que_ele_faz():
     assert "return True" in helper and "return False" in helper
 
     guarda = fonte[fonte.index("def guardiao("):fonte.index("def _lancar_guardiao")]
-    assert "if _limpar_confirmando(_log):" in guarda
+    assert "if _limpar_confirmando(cn, _log):" in guarda
 
 
 # ── §28 · o lifecycle novo ────────────────────────────────────────────────────

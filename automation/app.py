@@ -46,6 +46,7 @@ from automation import (
     maquina,
     navegador,
     planilha,
+    policy_certificado,
     representacao,
     status_portal,
 )
@@ -285,13 +286,20 @@ class _Execucao:
         # ate a morte do processo (MULTIPLE_POLICY_GUARDIANS_LIFETIME).
         self.liberar_policy()
 
-        # `policy_ja_e_nossa`: se ainda detemos o controle, a liberacao acima
-        # NAO confirmou e a policy que continua escrita e desta execucao, com
-        # handle e tudo. Sem isto a validacao de estado preexistente recusaria a
-        # nossa propria policy no meio da troca de certificado.
-        resultado = maquina.garantir_policy_do_windows(
-            self.subject_cn(chave), self.controle_da_policy is not None
-        )
+        if self.controle_da_policy is not None:
+            # A liberacao acima NAO confirmou: a policy do certificado anterior
+            # continua instalada, e ela e nossa. Ate a fatia 13A seguiamos assim
+            # mesmo, e o guardiao novo escrevia por cima — inclusive por cima da
+            # nossa. Com a escrita nao destrutiva ninguem escreve por cima de
+            # nada, e insistir daria uma de duas saidas ruins: metade da policy
+            # trocada, ou o Chrome auto-selecionando o certificado ANTERIOR.
+            #
+            # Fail-closed. Nao e um item que se pula: a condicao e do host.
+            raise policy_certificado.ConfiguracaoDeHostIncompativel(
+                policy_certificado.POLICY_ANTERIOR_NAO_REMOVIDA
+            )
+
+        resultado = maquina.garantir_policy_do_windows(self.subject_cn(chave))
         self.policy_confiavel = resultado.confiavel
         if resultado.controle is not None:
             self.controle_da_policy = resultado.controle

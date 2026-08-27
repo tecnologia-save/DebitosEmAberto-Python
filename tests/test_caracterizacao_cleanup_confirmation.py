@@ -75,11 +75,18 @@ def test_1_policy_existe_pergunta_por_ESTADO_e_nao_por_um_CN(registro):
 
 
 def test_1_e_os_dois_confirmadores_de_limpeza_dependem_dela(registro):
-    """O guardiao e o processo principal usam a MESMA pergunta."""
+    """O guardiao e o processo principal usam a MESMA pergunta.
+
+    Fatia 13A: a pergunta mudou de "sobrou estado?" para "sobrou estado NOSSO?",
+    e mudou nos dois ao mesmo tempo — se so um mudasse, um deles seguraria o
+    host por causa de configuracao alheia que o outro decidiu preservar.
+    """
     import inspect
 
-    assert "policy_existe()" in inspect.getsource(cert_windows._limpar_confirmando)
-    assert "cert_windows.policy_existe" in inspect.getsource(
+    assert "policy_owned_existe(cn)" in inspect.getsource(
+        cert_windows._limpar_confirmando
+    )
+    assert "cert_windows.policy_owned_ainda_existe(controle)" in inspect.getsource(
         maquina.liberar_policy_do_windows
     )
 
@@ -197,21 +204,32 @@ def test_3f_a_mesma_falha_com_payload_ilegivel_tambem_e_detectada(
 
 # ── §5 · o que isso custa aos invariantes da 12B.2 / 12C ──────────────────────
 
-def test_5_o_processo_principal_NAO_declara_removida_o_que_ficou(
+def test_5_o_processo_principal_NAO_declara_removida_a_policy_NOSSA_que_ficou(
     registro, monkeypatch
 ):
-    """ANTES: `liberar_policy` devolvia True e o app largava o controle — a
-    policy deixava de ser de alguem, com estado ainda escrito.
+    """ANTES da 12D.1: `liberar_policy` devolvia True com estado ilegivel ainda
+    escrito. ANTES da 13A: devolvia False com QUALQUER estado, inclusive alheio.
 
-    AGORA devolve False, e o app mantem a posse: quem ficou com estado instalado
-    continua responsavel por ele.
+    AGORA a pergunta e a certa. Estado nosso que ficou -> False, e o app mantem
+    a posse.
     """
     monkeypatch.setattr("time.sleep", lambda _s: None)
-    registro.dados["HKCU"][CAMINHO] = {"2": entrada(CN_A)}
+    semear(registro, "HKCU", CN_A)
     monkeypatch.setattr(cert_windows, "pedir_limpeza", lambda controle: None)
 
-    assert maquina.liberar_policy_do_windows(object()) is False
+    assert maquina.liberar_policy_do_windows(_Controle(CN_A)) is False
     assert registro.tem("HKCU", CAMINHO)
+
+
+def test_5_mas_estado_ALHEIO_que_ficou_nao_prende_o_host(registro, monkeypatch):
+    """O outro lado, e o motivo de a 13A ter mexido aqui: preservar uma regra
+    que nao e nossa nao pode virar bloqueio eterno do host."""
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    registro.dados["HKCU"][CAMINHO] = {"RegraDaEmpresa": entrada(CN_B)}
+    monkeypatch.setattr(cert_windows, "pedir_limpeza", lambda controle: None)
+
+    assert maquina.liberar_policy_do_windows(_Controle(CN_A)) is True
+    assert registro.tem("HKCU", CAMINHO), "e a regra alheia continua la"
 
 
 def test_5_o_guardiao_encerra_o_lifecycle_como_sucesso(monkeypatch):
@@ -219,16 +237,18 @@ def test_5_o_guardiao_encerra_o_lifecycle_como_sucesso(monkeypatch):
     True, o guardiao sai do laco, fecha o lease — e devolve o host com estado
     ainda instalado.
 
-    O guardiao chama `limpar_autoselect` ANTES de conferir, e `DeleteKey` leva a
-    chave inteira: com privilegio, o residuo ilegivel sai de qualquer jeito. O
-    falso positivo aparece quando a remocao FALHA — que e exatamente o caso que
-    a confirmacao existe para pegar.
+    O falso positivo aparecia quando a remocao FALHAVA — que e exatamente o caso
+    que a confirmacao existe para pegar.
+
+    Fatia 13A: o que ele remove sao os valores OWNED, e o que ele confirma e a
+    ausencia DELES. A colmeia protegida recusa a abertura para escrita, nada
+    sai, e ele nao confirma.
     """
     monkeypatch.setattr("time.sleep", lambda _s: None)
     falso = registro_com(monkeypatch, protegidas=("HKCU",))
-    falso.dados["HKCU"][CAMINHO] = {"2": entrada(CN_A)}
+    semear(falso, "HKCU", CN_A)
 
-    assert cert_windows._limpar_confirmando(lambda _m: None) is False
+    assert cert_windows._limpar_confirmando(CN_A, lambda _m: None) is False
     assert falso.tem("HKCU", CAMINHO), "o estado ficou, e ele NAO confirmou"
 
 
@@ -264,8 +284,11 @@ def maquina_real(registro, monkeypatch):
         return _Controle(cn)
 
     monkeypatch.setattr(cert_windows, "_lancar_guardiao", lancar)
+    # O guardiao de mentira limpa como o de verdade passou a limpar (13A):
+    # compare-and-delete dos valores owned, e nunca a chave inteira.
     monkeypatch.setattr(
-        cert_windows, "pedir_limpeza", lambda controle: cert_windows.limpar_autoselect()
+        cert_windows, "pedir_limpeza",
+        lambda controle: cert_windows.remover_autoselect_owned(controle.cn),
     )
     return registro
 
@@ -375,14 +398,19 @@ def test_6_o_processamento_restante_para(maquina_real, monkeypatch):
 
 # ── §11 · o cleanup remove a chave inteira ────────────────────────────────────
 
-def test_11_valor_externo_que_aparece_durante_a_execucao_sai_junto(
+def test_11_valor_externo_que_aparece_durante_a_execucao_NAO_sai_mais_junto(
     maquina_real, monkeypatch
 ):
-    """GUARDIAN_CLEANUP_DELETES_WHOLE_KEY.
+    """GUARDIAN_CLEANUP_DELETES_WHOLE_KEY, fechado pela fatia 13A.
 
-    A validacao de startup protege o que existia ANTES da nossa mutacao. Depois
-    que passamos a possuir a chave, `limpar_autoselect` continua sendo
-    `DeleteKey` — e leva o que apareceu no meio do caminho.
+    ANTES: a validacao de startup protegia o que existia ANTES da nossa
+    mutacao, e depois que passavamos a possuir a chave `limpar_autoselect`
+    continuava sendo `DeleteKey` — levando junto o que aparecesse no meio do
+    caminho.
+
+    AGORA a limpeza owned compara valor a valor. O detalhe do que sobrevive
+    esta em `test_13a_valor_externo_que_aparece_durante_a_execucao_SOBREVIVE`;
+    aqui fica o contraste com o que este teste afirmava.
     """
     ex = execucao(monkeypatch)
     ex.trocar_certificado(item(CN_A))
@@ -392,7 +420,7 @@ def test_11_valor_externo_que_aparece_durante_a_execucao_sai_junto(
 
     ex.liberar_policy()
 
-    assert not maquina_real.tem("HKCU", CAMINHO), "a regra externa foi junto"
+    assert maquina_real.tem("HKCU", CAMINHO), "a regra externa ficou"
 
 
 def test_11_o_host_lease_nao_protege_contra_software_externo(maquina_real):
@@ -440,7 +468,7 @@ def test_5_cadeia_o_app_mantem_a_posse_quando_sobrou_estado(registro, monkeypatc
     """Elo 1: limpeza pedida -> residuo existe -> `liberar_policy` devolve False
     -> o app NAO larga o controle. A policy continua sendo desta execucao."""
     monkeypatch.setattr("time.sleep", lambda _s: None)
-    registro.dados["HKCU"][CAMINHO] = {"2": entrada(CN_A)}
+    semear(registro, "HKCU", CN_A)
     monkeypatch.setattr(cert_windows, "pedir_limpeza", lambda controle: None)
 
     ex = execucao(monkeypatch)
@@ -457,13 +485,13 @@ def test_5_cadeia_o_guardiao_nao_sai_do_laco(registro, monkeypatch):
 
     monkeypatch.setattr("time.sleep", lambda _s: None)
     falso = registro_com(monkeypatch, protegidas=("HKCU",))
-    falso.dados["HKCU"][CAMINHO] = {"1": "residuo ilegivel"}
+    semear(falso, "HKCU", CN_A)
 
-    assert cert_windows._limpar_confirmando(lambda _m: None) is False
+    assert cert_windows._limpar_confirmando(CN_A, lambda _m: None) is False
 
     fonte = inspect.getsource(cert_windows.guardiao)
-    assert "if _limpar_confirmando(_log):" in fonte
-    assert fonte.index("if _limpar_confirmando(_log):") < fonte.index("break")
+    assert "if _limpar_confirmando(cn, _log):" in fonte
+    assert fonte.index("if _limpar_confirmando(cn, _log):") < fonte.index("break")
     assert fonte.index("break") < fonte.index("finally:")
 
 
@@ -478,9 +506,9 @@ def test_5_cadeia_HOST_RELEASE_SAFE_continua_valendo(registro, monkeypatch):
 
     monkeypatch.setattr("time.sleep", lambda _s: None)
     falso = registro_com(monkeypatch, protegidas=("HKCU",))
-    falso.dados["HKCU"][CAMINHO] = {"2": entrada(CN_A)}
+    semear(falso, "HKCU", CN_A)
 
-    assert cert_windows._limpar_confirmando(lambda _m: None) is False
+    assert cert_windows._limpar_confirmando(CN_A, lambda _m: None) is False
 
     # E o lease continua sem saber nada de policy: nada nele mudou.
     fonte = inspect.getsource(exclusividade_host)
@@ -503,4 +531,102 @@ def test_5_com_o_host_realmente_limpo_a_cadeia_fecha(registro, monkeypatch):
     ex.liberar_policy()
 
     assert ex.controle_da_policy is None
-    assert cert_windows.policy_existe() is False
+    assert cert_windows.policy_owned_existe(CN_A) is False
+
+
+# ── 13A · §18 · §19 · o host volta quando o NOSSO sai ────────────────────────
+
+def test_13a_o_guardiao_encerra_com_estado_externo_restante(maquina_real,
+                                                            monkeypatch):
+    """§19 K: estado externo residual NAO viola "nenhum state OWNED continua".
+
+    O guardiao confirma, sai do laco e cai no `finally`, onde o lease e fechado
+    por ultimo. Preservar a regra alheia deixou de ser motivo para segurar o
+    host.
+    """
+    ex = execucao(monkeypatch)
+    ex.trocar_certificado(item(CN_A))
+    maquina_real.dados["HKCU"][CAMINHO]["RegraDaEmpresa"] = entrada(CN_B)
+
+    ex.liberar_policy()
+
+    assert ex.controle_da_policy is None, "confirmado: o host pode voltar"
+    assert "RegraDaEmpresa" in maquina_real.valores("HKCU", CAMINHO)
+
+
+def test_13a_e_NAO_encerra_enquanto_o_nosso_continua(maquina_real, monkeypatch):
+    """§19 J, o outro lado: o que segura o host e o nosso, e so ele."""
+    monkeypatch.setattr(cert_windows, "pedir_limpeza", lambda controle: None)
+    ex = execucao(monkeypatch)
+    ex.trocar_certificado(item(CN_A))
+
+    ex.liberar_policy()
+
+    assert ex.controle_da_policy is not None
+    assert cert_windows.policy_owned_existe(CN_A) is True
+
+
+def test_13a_valor_externo_que_aparece_durante_a_execucao_SOBREVIVE(
+    maquina_real, monkeypatch
+):
+    """GUARDIAN_CLEANUP_DELETES_WHOLE_KEY, fechado.
+
+    ANTES este mesmo cenario terminava com a chave inteira apagada e a regra
+    externa junto. A validacao de startup nao o cobria: ela protege o que
+    existia ANTES da nossa mutacao, e este valor apareceu depois.
+    """
+    ex = execucao(monkeypatch)
+    ex.trocar_certificado(item(CN_A))
+
+    maquina_real.dados["HKCU"][CAMINHO]["RegraDaEmpresa"] = entrada(CN_B)
+
+    ex.liberar_policy()
+
+    assert maquina_real.valores("HKCU", CAMINHO) == {"RegraDaEmpresa": entrada(CN_B)}
+
+
+# ── 13A · a troca de certificado quando a NOSSA policy nao saiu ───────────────
+
+def test_13a_troca_de_certificado_para_se_a_nossa_policy_nao_saiu(
+    maquina_real, monkeypatch
+):
+    """ANTES: a liberacao falhava, a policy de CN_A continuava instalada, e o
+    guardiao de CN_B escrevia por cima dela — inclusive por cima da nossa.
+
+    AGORA a escrita nao sobrescreve nada, e insistir daria uma de duas saidas
+    ruins: metade da policy trocada, ou o Chrome auto-selecionando o certificado
+    ANTERIOR. Fail-closed, e a condicao e do host — nao se pula o item.
+    """
+    ex = execucao(monkeypatch)
+    ex.trocar_certificado(item(CN_A))
+    monkeypatch.setattr(cert_windows, "pedir_limpeza", lambda controle: None)
+
+    with pytest.raises(policy_certificado.ConfiguracaoDeHostIncompativel) as erro:
+        ex.trocar_certificado(item(CN_B, 1))
+
+    assert erro.value.motivo == policy_certificado.POLICY_ANTERIOR_NAO_REMOVIDA
+
+
+def test_13a_e_a_policy_anterior_fica_intacta(maquina_real, monkeypatch):
+    """Parar tambem significa nao mexer no que ficou: o guardiao de CN_A
+    continua sendo o responsavel por ela."""
+    ex = execucao(monkeypatch)
+    ex.trocar_certificado(item(CN_A))
+    monkeypatch.setattr(cert_windows, "pedir_limpeza", lambda controle: None)
+    antes = maquina_real.valores("HKCU", CAMINHO)
+
+    with pytest.raises(policy_certificado.ConfiguracaoDeHostIncompativel):
+        ex.trocar_certificado(item(CN_B, 1))
+
+    assert maquina_real.valores("HKCU", CAMINHO) == antes
+    assert ex.controle_da_policy is not None, "continua nossa, e continua vigiada"
+
+
+def test_13a_o_erro_da_troca_nao_identifica_ninguem():
+    """§21 da 12D continua valendo para o motivo novo."""
+    texto = str(policy_certificado.ConfiguracaoDeHostIncompativel(
+        policy_certificado.POLICY_ANTERIOR_NAO_REMOVIDA
+    ))
+
+    for sentinela in (CN_A, CN_B, CAMINHO, "HKLM", "11111111000191"):
+        assert sentinela not in texto

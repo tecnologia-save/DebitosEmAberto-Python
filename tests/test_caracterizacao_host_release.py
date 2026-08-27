@@ -99,7 +99,7 @@ def test_a_falha_em_hklm_nao_chega_ao_app(monkeypatch):
             raise PermissionError("acesso negado ao registro")
 
     monkeypatch.setattr(cert_windows.winreg, "DeleteKey", so_hkcu)
-    monkeypatch.setattr(cert_windows, "policy_existe", lambda: True)
+    monkeypatch.setattr(cert_windows, "policy_owned_existe", lambda cn: True)
     monkeypatch.setattr(cert_windows, "pedir_limpeza", lambda c: None)
     monkeypatch.setattr(maquina.policy_certificado, "INTERVALO_LIBERACAO_S", 0)
 
@@ -220,7 +220,9 @@ def test_a_escrita_e_elevada_e_a_limpeza_normal_nao_e():
     fonte = (RAIZ / "cert_windows.py").read_text(encoding="utf-8")
 
     assert "_runas(_guard_args([" in fonte, "a escrita passa por elevação"
-    assert "um erro de permissão na" in fonte, "o projeto já documenta a assimetria"
+    # Marcador de CODIGO, e nao de prosa: e a mensagem que a escrita emite
+    # quando uma colmeia recusa, e ela existe justamente por causa de HKLM.
+    assert 'indisponivel ({e.__class__.__name__})' in fonte
 
     # E o caminho normal nao eleva nada:
     fiacao = inspect.getsource(maquina.liberar_policy_do_windows)
@@ -256,11 +258,13 @@ def test_o_lock_nao_provaria_quem_criou_a_policy_preexistente():
     O registro nao carrega dono, e nao ha o que consultar.
     """
     fonte = (RAIZ / "cert_windows.py").read_text(encoding="utf-8")
-    escrita = fonte[fonte.index("def definir_autoselect"):fonte.index("def limpar_autoselect")]
+    payload = fonte[
+        fonte.index("def _valores_esperados"):fonte.index("def _valor_atual")
+    ]
 
-    assert "pattern" in escrita and "filter" in escrita
+    assert "pattern" in payload and "filter" in payload
     for marcador in ("pid", "getpid", "uuid", "owner", "DebitosEmAberto", "timestamp"):
-        assert marcador not in escrita, f"nenhum {marcador} no payload"
+        assert marcador not in payload, f"nenhum {marcador} no payload"
 
 
 def test_policy_preexistente_com_outro_cn_e_destruida(monkeypatch):
