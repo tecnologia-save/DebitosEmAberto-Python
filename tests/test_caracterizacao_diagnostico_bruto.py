@@ -240,13 +240,12 @@ def test_7_o_inventario_focado_final(login):
     """§7: `print` e `registrar_erro` vivos em `main()`, procurando dado
     dinamico proveniente de URL, titulo, excecao, CNPJ, CN, serial ou caminho.
 
-    Sobram DOIS, e os dois estao FORA da autorizacao desta fatia — reportados,
-    e nao alterados:
+    ANTES sobravam DOIS, os dois em stdout e nenhum dos dois persistido:
 
-        print(... CN: {cert_subject_cn})          o CN do certificado, em stdout
+        print(... CN: {cert_subject_cn})          o CN do certificado
         print(... popups ...: {type(e).__name__}: {e})   mensagem do navegador
 
-    Nenhum dos dois e persistido pelo fork: sao stdout. Continuam registrados.
+    A fatia 13B.3 fechou os dois, e este teste passou a provar a ausencia.
     """
     fonte = LOGIN.read_text(encoding="utf-8")
     corpo = fonte[fonte.index("def main("):]
@@ -264,11 +263,7 @@ def test_7_o_inventario_focado_final(login):
         elif "cert_subject_cn" in limpa:
             suspeitos.append(limpa)
 
-    assert len(suspeitos) == 2, suspeitos
-    assert any("cert_subject_cn" in s for s in suspeitos)
-    assert any("popups" in s for s in suspeitos)
-    assert not any("registrar_erro" in s for s in suspeitos), \
-        "nenhum dos dois PERSISTE"
+    assert suspeitos == []
 
 
 # ── §9 · §10 · o que a 13B e a 13B.1 fecharam nao volta ──────────────────────
@@ -301,14 +296,12 @@ def test_contexto_falso_e_usado(login):
     assert hasattr(ContextoFalso(PaginaFalsa()), "close")
 
 
-def test_7_o_cnpj_ainda_sai_no_stdout_do_helper():
-    """REPORTADO, fora da autorizacao desta fatia.
+def test_7_o_cnpj_NAO_sai_mais_no_stdout_do_helper():
+    """ANTES `_representar_cnpj_procurador` imprimia o CNPJ duas vezes — ao
+    iniciar e ao preencher o campo. Era stdout, e nao persistencia: nenhuma das
+    duas passava por `registrar_erro`, e por isso ficou fora da 13B.2.
 
-    `_representar_cnpj_procurador` imprime o CNPJ duas vezes — ao iniciar e ao
-    preencher o campo. E stdout, e nao persistencia: nenhuma das duas passa por
-    `registrar_erro`.
-
-    A autorizacao da 13B.2 nomeia tres call sites, e nenhum deles e este.
+    A fatia 13B.3 as sanou.
     """
     fonte = LOGIN.read_text(encoding="utf-8")
     helper = fonte[fonte.index("def _representar_cnpj_procurador"):]
@@ -317,14 +310,15 @@ def test_7_o_cnpj_ainda_sai_no_stdout_do_helper():
     com_cnpj = [linha.strip() for linha in helper.splitlines()
                 if linha.strip().startswith("print(") and "{cnpj}" in linha]
 
-    assert len(com_cnpj) == 2
+    assert com_cnpj == []
+    assert "campo.fill(cnpj)" in helper, "e o valor continua indo ao portal"
     assert "registrar_erro" not in helper, "nada dali e persistido"
 
 
 def test_7_e_o_CN_do_certificado_tambem(login):
-    """REPORTADO, fora da autorizacao. O CN identifica a empresa, e sai no
-    stdout logo no comeco de `main`. Tambem nao e persistido pelo fork."""
+    """ANTES o CN identificava a empresa e saia no stdout logo no comeco de
+    `main`. Tambem nao era persistido pelo fork — e continuava saindo."""
     fonte = LOGIN.read_text(encoding="utf-8")
 
-    assert 'print(f"[cert] Certificado do Windows Store. CN: {cert_subject_cn}")' \
-        in fonte
+    assert "CN: {cert_subject_cn}" not in fonte
+    assert 'print("[cert] Certificado do Windows Store configurado.")' in fonte

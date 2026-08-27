@@ -502,7 +502,7 @@ def _representar_cnpj_procurador(page, cnpj: str) -> bool:
     Até 3 tentativas em caso de falha.
     """
     cnpj = _normalizar_cnpj(cnpj)
-    print(f"[cnpj] Iniciando representação do CNPJ {cnpj} como Procurador...")
+    print("[cnpj] Iniciando representação do CNPJ como Procurador...")
 
     for tentativa in range(1, 4):
         if tentativa > 1:
@@ -525,7 +525,7 @@ def _representar_cnpj_procurador(page, cnpj: str) -> bool:
             avatar.click()
 
             # 2. Preenche CNPJ
-            print(f"[cnpj] Preenchendo CNPJ {cnpj}...")
+            print("[cnpj] Preenchendo CNPJ...")
             campo = page.locator('#input-representar-cpfcnpj').first
             campo.wait_for(state="visible", timeout=10_000)
             campo.fill(cnpj)
@@ -632,7 +632,10 @@ def main(
     if usar_windows_store:
         cert_subject_cn = cert_subject_cn.strip()
         os.environ["CERT_SUBJECT_CN"] = cert_subject_cn
-        print(f"[cert] Certificado do Windows Store. CN: {cert_subject_cn}")
+        # O CN carrega razao social e CNPJ: e o identificador do cliente, e
+        # saia aqui a cada execucao, mesmo quando nada dava errado. A etapa
+        # continua visivel; quem e o certificado, nao (SENSITIVE_CONSOLE_OUTPUT).
+        print("[cert] Certificado do Windows Store configurado.")
     else:
         resolved_path, resolved_pass = _resolver_certificado(
             cert_pfx_path, cert_pfx_passphrase, cert_name, project_dir
@@ -702,7 +705,9 @@ def main(
     try:
         _fechar_popups_iniciais(page)
     except Exception as e:
-        print(f"[popup] Erro ao tratar popups iniciais (ignorado): {type(e).__name__}: {e}")
+        # A CLASSE fica: ela diz o QUE aconteceu. A mensagem sai: a de um erro
+        # de navegador traz endereco, seletor e o que mais estiver na call log.
+        print(f"[popup] Erro ao tratar popups iniciais (ignorado): {type(e).__name__}.")
 
     if _ja_logado(page):
         print("  -> Redirecionado automaticamente. Login concluído.")

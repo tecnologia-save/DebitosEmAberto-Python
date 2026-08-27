@@ -430,7 +430,11 @@ def test_g_uac_negado_nao_e_fatal_apenas_devolve_false(registro, monkeypatch, ca
 def test_i_o_polling_desiste_depois_de_60_tentativas(registro, sem_dormir, monkeypatch):
     """POLICY_POSSIBLE_DEFECT: 60 vezes 0,5 s = 30 s mágicos, sem condição associada
     além de "a policy ainda não apareceu"."""
-    monkeypatch.setattr(cert_windows, "_runas", lambda *a, **k: 0)   # não escreve nada
+    # CHARACTERIZATION_TARGET_CHANGE (13A.4): o duble tem de parar em `_elevar`.
+    # Desde que o guardiao deixou de passar por `_runas`, um duble ali nao
+    # intercepta nada — e a elevacao REAL acontece.
+    monkeypatch.setattr(cert_windows, "_elevar",
+                        lambda *a, **k: (True, 0xB0B0))   # não escreve nada
 
     assert cert_windows.iniciar_guarda(CN_A) is False
     assert len(sem_dormir) == 60
@@ -448,7 +452,8 @@ def test_l_policy_ja_correta_devolve_true_sem_lancar_guardiao(registro, monkeypa
     """
     cert_windows.definir_autoselect(CN_A)       # sobra de outra execução
     lancamentos = []
-    monkeypatch.setattr(cert_windows, "_runas", lambda *a, **k: lancamentos.append(a) or 0)
+    monkeypatch.setattr(cert_windows, "_elevar",
+                        lambda *a, **k: lancamentos.append(a) or (True, 0xB0B0))
 
     assert cert_windows.iniciar_guarda(CN_A) is True
     assert lancamentos == [], "nenhum guardião associado a esta execução"
@@ -468,11 +473,11 @@ def test_m_policy_de_outro_cn_agora_RECUSA_em_vez_de_sobrescrever(
     cert_windows.definir_autoselect(CN_B)
     lancamentos = []
 
-    def lancar(args, wait_ms=None):
+    def lancar(args):
         lancamentos.append(args)
-        return 0
+        return True, 0xB0B0
 
-    monkeypatch.setattr(cert_windows, "_runas", lancar)
+    monkeypatch.setattr(cert_windows, "_elevar", lancar)
 
     with pytest.raises(policy_certificado.ConfiguracaoDeHostIncompativel):
         cert_windows.iniciar_guarda(CN_A)
