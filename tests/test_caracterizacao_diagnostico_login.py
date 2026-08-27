@@ -243,41 +243,20 @@ def test_2_nao_ha_mais_screenshot_nenhum_no_fork(login):
 
 # ── §6 · o inventario focado dos `registrar_erro` vivos ──────────────────────
 
-def test_6_sao_oito_chamadas_e_quatro_carregam_dado_dinamico(login):
+def test_6_continuam_oito_chamadas_e_nenhuma_carrega_dado_sensivel(login):
+    """ANTES (13B.1): tres das oito carregavam dado dinamico — duas com a
+    mensagem bruta do Playwright, uma com o CNPJ do cliente. Foram reportadas
+    aqui e corrigidas na fatia 13B.2."""
     fonte = LOGIN.read_text(encoding="utf-8")
 
     assert fonte.count("registrar_erro(") == 8
 
-    dinamicas = [linha for linha in fonte.splitlines()
-                 if "registrar_erro(f\"" in linha]
-    assert len(dinamicas) == 3, "as tres de uma linha so"
-
-
-def test_6_duas_carregam_a_mensagem_BRUTA_do_navegador(login):
-    """Alem dos quatro caracterizados, o inventario acha estas duas: a excecao
-    do Playwright entra inteira no log, e a mensagem dele costuma trazer a URL
-    da pagina e o seletor.
-
-    Mesmo TIPO de vazamento, e nao sao os quatro autorizados. Ficam registradas
-    e NAO alteradas nesta fatia.
-    """
-    fonte = LOGIN.read_text(encoding="utf-8")
-
-    assert 'registrar_erro(f"Login: erro ao abrir URL (1ª navegação). ' \
-           '{type(e).__name__}: {e}")' in fonte
-    assert "registrar_erro(f\"Login: botão 'Entrar com gov.br' não encontrado. " \
-           '{type(e).__name__}: {e}")' in fonte
-
-
-def test_6_e_uma_carrega_o_CNPJ_DO_CLIENTE(login):
-    """O achado inequivoco do inventario, e o mais grave depois da URL: o CNPJ
-    da empresa vai para um arquivo de log permanente.
-
-    Mesmo TIPO, fora dos quatro caracterizados. Registrado e NAO alterado.
-    """
-    fonte = LOGIN.read_text(encoding="utf-8")
-
-    assert 'registrar_erro(f"Login: falha ao representar CNPJ {cnpj}.")' in fonte
+    persistidas = [linha for linha in fonte.splitlines()
+                   if "registrar_erro(" in linha]
+    for linha in persistidas:
+        assert "{cnpj}" not in linha
+        if "{e}" in linha:
+            assert "{type(e).__name__}." in linha, linha
 
 
 def test_6_as_outras_quatro_sao_constantes_e_seguras(login):

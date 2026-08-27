@@ -682,8 +682,8 @@ def main(
         page.goto(SERVICOS_RF_URL, wait_until="domcontentloaded", timeout=30_000)
         print("  -> navegação concluída.")
     except Exception as e:
-        print(f"  -> erro no goto: {type(e).__name__}: {e}")
-        registrar_erro(f"Login: erro ao abrir URL (1ª navegação). {type(e).__name__}: {e}")
+        print(f"  -> erro no goto: {type(e).__name__}")
+        registrar_erro(f"Login: erro ao abrir URL (1ª navegação). {type(e).__name__}.")
         # LOGIN_RESOURCE_CLEANUP_GAP (fatia 12B.1): o contexto existe e o
         # chamador nunca recebera ownership dele — fecha-lo aqui e a unica
         # forma de garantir que o perfil e a porta 9222 saem com a falha.
@@ -715,8 +715,8 @@ def main(
         govbr_btn.click()
         print("  -> clicado.")
     except Exception as e:
-        registrar_erro(f"Login: botão 'Entrar com gov.br' não encontrado. {type(e).__name__}: {e}")
-        print(f"  -> botão não encontrado: {type(e).__name__}: {e}")
+        registrar_erro(f"Login: botão 'Entrar com gov.br' não encontrado. {type(e).__name__}.")
+        print(f"  -> botão não encontrado: {type(e).__name__}")
         # LOGIN_RESOURCE_CLEANUP_GAP (fatia 12B.1): o contexto existe e o
         # chamador nunca recebera ownership dele — fecha-lo aqui e a unica
         # forma de garantir que o perfil e a porta 9222 saem com a falha.
@@ -909,9 +909,9 @@ def main(
 
     # --- Representar CNPJ como Procurador (se informado) ---
     if cnpj:
-        print(f"Representando CNPJ {_normalizar_cnpj(cnpj)} como Procurador...")
+        print("Representando CNPJ como Procurador...")
         if not _representar_cnpj_procurador(page, cnpj):
-            registrar_erro(f"Login: falha ao representar CNPJ {cnpj}.")
-            print(f"[cnpj] Falha ao representar CNPJ {cnpj}. Retornando página sem representação.")
+            registrar_erro("Login: falha ao representar CNPJ.")
+            print("[cnpj] Falha ao representar CNPJ. Retornando página sem representação.")
 
     return p, context, page
