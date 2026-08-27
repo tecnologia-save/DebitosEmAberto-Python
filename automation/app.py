@@ -151,7 +151,27 @@ class _Execucao:
         """
         if self.controle_da_policy is None:
             return
+
+        if (maquina.estado_do_guardiao(self.controle_da_policy)
+                == policy_certificado.GUARDIAO_ENCERRADO):
+            # ORPHANED_PERSISTENT_POLICY (fatia 13A.4). Nao ha a quem pedir: o
+            # processo elevado terminou, e este aqui nao tem privilegio para
+            # remover de HKLM. Pedir mesmo assim so gastaria a espera inteira
+            # contra um canal que ninguem escuta.
+            #
+            # E ela NAO e apagada. Continua sendo nossa, continua escrita, e
+            # quem decide o que fazer com ela e o startup da proxima execucao,
+            # com BORROW/CREATE/REFUSE — as mesmas tres saidas que ja tratam
+            # qualquer estado preexistente. O controle FICA: enquanto ele
+            # estiver ai, esta execucao sabe que instalou algo que nao saiu.
+            self.emitir(eventos.POLICY_ORFA_NA_MAQUINA)
+            return
+
         if maquina.liberar_policy_do_windows(self.controle_da_policy):
+            # Confirmado: nao ha mais o que pedir nem o que observar. Os handles
+            # do controle fecham aqui, e nao no fim do processo — uma execucao
+            # que troca de certificado descartaria um controle por guardiao.
+            maquina.encerrar_controle_do_guardiao(self.controle_da_policy)
             self.controle_da_policy = None
             return
         # A policy CONTINUA na maquina: o guardiao nao respondeu, ou tentou e
@@ -311,6 +331,36 @@ class _Execucao:
             self.emitir(eventos.POLICY_PERMANECERA_NA_MAQUINA)
         return True
 
+    def exigir_responsavel_pela_policy(self) -> None:
+        """Nenhum navegador novo enquanto o guardiao da policy nao estiver vivo.
+
+        Fatia 13A.4, e o fechamento de
+        GUARDIAN_FAILURE_ORPHANED_POLICY_ACCEPTANCE_RISK do lado de ca. A policy
+        e uma configuracao GLOBAL do Windows que faz o Chrome escolher um
+        certificado sozinho; enquanto ela existe sem processo responsavel, nao ha
+        quem a remova quando esta execucao acabar de qualquer maneira que nao seja
+        a normal.
+
+        SO quando a policy e NOSSA. Uma policy emprestada (JA_ATIVA) nunca teve
+        guardiao desta execucao, e exigir um dela seria recusar exatamente o caso
+        que a 12D decidiu aceitar.
+
+        Aqui, e nao em `trocar_certificado`, porque este e o unico ponto do app
+        que cria sessao: a primeira do certificado, e tambem a que um relogin
+        abre depois de a anterior cair. Um so lugar, todos os caminhos.
+        """
+        if self.controle_da_policy is None:
+            return
+        if (maquina.estado_do_guardiao(self.controle_da_policy)
+                == policy_certificado.GUARDIAO_VIVO):
+            return
+        # Fail-closed, e como condicao do HOST — nao como falha do CNPJ. Um
+        # retry de item repetiria login e captcha contra um problema que nao esta
+        # no portal.
+        raise policy_certificado.ConfiguracaoDeHostIncompativel(
+            policy_certificado.GUARDIAO_NAO_ESTA_VIVO
+        )
+
     def autenticar(self, item) -> bool:
         """Garante uma sessao aberta. False se o login nao autenticou.
 
@@ -319,6 +369,8 @@ class _Execucao:
         """
         if self.sessao is not None:
             return True
+
+        self.exigir_responsavel_pela_policy()
 
         chave = self.chave_do_certificado(self.certificado_atual)
         if chave is None:

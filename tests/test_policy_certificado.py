@@ -23,6 +23,19 @@ CN_A = "ALFA FICTICIA LTDA:11111111000191"
 CN_B = "BETA FICTICIA SA:22222222000172"
 
 
+def _vivo(_controle):
+    """O guardiao esta vivo — CHARACTERIZATION_TARGET_CHANGE da fatia 13A.4.
+
+    O protocolo passou a exigir a vida do PROCESSO guardiao, e nao so a policy
+    no registro. Estes testes sempre pressupuseram um guardiao vivo: nao havia
+    outro estado possivel. Dize-lo explicitamente preserva exatamente o que cada
+    assercao deste arquivo ja significava antes da fatia.
+    """
+    from automation.policy_certificado import GUARDIAO_VIVO
+
+    return GUARDIAO_VIVO
+
+
 class Maquina:
     """O estado do Windows, de mentira: o CN atual da policy e o que o UAC faz."""
 
@@ -75,7 +88,7 @@ def _decisao_de_antes(ler, cn):
 
 def pedir(maquina, cn=CN_A):
     return garantir_policy(cn, _decisao_de_antes(maquina.ler, cn),
-                           maquina.lancar, maquina.aguardar)
+                           maquina.lancar, maquina.aguardar, _vivo)
 
 
 # ── Os quatro desfechos ───────────────────────────────────────────────────────

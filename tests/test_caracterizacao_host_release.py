@@ -32,6 +32,38 @@ CN_A = "ALFA FICTICIA:11111111000191"
 CN_B = "BETA FICTICIA:22222222000172"
 
 
+@pytest.fixture(autouse=True)
+def _guardiao_vivo(monkeypatch):
+    """CHARACTERIZATION_TARGET_CHANGE da fatia 13A.4.
+
+    O app passou a exigir que o PROCESSO guardiao esteja vivo antes de abrir
+    sessao e antes de pedir limpeza. Estes testes sempre pressupuseram isso: nao
+    havia outro estado possivel, e os dubles de controle daqui nem sao processos.
+    Dize-lo explicitamente preserva o que cada assercao ja significava.
+    """
+    import cert_windows
+    from automation import maquina, policy_certificado
+
+    for modulo in (maquina, cert_windows):
+        monkeypatch.setattr(modulo, "estado_do_guardiao",
+                            lambda _c: policy_certificado.GUARDIAO_VIVO)
+    monkeypatch.setattr(maquina, "encerrar_controle_do_guardiao", lambda _c: None)
+    monkeypatch.setattr(cert_windows, "encerrar_controle", lambda _c: None)
+
+
+def _vivo(_controle):
+    """O guardiao esta vivo — CHARACTERIZATION_TARGET_CHANGE da fatia 13A.4.
+
+    O protocolo passou a exigir a vida do PROCESSO guardiao, e nao so a policy
+    no registro. Estes testes sempre pressupuseram um guardiao vivo: nao havia
+    outro estado possivel. Dize-lo explicitamente preserva exatamente o que cada
+    assercao deste arquivo ja significava antes da fatia.
+    """
+    from automation.policy_certificado import GUARDIAO_VIVO
+
+    return GUARDIAO_VIVO
+
+
 class _Controle:
     """Token opaco do guardiao."""
 
@@ -219,7 +251,11 @@ def test_a_escrita_e_elevada_e_a_limpeza_normal_nao_e():
     """
     fonte = (RAIZ / "cert_windows.py").read_text(encoding="utf-8")
 
-    assert "_runas(_guard_args([" in fonte, "a escrita passa por elevação"
+    # Fatia 13A.4: o guardiao passou a elevar por `_elevar`, que preserva o
+    # handle do processo. A elevacao continua sendo a mesma; `_runas` era so a
+    # variante que fechava o handle na saida.
+    assert "_elevar(" in fonte, "a escrita passa por elevação"
+    assert "_guard_args([" in fonte
     # Marcador de CODIGO, e nao de prosa: e a mensagem que a escrita emite
     # quando uma colmeia recusa, e ela existe justamente por causa de HKLM.
     assert 'indisponivel ({e.__class__.__name__})' in fonte
@@ -287,6 +323,7 @@ def test_policy_preexistente_com_outro_cn_e_destruida(monkeypatch):
         CN_B,
         avaliar_inicio=_decisao_de_antes(lambda: maquina_falsa["cn"], CN_B),
         lancar_guardiao=lancar, aguardar=lambda: None,
+        estado_do_guardiao=_vivo,
     )
 
     assert resultado.situacao == ATIVADA and resultado.tem_guardiao is True

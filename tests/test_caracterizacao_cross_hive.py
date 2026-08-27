@@ -32,6 +32,19 @@ CAMINHO = cert_windows.REG_PATH
 QUANTAS = len(cert_windows.CERT_URLS)
 
 
+def _vivo(_controle):
+    """O guardiao esta vivo — CHARACTERIZATION_TARGET_CHANGE da fatia 13A.4.
+
+    O protocolo passou a exigir a vida do PROCESSO guardiao, e nao so a policy
+    no registro. Estes testes sempre pressupuseram um guardiao vivo: nao havia
+    outro estado possivel. Dize-lo explicitamente preserva exatamente o que cada
+    assercao deste arquivo ja significava antes da fatia.
+    """
+    from automation.policy_certificado import GUARDIAO_VIVO
+
+    return GUARDIAO_VIVO
+
+
 @pytest.fixture
 def registro(monkeypatch):
     falso = RegistroFalso()
@@ -228,6 +241,7 @@ def _garantir(cn, registro, lancamentos, intruso=None):
         ),
         lancar_guardiao=lancar,
         aguardar=lambda: None,
+        estado_do_guardiao=_vivo,
     )
 
 

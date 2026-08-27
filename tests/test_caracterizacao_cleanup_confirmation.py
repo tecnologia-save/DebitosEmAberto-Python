@@ -29,6 +29,25 @@ CN_B = "BETA FICTICIA SA:22222222000172"
 CAMINHO = cert_windows.REG_PATH
 
 
+@pytest.fixture(autouse=True)
+def _guardiao_vivo(monkeypatch):
+    """CHARACTERIZATION_TARGET_CHANGE da fatia 13A.4.
+
+    O app passou a exigir que o PROCESSO guardiao esteja vivo antes de abrir
+    sessao e antes de pedir limpeza. Estes testes sempre pressupuseram isso: nao
+    havia outro estado possivel, e os dubles de controle daqui nem sao processos.
+    Dize-lo explicitamente preserva o que cada assercao ja significava.
+    """
+    import cert_windows
+    from automation import maquina, policy_certificado
+
+    for modulo in (maquina, cert_windows):
+        monkeypatch.setattr(modulo, "estado_do_guardiao",
+                            lambda _c: policy_certificado.GUARDIAO_VIVO)
+    monkeypatch.setattr(maquina, "encerrar_controle_do_guardiao", lambda _c: None)
+    monkeypatch.setattr(cert_windows, "encerrar_controle", lambda _c: None)
+
+
 @pytest.fixture
 def registro(monkeypatch):
     falso = RegistroFalso()

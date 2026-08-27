@@ -81,6 +81,31 @@ JA_ATIVA = "já ativa (escrita por outra execução)"
 ATIVADA = "ativada por guardião desta execução"
 ELEVACAO_RECUSADA = "elevação recusada"
 NAO_APARECEU = "guardião lançado, policy não apareceu"
+# Fatia 13A.4. Os dois desfechos em que a POLICY ficou exatamente como pedimos e
+# mesmo assim ela nao vale: quem a escreveu ja nao esta la para responder por
+# ela. Sao dois e nao um porque a consequencia de LIMPEZA e oposta — ver
+# `GUARDIAO_ENCERRADO` e `GUARDIAO_NAO_VERIFICAVEL` logo abaixo.
+GUARDIAO_MORREU = "policy escrita, e o guardião dela já terminou"
+GUARDIAO_INCERTO = "policy escrita, e não foi possível provar que o guardião existe"
+
+
+# ── A vida do processo guardiao (fatia 13A.4) ─────────────────────────────────
+#
+# A policy no registro prova que o guardiao PASSOU pelo attach. Nao prova que ele
+# CONTINUA vivo — e era essa confusao que produzia
+# GUARDIAN_FAILURE_ORPHANED_POLICY_ACCEPTANCE_RISK: o guardiao escrevia, morria,
+# e o parent relia o registro, encontrava o que pediu e declarava ATIVADA.
+#
+# Tres estados, e nao um booleano. A diferenca entre os dois ultimos decide se
+# ainda existe alguem capaz de limpar a policy depois:
+#
+#   ENCERRADO       -> nenhuma limpeza futura DAQUELE guardiao pode aparecer.
+#   NAO_VERIFICAVEL -> ele pode estar vivo, e portanto ainda pode agir.
+#
+# Esconder os dois atras de um `False` apagaria exatamente essa distincao.
+GUARDIAO_VIVO = "vivo"
+GUARDIAO_ENCERRADO = "encerrado"
+GUARDIAO_NAO_VERIFICAVEL = "não verificável"
 
 
 # ── Estado preexistente da policy (fatia 12D) ─────────────────────────────────
@@ -111,6 +136,11 @@ COLMEIA_ILEGIVEL = "uma das colmeias não pôde ser lida"
 # mesmo erro porque a consequencia para quem opera e a mesma — ha configuracao
 # de auto-selecao neste host que a execucao nao pode usar nem remover.
 POLICY_ANTERIOR_NAO_REMOVIDA = "a configuração anterior desta execução não saiu"
+# Fatia 13A.4, e tambem sobre a nossa: a policy esta escrita e o processo que
+# responde por ela nao esta vivo — ou nao da para provar que esta. Nenhum dado
+# interpolado, pela mesma regra dos motivos acima: nem CN, nem PID, nem handle,
+# nem mensagem do Win32.
+GUARDIAO_NAO_ESTA_VIVO = "o processo que instalou a configuração não está ativo"
 
 
 class ConfiguracaoDeHostIncompativel(Exception):
@@ -282,6 +312,7 @@ def garantir_policy(
     avaliar_inicio: Callable[[], DecisaoDeStartup],
     lancar_guardiao: Callable[[str], int],
     aguardar: Callable[[], None],
+    estado_do_guardiao: Callable[[object], str],
 ) -> ResultadoDaPolicy:
     """Garante que o Chrome vai auto-selecionar o certificado de `cn`.
 
@@ -310,6 +341,14 @@ def garantir_policy(
     `avaliar_inicio` roda ANTES de `lancar_guardiao`, que e a unica coisa aqui
     que escreve no registro. Nao ha caminho que escreva sem passar por ela.
 
+    A POLICY NAO PROVA O GUARDIAO (fatia 13A.4). `avaliar_inicio` responde o que
+    esta escrito no registro, e o registro nao sabe quem continua vivo. Ate aqui
+    o desfecho mais forte saia so dessa leitura: o guardiao escrevia, morria, e
+    a policy — coerente, exatamente a que pedimos — era aceita como ATIVADA com
+    `tem_guardiao=True`, para um processo que ja nao existia
+    (GUARDIAN_FAILURE_ORPHANED_POLICY_ACCEPTANCE_RISK). `estado_do_guardiao` e a
+    segunda pergunta, e ela nao substitui a primeira: sao as duas, nesta ordem.
+
     NAO HA MAIS EXCECAO (fatia 13A). Ate aqui existia `policy_ja_e_nossa`: dentro
     de uma execucao a posse era demonstravel, e isso autorizava a escrita a passar
     por cima da policy anterior — a nossa. Com a escrita nao destrutiva ninguem
@@ -335,7 +374,12 @@ def garantir_policy(
         if atual.decisao == EMPRESTAR:
             # O estado do host e agora exatamente a policy que pedimos, nas
             # colmeias que existem. E o guardiao desta execucao que o instalou.
-            return ResultadoDaPolicy(ATIVADA, tem_guardiao=True, controle=controle)
+            #
+            # E ISSO NAO BASTA (fatia 13A.4). A policy prova o que ele FEZ, e o
+            # que precisamos saber e se ele ESTA. As duas perguntas, nesta ordem:
+            # a postcondicao da policy primeiro — liveness nao substitui leitura
+            # — e so entao a vida do processo.
+            return _com_guardiao_conferido(estado_do_guardiao(controle), controle)
         if atual.decisao == RECUSAR:
             raise ConfiguracaoDeHostIncompativel(atual.motivo)
         aguardar()
@@ -345,6 +389,26 @@ def garantir_policy(
     # ficou visivel DESTE processo, e o Chrome, que roda no mesmo contexto,
     # tambem nao a veria. Elevacao em outra conta.
     return ResultadoDaPolicy(NAO_APARECEU, tem_guardiao=True, controle=controle)
+
+
+def _com_guardiao_conferido(vida: str, controle: object) -> ResultadoDaPolicy:
+    """O desfecho, agora que a policy esta coerente E se sabe do guardiao.
+
+    `tem_guardiao` nao muda de significado: continua respondendo "ha alguem que
+    ainda pode remover isto?". E por isso que ele e False quando o processo
+    terminou — nao ha mais ator elevado — e True quando nao foi possivel provar
+    que terminou, porque nesse caso ele pode agir a qualquer momento.
+
+    Nos dois casos o `controle` volta. Nao para comandar o guardiao: para que
+    quem o recebeu possa fechar os handles que abriu.
+    """
+    if vida == GUARDIAO_VIVO:
+        return ResultadoDaPolicy(ATIVADA, tem_guardiao=True, controle=controle)
+    if vida == GUARDIAO_ENCERRADO:
+        return ResultadoDaPolicy(GUARDIAO_MORREU, tem_guardiao=False,
+                                 controle=controle)
+    return ResultadoDaPolicy(GUARDIAO_INCERTO, tem_guardiao=True,
+                             controle=controle)
 
 
 def liberar_policy(

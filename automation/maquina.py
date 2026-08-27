@@ -130,6 +130,29 @@ def garantir_policy_do_windows(cn: str) -> ResultadoDaPolicy:
     return cert_windows.iniciar_guarda_detalhado(cn)
 
 
+def estado_do_guardiao(controle: object) -> str:
+    """O processo guardiao daquela policy ainda esta rodando?
+
+    Fatia 13A.4. A policy no registro prova o que ele FEZ; so o handle do
+    processo diz se ele ESTA. Devolve um dos tres estados de
+    `policy_certificado`, e nunca traduz "nao consegui verificar" para "vivo".
+    """
+    import cert_windows
+
+    return cert_windows.estado_do_guardiao(controle)
+
+
+def encerrar_controle_do_guardiao(controle: object) -> None:
+    """Fecha os handles do controle que nao serve mais.
+
+    Chamado quando a policy saiu e foi confirmada: dali em diante nao ha o que
+    pedir nem o que observar.
+    """
+    import cert_windows
+
+    cert_windows.encerrar_controle(controle)
+
+
 def liberar_policy_do_windows(controle: object) -> bool:
     """Pede ao GUARDIAO que remova a policy, e confirma que ela saiu.
 

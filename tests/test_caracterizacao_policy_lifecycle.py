@@ -34,6 +34,38 @@ CN_A = "ALFA FICTICIA:11111111000191"
 CN_B = "BETA FICTICIA:22222222000172"
 
 
+@pytest.fixture(autouse=True)
+def _guardiao_vivo(monkeypatch):
+    """CHARACTERIZATION_TARGET_CHANGE da fatia 13A.4.
+
+    O app passou a exigir que o PROCESSO guardiao esteja vivo antes de abrir
+    sessao e antes de pedir limpeza. Estes testes sempre pressupuseram isso: nao
+    havia outro estado possivel, e os dubles de controle daqui nem sao processos.
+    Dize-lo explicitamente preserva o que cada assercao ja significava.
+    """
+    import cert_windows
+    from automation import maquina, policy_certificado
+
+    for modulo in (maquina, cert_windows):
+        monkeypatch.setattr(modulo, "estado_do_guardiao",
+                            lambda _c: policy_certificado.GUARDIAO_VIVO)
+    monkeypatch.setattr(maquina, "encerrar_controle_do_guardiao", lambda _c: None)
+    monkeypatch.setattr(cert_windows, "encerrar_controle", lambda _c: None)
+
+
+def _vivo(_controle):
+    """O guardiao esta vivo — CHARACTERIZATION_TARGET_CHANGE da fatia 13A.4.
+
+    O protocolo passou a exigir a vida do PROCESSO guardiao, e nao so a policy
+    no registro. Estes testes sempre pressupuseram um guardiao vivo: nao havia
+    outro estado possivel. Dize-lo explicitamente preserva exatamente o que cada
+    assercao deste arquivo ja significava antes da fatia.
+    """
+    from automation.policy_certificado import GUARDIAO_VIVO
+
+    return GUARDIAO_VIVO
+
+
 class _Controle:
     """Token opaco do guardiao."""
 
@@ -90,6 +122,7 @@ def pedir(registro, cn, lancar=None):
         cn, avaliar_inicio=_decisao_de_antes(registro.ler_cn, cn),
         lancar_guardiao=lancar or registro.lancar,
         aguardar=lambda: None,
+        estado_do_guardiao=_vivo,
     )
 
 
@@ -148,6 +181,7 @@ def test_b_a_espera_e_pelo_CN_PEDIDO_e_nao_pela_existencia():
     resultado = garantir_policy(
         CN_B, avaliar_inicio=_decisao_de_antes(reg.ler_cn, CN_B),
         lancar_guardiao=demora, aguardar=lambda: None,
+        estado_do_guardiao=_vivo,
     )
 
     assert resultado.situacao == NAO_APARECEU, "nunca aceitou o CN_A como suficiente"
@@ -358,11 +392,17 @@ def test_h_o_protocolo_passou_a_receber_o_ESTADO_e_nao_so_um_cn():
     continuou saindo de `ler_cn_atual` — e era por ali que a divergencia
     voltava a passar.
 
-    AGORA (13A.1) ha uma pergunta so, e ela e a forte. `ler_cn_atual` saiu.
+    AGORA (13A.1) ha uma pergunta so sobre o REGISTRO, e ela e a forte.
+    `ler_cn_atual` saiu.
+
+    E a 13A.4 acrescentou a outra pergunta — a do PROCESSO. Sao duas coisas
+    diferentes, e nenhuma substitui a outra: o registro diz o que o guardiao
+    fez, e o handle diz se ele esta.
     """
     parametros = list(inspect.signature(policy_certificado.garantir_policy).parameters)
 
-    assert parametros == ["cn", "avaliar_inicio", "lancar_guardiao", "aguardar"]
+    assert parametros == ["cn", "avaliar_inicio", "lancar_guardiao", "aguardar",
+                          "estado_do_guardiao"]
 
     # E a avaliacao vem ANTES do unico ponto que escreve no registro.
     fonte = inspect.getsource(policy_certificado.garantir_policy)

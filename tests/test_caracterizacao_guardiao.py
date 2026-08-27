@@ -14,6 +14,8 @@ CNs ficticios.
 import inspect
 import pathlib
 
+import pytest
+
 from automation import app, maquina
 from automation.captcha import ConfigCaptcha
 from automation.policy_certificado import ATIVADA, ResultadoDaPolicy, garantir_policy
@@ -22,6 +24,38 @@ RAIZ = pathlib.Path(__file__).resolve().parents[1]
 CONFIG = ConfigCaptcha(api_key="AIzaSy-SENTINELA-FICTICIA-0000")
 CN_A = "ALFA FICTICIA:11111111000191"
 CN_B = "BETA FICTICIA:22222222000172"
+
+
+@pytest.fixture(autouse=True)
+def _guardiao_vivo(monkeypatch):
+    """CHARACTERIZATION_TARGET_CHANGE da fatia 13A.4.
+
+    O app passou a exigir que o PROCESSO guardiao esteja vivo antes de abrir
+    sessao e antes de pedir limpeza. Estes testes sempre pressupuseram isso: nao
+    havia outro estado possivel, e os dubles de controle daqui nem sao processos.
+    Dize-lo explicitamente preserva o que cada assercao ja significava.
+    """
+    import cert_windows
+    from automation import maquina, policy_certificado
+
+    for modulo in (maquina, cert_windows):
+        monkeypatch.setattr(modulo, "estado_do_guardiao",
+                            lambda _c: policy_certificado.GUARDIAO_VIVO)
+    monkeypatch.setattr(maquina, "encerrar_controle_do_guardiao", lambda _c: None)
+    monkeypatch.setattr(cert_windows, "encerrar_controle", lambda _c: None)
+
+
+def _vivo(_controle):
+    """O guardiao esta vivo — CHARACTERIZATION_TARGET_CHANGE da fatia 13A.4.
+
+    O protocolo passou a exigir a vida do PROCESSO guardiao, e nao so a policy
+    no registro. Estes testes sempre pressupuseram um guardiao vivo: nao havia
+    outro estado possivel. Dize-lo explicitamente preserva exatamente o que cada
+    assercao deste arquivo ja significava antes da fatia.
+    """
+    from automation.policy_certificado import GUARDIAO_VIVO
+
+    return GUARDIAO_VIVO
 
 
 class _Controle:
@@ -69,7 +103,8 @@ def _decisao_de_antes(ler, cn):
 
 def pedir(m, cn):
     return garantir_policy(cn, avaliar_inicio=_decisao_de_antes(m.ler_cn, cn),
-                           lancar_guardiao=m.lancar, aguardar=lambda: None)
+                           lancar_guardiao=m.lancar, aguardar=lambda: None,
+                           estado_do_guardiao=_vivo)
 
 
 # ── A · o guardiao espera SO o PID ────────────────────────────────────────────
@@ -90,15 +125,21 @@ def test_a_o_guardiao_espera_o_pid_OU_o_pedido_de_limpeza():
     assert "WaitForSingleObject(h, INFINITE)" in guarda, "sem canal, o de sempre"
 
 
-def test_a_o_processo_principal_nem_guarda_o_handle_do_guardiao():
-    """`_runas(..., wait_ms=None)` FECHA o handle e devolve 0. Depois do
-    lancamento, o processo principal nao tem como esperar nem identificar o
-    guardiao que acabou de criar."""
-    fonte = inspect.getsource(__import__("cert_windows")._runas)
+def test_a_o_processo_principal_passou_a_guardar_o_handle_do_guardiao():
+    """ANTES: o lancamento passava por `_runas(..., wait_ms=None)`, que FECHA o
+    handle e devolve 0 — e depois disso o processo principal nao tinha como
+    esperar nem identificar o guardiao que acabara de criar.
 
-    assert "if wait_ms is None:" in fonte
-    assert "CloseHandle(sei.hProcess)" in fonte
-    assert "return 0" in fonte
+    Fatia 13A.4: `_runas` continua fechando, e deixou de ser o caminho do
+    guardiao.
+    """
+    cert_windows = __import__("cert_windows")
+    runas = inspect.getsource(cert_windows._runas)
+    assert "if wait_ms is None:" in runas and "CloseHandle(processo)" in runas
+
+    lancar = inspect.getsource(cert_windows._lancar_guardiao)
+    assert "_elevar(" in lancar and "_runas(" not in lancar
+    assert cert_windows.ControleDoGuardiao.__slots__[-1] == "processo"
 
 
 def test_o_lancamento_devolve_o_controle_do_guardiao():

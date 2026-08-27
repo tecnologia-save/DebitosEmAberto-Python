@@ -59,6 +59,9 @@ LEITURA_DE_CERTIFICADOS_FALHOU = "leitura_de_certificados_falhou"
 POLICY_NAO_CONFIAVEL = "policy_nao_confiavel"
 POLICY_PERMANECERA_NA_MAQUINA = "policy_permanecera_na_maquina"
 POLICY_NAO_REMOVIDA = "policy_nao_removida"
+# Fatia 13A.4: a policy ficou, e o processo que a instalou ja terminou.
+# Nao e "nao removida" — la ainda ha a quem pedir. Aqui nao ha mais.
+POLICY_ORFA_NA_MAQUINA = "policy_orfa_na_maquina"
 LOGIN_CONCLUIDO = "login_concluido"
 LOGIN_FALHOU = "login_falhou"
 SESSAO_RECUPERADA_APOS_RECUSA = "sessao_recuperada_apos_recusa"
@@ -93,6 +96,7 @@ CODIGOS = frozenset({
     CERTIFICADO_INICIADO, CERTIFICADO_NAO_INSTALADO, CERTIFICADO_AMBIGUO,
     CERTIFICADOS_INDISPONIVEIS, LEITURA_DE_CERTIFICADOS_FALHOU,
     POLICY_NAO_CONFIAVEL, POLICY_PERMANECERA_NA_MAQUINA, POLICY_NAO_REMOVIDA,
+    POLICY_ORFA_NA_MAQUINA,
     LOGIN_CONCLUIDO, LOGIN_FALHOU,
     SESSAO_RECUPERADA_APOS_RECUSA, SESSAO_NAO_RECUPERADA_APOS_RECUSA,
     FALHA_AO_ENCERRAR_SESSAO,

@@ -19,6 +19,19 @@ CN_B = "BETA FICTICIA SA:22222222000172"
 CAMINHO = cert_windows.REG_PATH
 
 
+def _vivo(_controle):
+    """O guardiao esta vivo — CHARACTERIZATION_TARGET_CHANGE da fatia 13A.4.
+
+    O protocolo passou a exigir a vida do PROCESSO guardiao, e nao so a policy
+    no registro. Estes testes sempre pressupuseram um guardiao vivo: nao havia
+    outro estado possivel. Dize-lo explicitamente preserva exatamente o que cada
+    assercao deste arquivo ja significava antes da fatia.
+    """
+    from automation.policy_certificado import GUARDIAO_VIVO
+
+    return GUARDIAO_VIVO
+
+
 @pytest.fixture
 def registro(monkeypatch):
     """Substitui o winreg inteiro, incluindo as constantes de colmeia."""
@@ -262,8 +275,9 @@ def test_n_a_chave_e_a_mesma_para_qualquer_execucao():
 class Shell32Falso:
     """ShellExecuteExW de mentira: registra a chamada e devolve o que mandarem."""
 
-    def __init__(self, sucesso=True):
+    def __init__(self, sucesso=True, processo=0xB0B0):
         self.sucesso = sucesso
+        self.processo = processo
         self.chamadas = []
 
     def ShellExecuteExW(self, ponteiro):
@@ -272,7 +286,13 @@ class Shell32Falso:
             {"verb": sei.lpVerb, "file": sei.lpFile, "params": sei.lpParameters,
              "show": sei.nShow}
         )
-        return 1 if self.sucesso else 0
+        if not self.sucesso:
+            return 0
+        # Fatia 13A.4: com SEE_MASK_NOCLOSEPROCESS — que este codigo sempre
+        # pediu — o Windows devolve o handle do processo elevado aqui. O duble
+        # passou a devolve-lo tambem, porque agora ha quem o guarde.
+        sei.hProcess = self.processo
+        return 1
 
 
 @pytest.fixture
@@ -300,8 +320,50 @@ def test_d_uac_negado_devolve_menos_um(monkeypatch):
 def test_d_sem_espera_o_retorno_e_zero_mesmo_sem_saber_o_que_aconteceu(uac):
     """POLICY_POSSIBLE_DEFECT: com wait_ms=None o retorno 0 significa apenas
     "o Windows aceitou lançar" — não que o guardião fez algo. Quem confirma é o
-    polling seguinte, não este código."""
+    polling seguinte, não este código.
+
+    Fatia 13A.4: `_runas` continua exatamente assim, e deixou de ter chamador —
+    o guardião passou a elevar por `_elevar`, que preserva o handle.
+    """
     assert cert_windows._runas(["--guard", "1", "x"], wait_ms=None) == 0
+
+
+def test_d_o_handle_do_processo_e_fechado_por_quem_nao_vai_observar(uac, monkeypatch):
+    """`_runas` fecha, e é isso que o guardião não pode mais fazer.
+
+    ANTES esta era a única saída da elevação, e com ela ia embora a única
+    evidência runtime do processo lançado.
+    """
+    fechados = []
+    monkeypatch.setattr(cert_windows, "_k32", Kernel32Falso())
+    monkeypatch.setattr(cert_windows._k32, "CloseHandle", fechados.append)
+
+    cert_windows._runas(["--guard", "1", "x"], wait_ms=None)
+
+    assert fechados == [0xB0B0]
+
+
+def test_d_elevar_devolve_o_handle_e_NAO_o_fecha(uac, monkeypatch):
+    """A variante que o guardião usa. O par diz duas coisas separadas: se houve
+    lançamento, e o que dá para observar dele."""
+    fechados = []
+    monkeypatch.setattr(cert_windows, "_k32", Kernel32Falso())
+    monkeypatch.setattr(cert_windows._k32, "CloseHandle", fechados.append)
+
+    assert cert_windows._elevar(["--guard", "1", "x"]) == (True, 0xB0B0)
+    assert fechados == [], "o handle fica com quem vai observar"
+
+
+def test_d_elevar_distingue_NAO_LANCOU_de_lancou_sem_handle(monkeypatch):
+    """Um lançamento aceito sem handle não é uma recusa de UAC. São dois
+    desfechos diferentes, e o par os mantém diferentes."""
+    monkeypatch.setattr(cert_windows, "_shell32", Shell32Falso(sucesso=False))
+    assert cert_windows._elevar(["x"]) == (False, None)
+
+    # `hProcess` nao preenchido le como `None` num campo HANDLE do ctypes — e e
+    # exatamente esse o caso "lancou e nao ha o que observar".
+    monkeypatch.setattr(cert_windows, "_shell32", Shell32Falso(processo=None))
+    assert cert_windows._elevar(["x"]) == (True, None)
 
 
 def test_d_o_cn_vai_em_base64_na_linha_de_comando(uac):
@@ -340,12 +402,16 @@ def sem_dormir(monkeypatch):
 def test_g_lanca_o_guardiao_e_espera_a_policy_do_cn_pedido(registro, sem_dormir, monkeypatch):
     chamadas = []
 
-    def lancar(args, wait_ms=None):
+    def lancar(args):
         chamadas.append(args)
         cert_windows.definir_autoselect(CN_A)   # o guardião escreve
-        return 0
+        return True, 0xB0B0
 
-    monkeypatch.setattr(cert_windows, "_runas", lancar)
+    # CHARACTERIZATION_TARGET_CHANGE (13A.4): o duble passou de `_runas` para
+    # `_elevar`. Era ali que a elevação acontecia e é ali que continua; o que
+    # mudou é que o guardião precisa do handle, e `_runas` o fecha.
+    monkeypatch.setattr(cert_windows, "_elevar", lancar)
+    monkeypatch.setattr(cert_windows, "estado_do_guardiao", _vivo)
 
     assert cert_windows.iniciar_guarda(CN_A) is True
     assert len(chamadas) == 1
@@ -355,7 +421,7 @@ def test_g_lanca_o_guardiao_e_espera_a_policy_do_cn_pedido(registro, sem_dormir,
 def test_g_uac_negado_nao_e_fatal_apenas_devolve_false(registro, monkeypatch, capsys):
     """H da entrega: UAC negado NÃO levanta. O chamador segue com policy_ok=False
     e o login usa o fallback de UI."""
-    monkeypatch.setattr(cert_windows, "_runas", lambda *a, **k: -1)
+    monkeypatch.setattr(cert_windows, "_elevar", lambda *a, **k: (False, None))
 
     assert cert_windows.iniciar_guarda(CN_A) is False
     assert "UAC negado" in capsys.readouterr().out
@@ -431,11 +497,14 @@ def test_m_esperar_pelo_cn_e_nao_pela_existencia_torna_a_troca_segura(
     apareceu": degradar aqui abriria o Chrome com o certificado errado, que e
     exatamente o que este teste sempre existiu para impedir.
     """
-    def guardiao_confuso(args, wait_ms=None):
+    def guardiao_confuso(args):
         cert_windows.definir_autoselect(CN_B)
-        return 0
+        return True, 0xB0B0
 
-    monkeypatch.setattr(cert_windows, "_runas", guardiao_confuso)
+    # CHARACTERIZATION_TARGET_CHANGE (13A.4): o duble da elevacao mudou de
+    # `_runas` para `_elevar`. O que este teste afirma nao muda — o protocolo
+    # recusa a policy de OUTRO certificado em vez de degradar.
+    monkeypatch.setattr(cert_windows, "_elevar", guardiao_confuso)
 
     with pytest.raises(policy_certificado.ConfiguracaoDeHostIncompativel) as erro:
         cert_windows.iniciar_guarda(CN_A)

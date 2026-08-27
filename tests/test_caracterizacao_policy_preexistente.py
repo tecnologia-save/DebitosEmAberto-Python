@@ -34,6 +34,38 @@ CN_ALHEIO = "BETA FICTICIA SA:22222222000172"
 CAMINHO = cert_windows.REG_PATH
 
 
+@pytest.fixture(autouse=True)
+def _guardiao_vivo(monkeypatch):
+    """CHARACTERIZATION_TARGET_CHANGE da fatia 13A.4.
+
+    O app passou a exigir que o PROCESSO guardiao esteja vivo antes de abrir
+    sessao e antes de pedir limpeza. Estes testes sempre pressupuseram isso: nao
+    havia outro estado possivel, e os dubles de controle daqui nem sao processos.
+    Dize-lo explicitamente preserva o que cada assercao ja significava.
+    """
+    import cert_windows
+    from automation import maquina, policy_certificado
+
+    for modulo in (maquina, cert_windows):
+        monkeypatch.setattr(modulo, "estado_do_guardiao",
+                            lambda _c: policy_certificado.GUARDIAO_VIVO)
+    monkeypatch.setattr(maquina, "encerrar_controle_do_guardiao", lambda _c: None)
+    monkeypatch.setattr(cert_windows, "encerrar_controle", lambda _c: None)
+
+
+def _vivo(_controle):
+    """O guardiao esta vivo — CHARACTERIZATION_TARGET_CHANGE da fatia 13A.4.
+
+    O protocolo passou a exigir a vida do PROCESSO guardiao, e nao so a policy
+    no registro. Estes testes sempre pressupuseram um guardiao vivo: nao havia
+    outro estado possivel. Dize-lo explicitamente preserva exatamente o que cada
+    assercao deste arquivo ja significava antes da fatia.
+    """
+    from automation.policy_certificado import GUARDIAO_VIVO
+
+    return GUARDIAO_VIVO
+
+
 @pytest.fixture
 def registro(monkeypatch):
     falso = RegistroFalso()
@@ -72,6 +104,7 @@ def protocolo(cn, lancamentos):
         ),
         lancar_guardiao=lancar,
         aguardar=lambda: None,
+        estado_do_guardiao=_vivo,
     )
 
 
@@ -399,7 +432,10 @@ def test_j_nem_a_nossa_propria_policy_e_sobrescrita(registro):
     )
 
     assert "policy_ja_e_nossa" not in parametros
-    assert parametros == ["cn", "avaliar_inicio", "lancar_guardiao", "aguardar"]
+    # Fatia 13A.4: entrou `estado_do_guardiao`. Nao e uma porta para pular a
+    # avaliacao — ela e a SEGUNDA pergunta, feita depois da primeira.
+    assert parametros == ["cn", "avaliar_inicio", "lancar_guardiao", "aguardar",
+                          "estado_do_guardiao"]
 
 
 def test_j_a_execucao_seguinte_a_um_crash_duplo_para_em_vez_de_herdar(registro):

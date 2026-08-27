@@ -560,6 +560,10 @@ EVENT_MODIFY_STATE = 0x0002
 SYNCHRONIZE = 0x00100000
 INFINITE = 0xFFFFFFFF
 WAIT_OBJECT_0 = 0x00000000
+# Os dois desfechos de uma espera de ZERO milissegundo sobre um processo: ele
+# ainda nao sinalizou (esta rodando) ou a espera nao pode ser feita.
+WAIT_TIMEOUT = 0x00000102
+WAIT_FAILED = 0xFFFFFFFF
 
 
 class ControleDoGuardiao:
@@ -578,12 +582,20 @@ class ControleDoGuardiao:
     e e por isso que so `cert_windows` o le.
     """
 
-    __slots__ = ("evento", "nome", "cn")
+    __slots__ = ("evento", "nome", "cn", "processo")
 
-    def __init__(self, evento, nome: str, cn: str):
+    def __init__(self, evento, nome: str, cn: str, processo=None):
         self.evento = evento
         self.nome = nome
         self.cn = cn
+        # O handle do PROCESSO elevado (fatia 13A.4). O menor estado que permite
+        # perguntar ao Windows se aquele guardiao — aquele mesmo, e nao um PID
+        # que pode ter sido reaproveitado — ainda esta rodando.
+        #
+        # `None` quando a elevacao nao devolveu handle nenhum: nao e "morto", e
+        # "nunca havera resposta", e e assim que ele e lido em
+        # `estado_do_guardiao`.
+        self.processo = processo
 
     def __repr__(self) -> str:
         return "ControleDoGuardiao(...)"
@@ -591,8 +603,17 @@ _shell32.ShellExecuteExW.restype = wintypes.BOOL
 _shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(_SHELLEXECUTEINFOW)]
 
 
-def _runas(args: list, wait_ms=None) -> int:
-    """Roda sys.executable + args ELEVADO (UAC). Retorna -1 se UAC negado."""
+def _elevar(args: list) -> tuple:
+    """Roda sys.executable + args ELEVADO (UAC). Devolve (lancou, processo).
+
+    Duas informacoes, e nao uma: quem decide se houve lancamento e o retorno do
+    proprio `ShellExecuteExW`, e nao o handle. Um lancamento aceito PODE nao
+    trazer handle nenhum — e essa diferenca importa, porque "lancou e nao da
+    para observar" nao e a mesma coisa que "nao lancou".
+
+    `SEE_MASK_NOCLOSEPROCESS` ja estava ligado antes da fatia 13A.4, e o handle
+    ja chegava; o que nao existia era um chamador que o guardasse.
+    """
     SEE_MASK_NOCLOSEPROCESS = 0x00000040
     sei = _SHELLEXECUTEINFOW()
     sei.cbSize = ctypes.sizeof(sei)
@@ -602,15 +623,29 @@ def _runas(args: list, wait_ms=None) -> int:
     sei.lpParameters = " ".join(args)
     sei.nShow = 0  # SW_HIDE
     if not _shell32.ShellExecuteExW(ctypes.byref(sei)):
+        return False, None
+    return True, sei.hProcess
+
+
+def _runas(args: list, wait_ms=None) -> int:
+    """Roda sys.executable + args ELEVADO (UAC). Retorna -1 se UAC negado.
+
+    Contrato preservado tal e qual. O guardiao deixou de passar por aqui na
+    fatia 13A.4 — ele precisa do handle, e esta funcao o fecha —, e o ramo que
+    ESPERA ficou sem chamador vivo. Registrado e nao removido: reescrever ctypes
+    que ninguem executa nao paga o risco.
+    """
+    lancou, processo = _elevar(args)
+    if not lancou:
         return -1
     if wait_ms is None:
-        if sei.hProcess:
-            _k32.CloseHandle(sei.hProcess)
+        if processo:
+            _k32.CloseHandle(processo)
         return 0
-    _k32.WaitForSingleObject(sei.hProcess, wait_ms)
+    _k32.WaitForSingleObject(processo, wait_ms)
     code = wintypes.DWORD()
-    _k32.GetExitCodeProcess(sei.hProcess, ctypes.byref(code))
-    _k32.CloseHandle(sei.hProcess)
+    _k32.GetExitCodeProcess(processo, ctypes.byref(code))
+    _k32.CloseHandle(processo)
     return int(code.value)
 
 
@@ -809,11 +844,69 @@ def _lancar_guardiao(cn: str) -> ControleDoGuardiao | None:
         return None
 
     cn_b64 = base64.b64encode(cn.encode("utf-8")).decode("ascii")
-    if _runas(_guard_args(["--guard", str(os.getpid()), cn_b64, nome]),
-              wait_ms=None) != 0:
+    lancou, processo = _elevar(
+        _guard_args(["--guard", str(os.getpid()), cn_b64, nome])
+    )
+    if not lancou:
         _k32.CloseHandle(evento)
         return None
-    return ControleDoGuardiao(evento, nome, cn)
+    # O handle FICA (fatia 13A.4). Ate aqui `_runas` o fechava no instante
+    # seguinte ao lancamento, e com ele ia embora a unica evidencia runtime do
+    # processo que esta execucao mesma criou.
+    return ControleDoGuardiao(evento, nome, cn, processo)
+
+
+def estado_do_guardiao(controle: ControleDoGuardiao) -> str:
+    """Aquele guardiao ainda esta rodando?
+
+    Uma espera de zero milissegundo sobre o handle do processo. E o proprio
+    kernel quem responde, sobre O PROCESSO — e nao sobre um PID, que o Windows
+    reaproveita e que responderia por outro programa qualquer.
+
+    Manter este handle aberto NAO mantem o processo executando: um processo
+    encerrado continua encerrado, e o objeto do kernel so sobrevive para que o
+    desfecho possa ser lido. Ver a fatia 13A.4, §24.
+
+    Tres respostas, e a terceira nao e um erro: "nao sei" e uma resposta, e ela
+    e diferente de "morreu". Nunca traduzida para VIVO.
+
+    GUARDIAN_PROCESS_HANDLE_LIVENESS_VALIDATION_REQUIRED. Nenhum duble prova que
+    este handle atravessa a fronteira de UAC e de nivel de integridade: quem
+    observa e um processo COMUM, e quem e observado e um processo ELEVADO. A
+    medicao pertence a 12E, e esta registrada no grupo `liveness` do harness.
+    """
+    if not controle.processo:
+        # A elevacao aconteceu e nao houve handle. Nunca havera resposta — e
+        # isso e ignorancia, e nao morte confirmada.
+        return policy_certificado.GUARDIAO_NAO_VERIFICAVEL
+    try:
+        resposta = _k32.WaitForSingleObject(controle.processo, 0)
+    except OSError:
+        return policy_certificado.GUARDIAO_NAO_VERIFICAVEL
+    if resposta == WAIT_TIMEOUT:
+        return policy_certificado.GUARDIAO_VIVO
+    if resposta == WAIT_OBJECT_0:
+        return policy_certificado.GUARDIAO_ENCERRADO
+    return policy_certificado.GUARDIAO_NAO_VERIFICAVEL
+
+
+def encerrar_controle(controle: ControleDoGuardiao) -> None:
+    """Fecha os handles deste controle. Chamado quando ele deixa de servir.
+
+    Sao dois e sempre foram: o canal de limpeza, criado no lancamento, e — desde
+    a fatia 13A.4 — o processo. O do canal nunca era fechado por quem o criou, e
+    uma execucao que trocasse de certificado acumulava um por guardiao.
+
+    Depois disto o controle e INERTE: pedir limpeza ou perguntar pela vida dele
+    passa a operar sobre handles fechados. Por isso quem chama e sempre quem
+    esta descartando o controle.
+    """
+    if controle.evento:
+        _k32.CloseHandle(controle.evento)
+    if controle.processo:
+        _k32.CloseHandle(controle.processo)
+    controle.evento = None
+    controle.processo = None
 
 
 def pedir_limpeza(controle: ControleDoGuardiao) -> None:
@@ -841,6 +934,7 @@ def iniciar_guarda_detalhado(cn: str) -> policy_certificado.ResultadoDaPolicy:
         ),
         lancar_guardiao=_lancar_guardiao,
         aguardar=lambda: time.sleep(policy_certificado.INTERVALO_SONDAGEM_S),
+        estado_do_guardiao=estado_do_guardiao,
     )
 
     if resultado.situacao == policy_certificado.JA_ATIVA:
@@ -849,6 +943,14 @@ def iniciar_guarda_detalhado(cn: str) -> policy_certificado.ResultadoDaPolicy:
               "removida por nos ao terminar.")
     elif resultado.situacao == policy_certificado.ATIVADA:
         print("[wincert] Policy ativa — guardiao vigiando p/ limpar no fim.")
+    elif resultado.situacao in (policy_certificado.GUARDIAO_MORREU,
+                               policy_certificado.GUARDIAO_INCERTO):
+        # A policy esta escrita e coerente. O que falta e o responsavel por ela.
+        # Sem CN, sem PID, sem handle: quem opera precisa saber o que fazer, e
+        # nao quem era.
+        print("[wincert] A configuracao foi escrita, e o processo que responde "
+              "por ela nao esta ativo.")
+        print("[wincert] A execucao NAO vai continuar. Nada foi removido.")
     elif resultado.situacao == policy_certificado.ELEVACAO_RECUSADA:
         print("[wincert] Nao foi possivel iniciar o guardiao (UAC negado?).")
     else:

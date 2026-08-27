@@ -470,6 +470,37 @@ def _esperar_marca(processo: subprocess.Popen, marca: str, limite: int) -> bool:
     return False
 
 
+# ── Grupo 6 · liveness do processo guardiao (fatia 13A.4, §27) ────────────────
+
+def grupo_liveness(caderno: Caderno, seco: bool) -> None:
+    """GUARDIAN_PROCESS_HANDLE_LIVENESS_VALIDATION_REQUIRED.
+
+    A 13A.4 fechou GUARDIAN_FAILURE_ORPHANED_POLICY_ACCEPTANCE_RISK sobre uma
+    premissa que SO Windows real confirma: que o handle devolvido por
+    `ShellExecuteExW` com SEE_MASK_NOCLOSEPROCESS e utilizavel pelo processo
+    comum para observar um processo ELEVADO, atravessando a fronteira de UAC e
+    de nivel de integridade.
+
+    Nenhum duble prova isso, e nenhum item deste grupo vira PASS por duble.
+    """
+    itens = (
+        ("AE", "ShellExecuteExW devolve handle do processo elevado", "§27 §28"),
+        ("AF", "o parent comum consegue WaitForSingleObject nesse handle", "§27"),
+        ("AG", "o handle sinaliza quando o guardiao elevado morre", "§27"),
+        ("AH", "o handle atravessa a fronteira UAC/integridade", "§27"),
+        ("AI", "nenhum handle acumula por troca de certificado", "§29"),
+    )
+    for item, cenario, secao in itens:
+        caderno.anotar(Evidencia(
+            item=item, cenario=cenario, secao=secao,
+            esperado="medido em Windows real, em VM descartavel",
+            observado=("execucao seca — nada foi tocado" if seco else
+                       "NAO EXECUTADO: depende do ambiente de validacao da 12E"),
+            classificacao=NOT_TESTED,
+            finding="GUARDIAN_PROCESS_HANDLE_LIVENESS_VALIDATION_REQUIRED",
+        ))
+
+
 # ── Papeis dos processos filhos ───────────────────────────────────────────────
 
 def papel_segunda_instancia() -> int:
@@ -528,6 +559,7 @@ GRUPOS = {
     "residuo": grupo_residuo,
     "startup": grupo_startup,
     "crash": grupo_crash,
+    "liveness": grupo_liveness,
 }
 
 PAPEIS = {

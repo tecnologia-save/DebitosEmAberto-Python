@@ -72,6 +72,10 @@ def frase(e: EventoOperacional) -> str | None:
         return (f"    [!] Não foi possível remover a policy do Chrome "
                 f"({e.tipo_da_falha}). Ela continua na máquina; o processo "
                 "guardião ainda pode removê-la ao final.")
+    if e.codigo == E.POLICY_ORFA_NA_MAQUINA:
+        return ("    [!] A configuração de auto-seleção continua na máquina, e o processo\n"
+                "        que a instalou já terminou. Ela não foi removida: a próxima\n"
+                "        execução decide o que fazer com ela.")
     if e.codigo == E.LOGIN_CONCLUIDO:
         return "    [✓] Login no portal concluído."
     if e.codigo == E.LOGIN_FALHOU:
