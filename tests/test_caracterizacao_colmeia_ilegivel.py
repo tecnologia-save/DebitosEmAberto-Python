@@ -415,3 +415,56 @@ def test_15_a_garantia_e_sobre_instalacoes_ACEITAS(registro):
 
     assert "ACEITA COMO VALIDA" in fonte
     assert "RESIDUO_OWNED" in fonte
+
+
+# ── §0 · HISTORICAL_ENUMERATION_TRUNCATION_AMBIGUITY ─────────────────────────
+
+def test_0_truncagem_DEPOIS_dos_nossos_valores_esconderia_o_alheio(registro,
+                                                                   monkeypatch):
+    """A pergunta que a caracterizacao da 13A.2 NAO tinha feito.
+
+    Ela truncou nos indices 3 e 0 — nunca no 7. E o caso do 7 e o unico que
+    produzia um inventario que PARECIA exatamente compativel:
+
+        valores 1..7 lidos, todos nossos
+        -> erro de enumeracao antes de revelar o "99" alheio
+        -> inventario com o conjunto de nomes exato e os payloads certos
+        -> EMPRESTAR, sobre uma colmeia que tem uma regra a mais
+
+    Logo `UNREADABLE_HIVE_BORROW_IDENTITY_RISK` ERA alcancavel por esse caminho,
+    e o relatorio da 13A.2 afirmou o contrario. A afirmacao valia para a
+    abertura da chave, e nao para a leitura dos valores.
+
+    AGORA a truncagem marca a colmeia como ilegivel, e ilegivel recusa.
+    """
+    nossa(registro, "HKCU")
+    registro.dados["HKCU"][CAMINHO]["99"] = "regra alheia, invisivel na truncagem"
+    falhar_enumerando(registro, monkeypatch, "HKCU", no_indice=QUANTAS)
+
+    hkcu = cert_windows.inventario_da_policy()[0]
+
+    assert hkcu.legivel is False, "e nao 'legivel com 1..7'"
+    assert decidir().decisao == policy_certificado.RECUSAR
+
+
+def test_0_e_sem_a_correcao_o_inventario_teria_parecido_compativel(registro,
+                                                                   monkeypatch):
+    """A prova do contrafactual, sem restaurar o codigo antigo: os sete valores
+    que a truncagem teria entregado SAO exatamente os nossos, e um inventario
+    com eles e so eles e EMPRESTAR."""
+    truncado = policy_certificado.ColmeiaDaPolicy(
+        "HKCU", existe=True,
+        regras=tuple(
+            policy_certificado.RegraDaPolicy(str(i), padrao=url, cn=CN_NOSSO)
+            for i, url in enumerate(cert_windows.CERT_URLS, 1)
+        ),
+    )
+
+    decisao = policy_certificado.avaliar_estado_inicial(
+        (truncado, policy_certificado.ColmeiaDaPolicy("HKLM")),
+        CN_NOSSO, tuple(cert_windows.CERT_URLS),
+    )
+
+    assert decisao.decisao == policy_certificado.EMPRESTAR, (
+        "e por isso a truncagem era perigosa: o que ela entregava passava"
+    )
