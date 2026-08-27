@@ -298,7 +298,11 @@ def test_17_o_crash_path_usa_a_MESMA_regra(registro):
     passam por `_limpar_confirmando`, e ela e a nao destrutiva."""
     guarda = inspect.getsource(cert_windows.guardiao)
 
-    assert guarda.count("_limpar_confirmando(cn)") == 2
+    # Fatia 13A.3: passaram a ser TRES. As duas do ciclo normal/crash, e a
+    # limpeza de emergencia — que so existe porque uma excecao inesperada
+    # tambem precisa passar pela remocao por comparacao antes de o processo
+    # morrer.
+    assert guarda.count("_limpar_confirmando(cn)") == 4
     assert "limpar_autoselect()" not in guarda, "o DeleteKey saiu do guardiao"
 
 

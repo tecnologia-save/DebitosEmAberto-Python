@@ -702,10 +702,16 @@ def guardiao(pid: int, cn: str, canal: str = "") -> None:
     escrita = NAO_INSTALADA
     try:
         escrita = definir_autoselect(cn)
-        # Registra em QUAL colmeia caiu: se só HKCU tiver valor e o processo
-        # principal não enxergar, é sinal de elevação em outra conta de usuário
-    except Exception:  # noqa: BLE001 — a falha vira NAO_INSTALADA logo abaixo
-        pass
+    except Exception:  # noqa: BLE001 — ver a compensacao abaixo
+        # A compensacao da fatia 13A.1 roda quando `definir_autoselect` DECIDE
+        # que o estado final nao ficou coerente. Uma excecao Python inesperada
+        # no meio da escrita pula essa decisao — a funcao nem chega ao passo 3 —
+        # e o que sobra e a nossa policy pela metade, sem ninguem responsavel.
+        #
+        # Aqui a compensacao acontece assim mesmo, com a mesma semantica: remove
+        # por comparacao o que for nosso, e CONFIRMA. Confirmou, nao possuimos
+        # nada; nao confirmou, possuimos, e o ciclo de vida continua.
+        escrita = NAO_INSTALADA if _limpar_confirmando(cn) else RESIDUO_OWNED
 
     if escrita == NAO_INSTALADA:
         # Nao instalamos nada e nada nosso ficou, entao nao possuimos nada — e
@@ -719,6 +725,16 @@ def guardiao(pid: int, cn: str, canal: str = "") -> None:
     # nosso precisa de dono. No segundo caso a instalacao falhou e a compensacao
     # nao confirmou — o processo principal nunca vera a policy, vai recusar, e
     # este guardiao continua sendo quem limpa.
+    # A PARTIR DAQUI EXISTE ESTADO NOSSO, e este processo e o dono dele.
+    #
+    # Ate a fatia 13A.3 uma excecao inesperada daqui para a frente saia pelo
+    # `finally` — que so fecha handles — e ia parar no `except` do dispatch, que
+    # chamava `limpar_autoselect`: o `DeleteKey` da chave inteira. Aquele bloco
+    # nao sabe em que fase o guardiao estava, entao apagava configuracao alheia
+    # por causa de uma falha nossa.
+    #
+    # Quem sabe a fase e este escopo. A limpeza de emergencia usa a mesma
+    # remocao por comparacao do resto do ciclo de vida, e confirma.
     evento = _k32.OpenEventW(SYNCHRONIZE, False, canal) if canal else None
     try:
         while True:
@@ -751,6 +767,14 @@ def guardiao(pid: int, cn: str, canal: str = "") -> None:
                 # sem laco, e o host continua nosso ate alguem olhar.
                 _k32.WaitForSingleObject(lease, INFINITE)
             break
+    except BaseException:
+        # A causa vence. Uma falha da limpeza nao pode substituir a excecao que
+        # obrigou o encerramento — a mesma regra da fatia 9B.1.
+        try:
+            _limpar_confirmando(cn)
+        except Exception:  # noqa: BLE001 — ver acima
+            pass
+        raise
     finally:
         if h:
             _k32.CloseHandle(h)
@@ -855,16 +879,22 @@ if __name__ == "__main__":
         try:
             guardiao(int(sys.argv[2]), base64.b64decode(sys.argv[3]).decode("utf-8"),
                      sys.argv[4] if len(sys.argv) >= 5 else "")
-        except Exception:
-            # Antes isto gravava um arquivo de erro com a mensagem da excecao,
-            # que pode carregar caminho de registro. Saiu junto com o resto do
-            # diagnostico persistente (fatia 13B).
+        except Exception:  # noqa: BLE001 — ver abaixo
+            # NENHUMA mutacao de registro aqui, e essa e a fatia 13A.3.
             #
-            # GUARDIAN_CLEANUP_DELETES_WHOLE_KEY residual, REGISTRADO e nao
-            # corrigido: esta limpeza continua sendo a destrutiva. Ela escapou
-            # da fatia 13A porque vive no `__main__`, fora de `guardiao`, e o
-            # subsistema de policy esta congelado ate a 12E.
-            limpar_autoselect()
+            # Ate aqui este ramo chamava `limpar_autoselect` — o `DeleteKey` da
+            # chave inteira. Ele era o ultimo caminho AUTOMATICO que apagava
+            # configuracao alheia, e apagava sem saber de nada: o `try` acima
+            # cobre tambem a decodificacao dos argumentos, entao um PID
+            # malformado removia policy de outra pessoa.
+            #
+            # Quem conhece a fase do ciclo de vida e `guardiao`, e e la que a
+            # remocao por comparacao acontece — antes de a excecao chegar aqui.
+            # O que resta a este bloco e nao piorar nada.
+            #
+            # Tambem nao imprime: a mensagem da excecao pode carregar caminho de
+            # registro (fatia 13B).
+            pass
         sys.exit(0)
 
     if len(sys.argv) >= 2 and sys.argv[1] == "--clean":

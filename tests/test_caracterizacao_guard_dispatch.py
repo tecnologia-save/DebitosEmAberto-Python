@@ -68,8 +68,13 @@ def externo(cn=CN_ALHEIO):
 # ── §1 · o escopo real do `except` do dispatch ───────────────────────────────
 
 def _bloco_do_dispatch():
+    """So o CODIGO do dispatch. Os comentarios contam a historia e citam os
+    nomes antigos — assertiva de texto batendo em prosa e o tropeco recorrente
+    deste projeto."""
     fonte = (RAIZ / "cert_windows.py").read_text(encoding="utf-8")
-    return fonte[fonte.index('if __name__ == "__main__":'):]
+    bloco = fonte[fonte.index('if __name__ == "__main__":'):]
+    return "\n".join(linha for linha in bloco.splitlines()
+                     if not linha.lstrip().startswith("#"))
 
 
 def test_1_o_try_cobre_o_parsing_E_a_chamada_do_guardiao():
@@ -84,24 +89,31 @@ def test_1_o_try_cobre_o_parsing_E_a_chamada_do_guardiao():
     assert trecho.index("try:") < trecho.index("guardiao(")
 
 
-def test_1_e_o_except_chama_a_limpeza_DESTRUTIVA():
-    """GUARD_DISPATCH_DESTRUCTIVE_CLEANUP: `limpar_autoselect` e `DeleteKey` da
-    chave inteira, e nao a remocao por comparacao da fatia 13A."""
+def test_1_o_except_NAO_MUTA_MAIS_o_registro():
+    """GUARD_DISPATCH_DESTRUCTIVE_CLEANUP, fechado.
+
+    ANTES este ramo chamava `limpar_autoselect` — o `DeleteKey` da chave
+    inteira. Como o `try` cobre tambem a decodificacao dos argumentos, um PID
+    malformado removia policy de outra pessoa.
+    """
     bloco = _bloco_do_dispatch()
     trecho = bloco[:bloco.index("sys.exit(0)")]
 
-    assert "limpar_autoselect()" in trecho
-    assert "remover_autoselect_owned" not in trecho
-    assert "winreg.DeleteKey" in inspect.getsource(cert_windows.limpar_autoselect)
+    assert "limpar_autoselect" not in trecho
+    assert "DeleteKey" not in trecho
+    assert "remover_autoselect_owned" not in trecho, "nem a nao destrutiva"
 
 
-def test_1_e_e_o_UNICO_deletekey_automatico_que_sobrou():
-    """Dentro de `guardiao` a fatia 13A ja o tinha tirado. O `--clean` manual
-    continua fora de escopo: la quem manda apagar tudo e uma pessoa."""
+def test_1_e_nao_sobrou_DELETEKEY_automatico_nenhum():
+    """O `--clean` manual continua fora de escopo: la quem manda apagar tudo e
+    uma pessoa, e ela sabe o que esta fazendo."""
     assert "limpar_autoselect()" not in inspect.getsource(cert_windows.guardiao)
 
     bloco = _bloco_do_dispatch()
-    assert bloco.count("limpar_autoselect()") == 2, "o dispatch e o --clean"
+    automatico = bloco[:bloco.index('sys.argv[1] == "--clean"')]
+
+    assert "limpar_autoselect" not in automatico
+    assert bloco.count("limpar_autoselect()") == 1, "so o --clean"
 
 
 # ── §2 · o DeleteKey residual, reproduzido ───────────────────────────────────
@@ -216,29 +228,50 @@ def test_11_e_o_guardiao_engole_essa_excecao_e_vai_embora(
 
 # ── §6 · §7 · a policy orfa ──────────────────────────────────────────────────
 
-def test_6_uma_excecao_POS_escrita_sobe_ao_dispatch(guardiao_isolado,
-                                                    monkeypatch):
-    """Fase E. O `finally` de `guardiao` fecha handles — e nao limpa a policy.
-    A excecao segue para o dispatch com a policy JA instalada."""
-    fonte = inspect.getsource(cert_windows.guardiao)
-    trecho = fonte[fonte.index("finally:"):]
+def test_6_uma_excecao_POS_escrita_agora_LIMPA_antes_de_subir(guardiao_isolado,
+                                                              monkeypatch):
+    """ANTES: o `finally` so fechava handles, a excecao seguia para o dispatch
+    com a policy JA instalada, e quem limpava era o `DeleteKey` de la.
 
-    assert "CloseHandle" in trecho
-    assert "limpar" not in trecho, "o finally nao limpa policy"
-
-    def explodir(n, alvos, todos, ms):
+    AGORA a limpeza acontece aqui, onde se sabe que ha estado nosso — e com a
+    remocao por comparacao, que preserva o alheio.
+    """
+    # O valor externo tem de surgir DEPOIS da escrita: antes dela ele seria
+    # conflito, e a 13A.1 recusaria a instalacao inteira. Aqui ele entra no
+    # mesmo instante em que a espera explode.
+    def explodir_e_intrometer(h, ms):
+        guardiao_isolado.dados["HKCU"][CAMINHO]["RegraDaEmpresa"] = externo()
         raise MemoryError("falha inesperada na espera")
 
     k32 = Kernel32Falso()
-    k32.WaitForSingleObject = lambda h, ms: (_ for _ in ()).throw(
-        MemoryError("falha inesperada na espera")
-    )
+    k32.WaitForSingleObject = explodir_e_intrometer
     monkeypatch.setattr(cert_windows, "_k32", k32)
 
     with pytest.raises(MemoryError):
         cert_windows.guardiao(4242, CN_NOSSO)
 
-    assert cert_windows.policy_owned_existe(CN_NOSSO) is True
+    assert cert_windows.policy_owned_existe(CN_NOSSO) is False, "o nosso saiu"
+    assert guardiao_isolado.valores("HKCU", CAMINHO) == {
+        "RegraDaEmpresa": externo()
+    }, "e o alheio ficou"
+
+
+def test_6_e_a_causa_original_vence_a_falha_da_limpeza(guardiao_isolado,
+                                                       monkeypatch):
+    """Regra da fatia 9B.1: um erro no cleanup nao substitui a excecao que
+    obrigou o encerramento."""
+    k32 = Kernel32Falso()
+    k32.WaitForSingleObject = lambda h, ms: (_ for _ in ()).throw(
+        MemoryError("a causa")
+    )
+    monkeypatch.setattr(cert_windows, "_k32", k32)
+    monkeypatch.setattr(
+        cert_windows, "_limpar_confirmando",
+        lambda cn: (_ for _ in ()).throw(RuntimeError("falha do cleanup")),
+    )
+
+    with pytest.raises(MemoryError, match="a causa"):
+        cert_windows.guardiao(4242, CN_NOSSO)
 
 
 def test_7_o_parent_aceita_essa_policy_como_ATIVADA(guardiao_isolado):
@@ -328,3 +361,72 @@ def test_16_o_clean_manual_continua_intocado():
     trecho = bloco[bloco.index('sys.argv[1] == "--clean"'):]
 
     assert "limpar_autoselect()" in trecho[:200]
+
+
+# ── 13A.3 · o que a fatia instalou ───────────────────────────────────────────
+
+def test_13a3_falha_pre_posse_nao_toca_em_nada(guardiao_isolado, monkeypatch):
+    """§5: o dispatch nao muta mais, e o guardiao nao chegou a possuir nada.
+    Estado externo preexistente sai intacto de uma falha nossa."""
+    guardiao_isolado.dados["HKCU"][CAMINHO] = {"1": externo()}
+    monkeypatch.setattr(cert_windows.exclusividade_host, "anexar",
+                        lambda: (_ for _ in ()).throw(OSError("sem lease")))
+
+    with pytest.raises(OSError):
+        cert_windows.guardiao(4242, CN_NOSSO)
+
+    assert guardiao_isolado.valores("HKCU", CAMINHO) == {"1": externo()}
+
+
+def test_13a3_excecao_na_escrita_agora_compensa(guardiao_isolado, monkeypatch):
+    """§11: a excecao Python no meio da escrita passa a acionar a mesma
+    compensacao por comparacao. Confirmada, o guardiao sai sem possuir nada."""
+    original = guardiao_isolado.SetValueEx
+    escritas = {"n": 0}
+
+    def falhar_no_terceiro(chave, nome, reservado, tipo, valor):
+        escritas["n"] += 1
+        if escritas["n"] > 3:
+            raise MemoryError("falha inesperada no meio da escrita")
+        return original(chave, nome, reservado, tipo, valor)
+
+    monkeypatch.setattr(guardiao_isolado, "SetValueEx", falhar_no_terceiro)
+    guardiao_isolado.dados["HKCU"][CAMINHO] = {"RegraDaEmpresa": externo()}
+
+    cert_windows.guardiao(4242, CN_NOSSO)
+
+    assert cert_windows.policy_owned_existe(CN_NOSSO) is False, "meia policy saiu"
+    assert "RegraDaEmpresa" in guardiao_isolado.valores("HKCU", CAMINHO)
+
+
+def test_13a3_e_se_a_compensacao_nao_confirmar_o_ciclo_continua(guardiao_isolado,
+                                                                monkeypatch):
+    """§10: nao confirmou, possuimos — e um guardiao que possui estado nao vai
+    embora. Ele entra no laco de vigilancia, como no caso RESIDUO_OWNED."""
+    monkeypatch.setattr(
+        cert_windows, "definir_autoselect",
+        lambda cn: (_ for _ in ()).throw(MemoryError("falha inesperada")),
+    )
+    monkeypatch.setattr(cert_windows, "_limpar_confirmando", lambda cn: False)
+
+    fonte = inspect.getsource(cert_windows.guardiao)
+    trecho = fonte[fonte.index("except Exception:"):]
+
+    assert "RESIDUO_OWNED" in trecho
+    assert trecho.index("RESIDUO_OWNED") < trecho.index("if escrita == NAO_INSTALADA:")
+    assert "if escrita == NAO_INSTALADA:" in trecho, "so este ramo abandona"
+
+
+def test_13a3_nenhum_caminho_automatico_apaga_a_chave_inteira():
+    """O criterio do §17, verificado no arquivo inteiro."""
+    fonte = (RAIZ / "cert_windows.py").read_text(encoding="utf-8")
+    codigo = "\n".join(linha for linha in fonte.splitlines()
+                       if not linha.lstrip().startswith("#"))
+
+    chamadas = [linha.strip() for linha in codigo.splitlines()
+                if "limpar_autoselect()" in linha
+                and not linha.lstrip().startswith("def ")]
+
+    assert len(chamadas) == 1, chamadas
+    manual = codigo[codigo.index('sys.argv[1] == "--clean"'):]
+    assert "limpar_autoselect()" in manual, "e a unica e a do operador"
