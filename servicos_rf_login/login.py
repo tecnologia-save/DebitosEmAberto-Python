@@ -680,7 +680,7 @@ def main(
     print(f"[1ª navegação] Abrindo {SERVICOS_RF_URL} ...")
     try:
         page.goto(SERVICOS_RF_URL, wait_until="domcontentloaded", timeout=30_000)
-        print(f"  -> URL: {page.url}")
+        print("  -> navegação concluída.")
     except Exception as e:
         print(f"  -> erro no goto: {type(e).__name__}: {e}")
         registrar_erro(f"Login: erro ao abrir URL (1ª navegação). {type(e).__name__}: {e}")
@@ -717,12 +717,6 @@ def main(
     except Exception as e:
         registrar_erro(f"Login: botão 'Entrar com gov.br' não encontrado. {type(e).__name__}: {e}")
         print(f"  -> botão não encontrado: {type(e).__name__}: {e}")
-        try:
-            shot = str(project_dir / "_debug_govbr_btn.png")
-            page.screenshot(path=shot, full_page=True)
-            print(f"     screenshot: {shot}")
-        except Exception:
-            pass
         # LOGIN_RESOURCE_CLEANUP_GAP (fatia 12B.1): o contexto existe e o
         # chamador nunca recebera ownership dele — fecha-lo aqui e a unica
         # forma de garantir que o perfil e a porta 9222 saem com a falha.
@@ -741,7 +735,7 @@ def main(
         page.wait_for_load_state("domcontentloaded", timeout=20_000)
     except Exception:
         pass
-    print(f"  -> URL após 'Entrar com gov.br': {page.url}")
+    print("  -> etapa 'Entrar com gov.br' concluída.")
 
     if _ja_logado(page):
         print("  -> Redirecionado automaticamente após gov.br. Login concluído.")
@@ -801,12 +795,6 @@ def main(
             registrar_erro("Login: botão 'Seu certificado digital' não encontrado.")
             if tentativa == MAX_TENTATIVAS_CERT:
                 print("[cert] Botão não encontrado após todas as tentativas. Abortando.")
-                try:
-                    shot = str(project_dir / "_debug_cert_button.png")
-                    page.screenshot(path=shot, full_page=True)
-                    print(f"     screenshot: {shot}")
-                except Exception:
-                    pass
                 # LOGIN_RESOURCE_CLEANUP_GAP (fatia 12B.1): o contexto existe e o
                 # chamador nunca recebera ownership dele — fecha-lo aqui e a unica
                 # forma de garantir que o perfil e a porta 9222 saem com a falha.
@@ -844,7 +832,7 @@ def main(
             page.wait_for_load_state("domcontentloaded", timeout=20_000)
         except Exception:
             pass
-        print(f"  -> URL após certificado: {page.url}")
+        print("  -> etapa do certificado concluída.")
 
         if _ja_logado(page):
             print("  -> Login realizado sem captcha.")
@@ -883,24 +871,18 @@ def main(
         # Aguarda redirecionamento final (até 60s)
         print("Aguardando redirecionamento final para receita.fazenda.gov.br (até 60s)...")
         for _seg in range(60):
-            _url_atual = page.url
-            print(f"  -> ({_seg + 1}s) URL: {_url_atual}")
+            # A URL de cada sondagem e a da pagina ja autenticada, e ela
+            # saia para o console ate sessenta vezes (fatia 13B.1). O que
+            # interessa ao operador e o segundo, e nao o endereco.
+            print(f"  -> ({_seg + 1}s) aguardando...")
             if _ja_logado(page):
                 print("  -> Redirecionamento confirmado.")
                 break
             time.sleep(1)
         else:
-            print(f"  -> Timeout. URL final: {page.url}")
+            print("  -> Timeout: o redirecionamento esperado não ocorreu.")
             if tentativa == MAX_TENTATIVAS_CERT:
-                registrar_erro(
-                    f"Login: redirecionamento não ocorreu. URL atual: {page.url}"
-                )
-                try:
-                    shot = str(project_dir / "_debug_pos_cert.png")
-                    page.screenshot(path=shot, full_page=True)
-                    print(f"     screenshot: {shot}")
-                except Exception:
-                    pass
+                registrar_erro("Login: redirecionamento não ocorreu.")
                 # LOGIN_RESOURCE_CLEANUP_GAP (fatia 12B.1): o contexto existe e o
                 # chamador nunca recebera ownership dele — fecha-lo aqui e a unica
                 # forma de garantir que o perfil e a porta 9222 saem com a falha.
@@ -917,7 +899,7 @@ def main(
             continue
         break
 
-    print(f"Login nos Serviços RF concluído. URL final: {page.url}")
+    print("Login nos Serviços RF concluído.")
 
     # --- Tutorial pós-login ---
     # Aparece já autenticado, depois do captcha do certificado ser resolvido —

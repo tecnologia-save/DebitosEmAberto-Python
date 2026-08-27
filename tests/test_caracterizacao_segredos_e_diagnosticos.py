@@ -211,61 +211,46 @@ def registro_de_guardiao():
 LOGIN = RAIZ / "servicos_rf_login" / "login.py"
 
 
-def test_8_o_login_persiste_tres_screenshots():
+def test_8_o_login_NAO_persiste_mais_screenshot_nenhum():
+    """ANTES eram tres: gov.br, botao de certificado e pos-certificado."""
     fonte = LOGIN.read_text(encoding="utf-8")
 
-    for nome in ("_debug_govbr_btn.png", "_debug_cert_button.png",
-                 "_debug_pos_cert.png"):
-        assert f'"{nome}"' in fonte, nome
-    assert fonte.count("page.screenshot(path=shot, full_page=True)") == 3
+    assert "screenshot" not in fonte
+    assert fonte.count("full_page") == 0
 
 
-def test_8_todos_em_caminhos_de_FALHA_e_nao_no_caminho_normal():
-    """Nao sao capturados a cada execucao: so quando um botao nao aparece ou o
-    redirecionamento nao acontece."""
+def test_9_o_pos_cert_era_o_pior_e_por_isso_nada_e_capturado_ali():
+    """ANTES ele era capturado DEPOIS da selecao do certificado — a pagina podia
+    estar autenticada, e o que falhara era so o redirecionamento.
+
+    AGORA aquele bloco nao captura nada: entre o `_clicar_certificado` e o
+    retorno da falha nao ha `screenshot`.
+    """
     fonte = LOGIN.read_text(encoding="utf-8")
+    trecho = fonte[fonte.index("_clicar_certificado(page)"):]
 
-    for nome in ("_debug_govbr_btn.png", "_debug_cert_button.png",
-                 "_debug_pos_cert.png"):
-        antes = fonte[: fonte.index(nome)]
-        assert "registrar_erro(" in antes[-1200:], f"{nome} vem depois de um erro"
+    assert "screenshot" not in trecho
 
 
-def test_9_o_pos_cert_e_capturado_DEPOIS_da_selecao_do_certificado():
-    """E o que o torna um screenshot possivelmente AUTENTICADO: o certificado ja
-    foi escolhido, e o que falhou foi o redirecionamento."""
-    fonte = LOGIN.read_text(encoding="utf-8")
-    trecho = fonte[: fonte.index("_debug_pos_cert.png")]
-
-    assert "_clicar_certificado(page)" in trecho
-    assert "_ja_logado(page)" in trecho[-2000:]
-
-
-def test_9_nenhum_fluxo_funcional_depende_dos_screenshots():
-    """Sao diagnostico: capturados dentro de `try/except: pass`, e o valor nao e
-    devolvido nem lido por ninguem."""
-    fonte = LOGIN.read_text(encoding="utf-8")
-
-    for nome in ("_debug_govbr_btn.png", "_debug_cert_button.png",
-                 "_debug_pos_cert.png"):
-        depois = fonte[fonte.index(nome):][:400]
-        assert "except Exception:\n                    pass" in depois or \
-               "except Exception:\n            pass" in depois
-
+def test_9_e_nada_em_codigo_nosso_captura_tela():
     vivos = [*(RAIZ / "automation").glob("*.py"), RAIZ / "main.py"]
     for caminho in vivos:
-        assert "_debug_" not in caminho.read_text(encoding="utf-8-sig")
+        fonte = caminho.read_text(encoding="utf-8-sig")
+        assert "_debug_" not in fonte
+        assert "screenshot" not in fonte
 
 
 # ── a URL autenticada em disco ───────────────────────────────────────────────
 
-def test_a_url_do_portal_vai_para_um_log_em_disco():
-    """Mais grave que o screenshot, e no mesmo ponto: `registrar_erro` grava
-    `page.url` num arquivo diario, e essa URL e a do portal ja autenticado."""
+def test_a_url_do_portal_NAO_vai_mais_para_o_log_em_disco():
+    """ANTES `registrar_erro` gravava `page.url` num arquivo diario, e essa URL
+    era a do portal ja autenticado. A mensagem ficou; a URL saiu."""
     fonte = LOGIN.read_text(encoding="utf-8")
 
-    assert 'f"Login: redirecionamento não ocorreu. URL atual: {page.url}"' in fonte
+    assert "URL atual:" not in fonte
+    assert 'registrar_erro("Login: redirecionamento não ocorreu.")' in fonte
 
+    # §8: o sistema de log continua existindo, e serve as outras falhas.
     log = (RAIZ / "servicos_rf_login" / "log_manager.py").read_text(encoding="utf-8")
     assert 'open(log_dir / nome_arquivo, "a"' in log
     assert 'Path.cwd() / "logs"' in log
@@ -378,13 +363,19 @@ def test_M_nenhum_screenshot_e_produzido_por_codigo_NOSSO():
         assert ".png" not in fonte, caminho.name
 
 
-def test_M_e_o_fork_continua_com_zero_diff():
-    """A fronteira que esta fatia NAO atravessou."""
-    import subprocess
+def test_M_o_fork_so_foi_tocado_para_SEGURANCA():
+    """AUTHORIZED_FORK_SECURITY_EDIT (fatia 13B.1).
 
-    saida = subprocess.run(
-        ["git", "status", "--short", "servicos_rf_login"],  # noqa: S607
-        cwd=RAIZ, capture_output=True, text=True, check=True,
-    ).stdout
+    A 13B parou nesta fronteira e reportou; a autorizacao veio explicita e
+    apenas para diagnostico sensivel. O que entrou no fork foi remocao — e o
+    que continua igual e o fluxo: retornos, retries, seletores, captcha,
+    navegacao e o cleanup da 12B.1.
+    """
+    fonte = LOGIN.read_text(encoding="utf-8")
 
-    assert saida.strip() == "", "o fork nao foi tocado"
+    assert "screenshot" not in fonte
+    assert "URL atual:" not in fonte
+    # O que NAO podia mudar, e nao mudou.
+    assert "MAX_TENTATIVAS_CERT = 3" in fonte
+    assert fonte.count("context.close()") == 7, "as sete saidas da 12B.1"
+    assert fonte.count("p.stop()") == 7

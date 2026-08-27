@@ -342,13 +342,17 @@ def test_r_pywinauto_e_import_opcional():
 
 # ── Diagnostico persistente ───────────────────────────────────────────────────
 
-def test_v_o_login_grava_screenshot_da_pagina_autenticada_em_falha():
-    """SENSITIVE_PERSISTENT_DIAGNOSTIC: `_debug_pos_cert.png` fica no diretório do
-    projeto, é uma captura da sessão do cliente, e nunca é removida."""
+def test_v_o_login_NAO_grava_mais_screenshot_nenhum():
+    """ANTES (SENSITIVE_PERSISTENT_DIAGNOSTIC): uma captura da sessão do cliente
+    ficava no diretório do projeto, e nunca era removida.
+
+    AGORA (fatia 13B.1) o fork não captura tela em caminho nenhum. Não mudou de
+    nome nem de pasta: saiu.
+    """
     import pathlib
 
     fonte = pathlib.Path(login_rf.__file__).read_text(encoding="utf-8")
 
-    assert '_debug_pos_cert.png' in fonte
-    assert "full_page=True" in fonte
-    assert "unlink" not in fonte and "os.remove" not in fonte
+    assert "screenshot" not in fonte
+    assert "_debug_pos_cert" not in fonte
+    assert "full_page" not in fonte

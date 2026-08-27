@@ -127,8 +127,10 @@ def test_2a_botao_govbr_nao_encontrado_persiste_screenshot(login, monkeypatch,
 
     resultado = rodar(login, monkeypatch, pagina, tmp_path)
 
-    assert (tmp_path / "_debug_govbr_btn.png").exists()
-    assert resultado is None, "e o retorno da falha e None"
+    assert not (tmp_path / "_debug_govbr_btn.png").exists()
+    assert pagina.screenshots == [], "nem tentou capturar"
+    # §4: o retorno da falha e o MESMO de antes.
+    assert resultado is None
 
 
 def test_2a_e_o_cleanup_da_12B1_acontece_do_mesmo_jeito(login, monkeypatch,
@@ -155,7 +157,8 @@ def test_2b_botao_de_certificado_nao_encontrado_persiste_screenshot(
 
     resultado = rodar(login, monkeypatch, pagina, tmp_path)
 
-    assert (tmp_path / "_debug_cert_button.png").exists()
+    assert not (tmp_path / "_debug_cert_button.png").exists()
+    assert pagina.screenshots == []
     assert resultado is None
 
 
@@ -170,42 +173,65 @@ def test_2c_redirecionamento_que_nao_ocorre_persiste_screenshot(
 
     resultado = rodar(login, monkeypatch, pagina, tmp_path)
 
-    assert (tmp_path / "_debug_pos_cert.png").exists()
+    assert not (tmp_path / "_debug_pos_cert.png").exists()
+    assert pagina.screenshots == []
     assert resultado is None
 
 
 # ── §2 D · a URL autenticada em disco ────────────────────────────────────────
 
-def test_2d_a_url_autenticada_vai_para_o_log_diario(login, monkeypatch,
-                                                    tmp_path):
+def test_2d_a_url_autenticada_NAO_vai_mais_para_o_log_diario(login, monkeypatch,
+                                                             tmp_path):
+    """ANTES a URL da pagina autenticada entrava no arquivo diario."""
     pagina = PaginaFalsa()
 
     rodar(login, monkeypatch, pagina, tmp_path)
 
     conteudo = log_do_dia(tmp_path)
-    assert "SENTINELA-SEGREDO" in conteudo
-    assert "sessao=NAO-DEVE-VAZAR" in conteudo
+    assert "SENTINELA-SEGREDO" not in conteudo
+    assert "sessao=NAO-DEVE-VAZAR" not in conteudo
+    assert "portal.invalid" not in conteudo
 
 
-def test_2d_e_tambem_para_o_console(login, monkeypatch, tmp_path, capsys):
+def test_2d_e_a_mensagem_que_ficou_e_constante_e_util(login, monkeypatch,
+                                                      tmp_path):
+    """§5: o log geral do fork continua servindo a outras falhas, entao a
+    mensagem fica — sanitizada. O operador precisa saber que o
+    redirecionamento nao aconteceu, e nada alem disso."""
     pagina = PaginaFalsa()
 
     rodar(login, monkeypatch, pagina, tmp_path)
 
-    assert "SENTINELA-SEGREDO" in capsys.readouterr().out
+    assert "Login: redirecionamento não ocorreu." in log_do_dia(tmp_path)
+
+
+def test_2d_e_NEM_para_o_console(login, monkeypatch, tmp_path, capsys):
+    """§10: a sentinela nao aparece no stdout tampouco — e o laco de sondagem a
+    imprimia ate sessenta vezes."""
+    pagina = PaginaFalsa()
+
+    rodar(login, monkeypatch, pagina, tmp_path)
+
+    saida = capsys.readouterr().out
+    assert "SENTINELA-SEGREDO" not in saida
+    assert "portal.invalid" not in saida
+    assert "aguardando..." in saida, "o progresso continua visivel"
 
 
 # ── §2 · nenhum consumidor funcional ─────────────────────────────────────────
 
-def test_2_nenhum_screenshot_tem_consumidor(login):
-    """Capturados dentro de `try/except: pass`, e o caminho nao le o arquivo."""
+def test_2_nao_ha_mais_screenshot_nenhum_no_fork(login):
+    """ANTES eram tres, capturados dentro de `try/except: pass`, sem consumidor.
+
+    AGORA nao ha captura de tela em lugar nenhum do fork — nem com outro nome,
+    nem em outra pasta, nem atras de flag.
+    """
     fonte = LOGIN.read_text(encoding="utf-8")
 
-    for nome in ("_debug_govbr_btn.png", "_debug_cert_button.png",
-                 "_debug_pos_cert.png"):
-        depois = fonte[fonte.index(nome):][:400]
-        assert "except Exception:" in depois
-        assert "read" not in depois.split("except Exception:")[0]
+    assert "screenshot" not in fonte
+    for nome in ("_debug_govbr_btn", "_debug_cert_button", "_debug_pos_cert"):
+        assert nome not in fonte
+    assert "chrome_debug_profile" in fonte, "o perfil funcional fica"
 
     nossos = [
         *(RAIZ / "automation").glob("*.py"),
