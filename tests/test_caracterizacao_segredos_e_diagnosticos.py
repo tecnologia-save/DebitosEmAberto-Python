@@ -22,61 +22,82 @@ CN_FICTICIO = "ALFA FICTICIA LTDA:11111111000191"
 
 # ── §1 · o caminho do segredo embutido ───────────────────────────────────────
 
-def test_1_o_spec_le_o_env_do_operador_no_momento_do_build():
-    """O literal NAO esta no repositorio: o `.spec` le o `.env` (gitignored) no
-    build. O que existe e o MECANISMO, nao a chave."""
+def test_1_o_spec_NAO_le_mais_o_env_do_operador():
+    """ANTES o `.spec` lia a chave do `.env` (gitignored) no momento do build.
+    O literal nunca esteve no repositorio; o que existia era o MECANISMO."""
     fonte = SPEC.read_text(encoding="utf-8")
 
-    assert "_env_origem = DEBITOS_DIR / '.env'" in fonte
-    assert "startswith('GEMINI_API_KEY=')" in fonte
+    assert "GEMINI_API_KEY" not in fonte
+    assert "_env_origem" not in fonte
 
 
-def test_1_e_grava_um_arquivo_que_entra_no_bundle():
+def test_1_e_nao_grava_mais_arquivo_de_chave_nem_o_injeta():
+    """ANTES gravava `build/chave_gemini.env` e o punha em `datas`."""
     fonte = SPEC.read_text(encoding="utf-8")
 
-    assert "_chave_arquivo = DEBITOS_DIR / 'build' / 'chave_gemini.env'" in fonte
-    assert "_chave_arquivo.write_text(f'GEMINI_API_KEY={_chave}" in fonte
-    assert "(str(_chave_arquivo), '.')" in fonte, "e vai para `datas`"
+    assert "chave_gemini" not in fonte
+    assert "_chave" not in fonte
 
 
-def test_1_o_build_imprime_um_pedaco_da_chave():
-    """Proibicao permanente do projeto: nem prefixo nem sufixo da API key. O
-    console do build viola isso."""
+def test_1_o_build_nao_imprime_mais_pedaco_nenhum_da_chave():
+    """ANTES o console do build mostrava prefixo e sufixo — violando a proibicao
+    permanente do projeto sobre a API key."""
     fonte = SPEC.read_text(encoding="utf-8")
 
-    assert "{_chave[:6]}...{_chave[-4:]}" in fonte
+    assert "[:6]" not in fonte and "[-4:]" not in fonte
 
 
-def test_1_main_le_o_bundle_como_ULTIMO_fallback():
+def test_1_main_NAO_le_mais_o_bundle():
+    """ANTES havia um terceiro fallback, depois do ambiente e do `.env`: a copia
+    embutida no binario. Ele saiu inteiro."""
     import main
 
     fonte = inspect.getsource(main._resolver_gemini_key)
+    corpo = fonte[fonte.rindex(chr(34) * 3) + 3:]
 
-    assert 'getattr(sys, "_MEIPASS", None)' in fonte
-    assert "_CHAVE_EMBUTIDA" in fonte
-    ordem = [fonte.index(m) for m in ("os.environ.get", "env_local", "_MEIPASS")]
-    assert ordem == sorted(ordem), "ambiente, .env do lado, e so entao o bundle"
+    assert "_MEIPASS" not in corpo
+    assert "_CHAVE_EMBUTIDA" not in corpo
+    ordem = [corpo.index(m) for m in ("os.environ.get", "env_local")]
+    assert ordem == sorted(ordem), "ambiente, e depois o .env do lado"
 
 
-def test_1_sem_configuracao_externa_o_exe_ainda_funciona_pelo_bundle(
+def test_1_sem_configuracao_externa_o_exe_NAO_tem_mais_chave(
     tmp_path, monkeypatch
 ):
-    """LEGACY_EMBEDDED_SECRET, medido: nada configurado, e mesmo assim ha chave."""
+    """LEGACY_EMBEDDED_SECRET_REMOVAL_BEHAVIOR_CHANGE, medido.
+
+    ANTES: nada configurado, e mesmo assim havia chave — a que viajou no
+    binario. AGORA nao ha, e quem decide o que fazer com isso e o chamador.
+    """
     import main
 
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setattr(main, "LOGIN_ECAC_DIR", tmp_path)
     embutido = tmp_path / "bundle"
     embutido.mkdir()
-    (embutido / main._CHAVE_EMBUTIDA).write_text(
+    (embutido / "chave_gemini.env").write_text(
         f"GEMINI_API_KEY={CHAVE_FICTICIA}\n", encoding="utf-8"
     )
     monkeypatch.setattr(main.sys, "_MEIPASS", str(embutido), raising=False)
 
     chave, origem = main._resolver_gemini_key()
 
-    assert chave == CHAVE_FICTICIA
-    assert "embutida" in origem
+    assert (chave, origem) == ("", "nenhuma")
+
+
+def test_1_e_sem_chave_o_desktop_legado_PARA(monkeypatch, capsys):
+    """§3: falha segura de configuracao, e nao aviso. A mensagem e constante —
+    sem valor parcial da chave, sem caminho de arquivo, sem bundle."""
+    import main
+
+    fonte = inspect.getsource(main)
+    trecho = fonte[fonte.index("_chave, _origem = _resolver_gemini_key()"):]
+    trecho = trecho[: trecho.index("renderer = Renderer()")]
+
+    assert "sys.exit(5)" in trecho
+    assert "Configuração ausente" in trecho
+    for proibido in ("_chave[", "env_local", "_MEIPASS", "{_chave}"):
+        assert proibido not in trecho
 
 
 # ── §1 · e os entrypoints novos NAO dependem disso ───────────────────────────
@@ -110,24 +131,28 @@ def test_1_secret_persisted_to_disk_continua_resolvido():
 
 # ── §10 · o log do guardiao ──────────────────────────────────────────────────
 
-def test_10_o_guardiao_grava_um_log_ao_lado_do_modulo():
+def test_10_o_guardiao_NAO_grava_mais_log_nenhum():
+    """ANTES acumulava um arquivo ao lado do modulo, em modo append."""
     import cert_windows
 
     fonte = inspect.getsource(cert_windows.guardiao)
 
-    assert '_glog = Path(__file__).parent / "_guard_log.txt"' in fonte
-    assert 'open(_glog, "a"' in fonte, "acumula, nao sobrescreve"
+    assert "_glog" not in fonte
+    assert "open(" not in fonte
+    assert "_log(" not in fonte
 
 
-def test_10_e_ele_registra_o_CN(registro_de_guardiao):
-    """SENSITIVE_PERSISTENT_DIAGNOSTIC: `diagnostico()` devolve
-    `HKCU=<CN>  HKLM=<CN>`, e isso vai para o arquivo."""
+def test_10_e_o_CN_nao_vai_mais_para_lugar_nenhum(registro_de_guardiao):
+    """ANTES o guardiao registrava `diagnostico()`, que devolve o CN de cada
+    colmeia — ou seja, o nome do cliente — num arquivo permanente."""
     import cert_windows
 
     fonte = inspect.getsource(cert_windows.guardiao)
 
-    assert 'policy escrita={escrita} | {diagnostico()}' in fonte
+    assert "diagnostico()" not in fonte
 
+    # E `diagnostico()` continua devolvendo o CN: ela nao mudou, apenas deixou
+    # de ser chamada por quem escrevia em disco.
     # E `diagnostico()` devolve o CN, comprovadamente — sobre o registro falso,
     # com um CN ficticio.
     from registro_falso import RegistroFalso
@@ -143,10 +168,11 @@ def test_10_e_ele_registra_o_CN(registro_de_guardiao):
         cert_windows.winreg, cert_windows._COLMEIAS = original_winreg, original_colmeias
 
 
-def test_10_e_o_pid(registro_de_guardiao):
+def test_10_e_o_pid_tampouco(registro_de_guardiao):
+    """ANTES a primeira linha do log era `guardiao start pid=...`."""
     import cert_windows
 
-    assert 'guardiao start pid={pid}' in inspect.getsource(cert_windows.guardiao)
+    assert "pid=" not in inspect.getsource(cert_windows.guardiao)
 
 
 def test_10_ninguem_le_esse_arquivo(registro_de_guardiao):
@@ -162,14 +188,16 @@ def test_10_ninguem_le_esse_arquivo(registro_de_guardiao):
         assert "read_text" not in fonte.split("_guard_log")[1][:200]
 
 
-def test_10_o_dispatch_do_guard_tambem_grava_um_erro():
+def test_10_o_dispatch_do_guard_tambem_parou_de_gravar():
+    """ANTES gravava um arquivo de erro com a mensagem da excecao, que pode
+    carregar caminho de registro."""
     import cert_windows
 
     fonte = Path(cert_windows.__file__).read_text(encoding="utf-8")
     trecho = fonte[fonte.index('sys.argv[1] == "--guard"'):]
 
-    assert '_wincert_erro.log' in trecho[:600]
-    assert "type(e).__name__" in trecho[:600]
+    assert "write_text" not in trecho
+    assert "type(e).__name__" not in trecho
 
 
 @pytest.fixture
@@ -278,3 +306,85 @@ def test_13_nada_sensivel_esta_rastreado_no_git():
     for proibido in ("_guard_log", "_debug_", "chave_gemini", ".env",
                      "_wincert_erro"):
         assert proibido not in saida, f"{proibido} esta rastreado"
+
+
+# ── §21 L · a chave nao aparece em lugar nenhum ──────────────────────────────
+
+def test_L_nenhum_evento_carrega_a_chave():
+    """O seam de eventos e fechado: 34 codigos e oito campos, e nenhum deles e
+    a chave nem nada que a componha."""
+    from automation import eventos
+
+    campos = set(eventos.EventoOperacional.__dataclass_fields__)
+
+    assert "api_key" not in campos and "chave" not in campos
+    fonte = inspect.getsource(eventos)
+    for proibido in ("GEMINI", "api_key", "gemini"):
+        assert proibido not in fonte
+
+
+def test_L_o_apresentador_nao_tem_como_renderizar_a_chave():
+    from automation import apresentacao_eventos
+
+    fonte = inspect.getsource(apresentacao_eventos)
+    # "chave privada" aparece numa frase sobre certificados — assertiva de texto
+    # colidindo com prosa e o tropeco recorrente deste projeto. Marcadores do
+    # que importa, entao: o nome do segredo e o do campo.
+    for proibido in ("GEMINI", "api_key", "gemini"):
+        assert proibido not in fonte
+
+
+def test_L_o_main_so_imprime_a_ORIGEM_e_nunca_o_valor():
+    """Quando ha chave, o console recebe de onde ela veio — e nada do valor."""
+    import main
+
+    fonte = inspect.getsource(main)
+    trecho = fonte[fonte.index("_chave, _origem = _resolver_gemini_key()"):]
+    trecho = trecho[: trecho.index("renderer = Renderer()")]
+
+    assert "{_origem}" in trecho
+    assert "{_chave" not in trecho, "nem o valor, nem uma fatia dele"
+
+
+def test_L_o_solver_recebe_a_chave_por_parametro_e_nao_a_imprime():
+    """O consumidor final: a chave desce por parametro desde a fatia 9B.1."""
+    from automation import captcha
+
+    fonte = inspect.getsource(captcha)
+
+    assert "api_key" in fonte
+    for proibido in ("print(api_key", "print(f\"{api_key", "api_key[:"):
+        assert proibido not in fonte
+
+
+# ── §21 M · o screenshot autenticado ─────────────────────────────────────────
+
+def test_M_nenhum_screenshot_e_produzido_por_codigo_NOSSO():
+    """Os tres screenshots do login vivem no fork `servicos_rf_login`, e o fork
+    nao foi tocado nesta fatia. O que se prova aqui e a fronteira: nada em
+    `automation/`, `runner.py`, `local.py`, `main.py` ou `cert_windows.py`
+    captura tela.
+
+    SENSITIVE_PERSISTENT_DIAGNOSTIC continua ABERTO por causa deles.
+    """
+    nossos = [
+        *(RAIZ / "automation").glob("*.py"),
+        RAIZ / "runner.py", RAIZ / "local.py", RAIZ / "main.py",
+        RAIZ / "cert_windows.py",
+    ]
+    for caminho in nossos:
+        fonte = caminho.read_text(encoding="utf-8-sig")
+        assert "screenshot" not in fonte, caminho.name
+        assert ".png" not in fonte, caminho.name
+
+
+def test_M_e_o_fork_continua_com_zero_diff():
+    """A fronteira que esta fatia NAO atravessou."""
+    import subprocess
+
+    saida = subprocess.run(
+        ["git", "status", "--short", "servicos_rf_login"],  # noqa: S607
+        cwd=RAIZ, capture_output=True, text=True, check=True,
+    ).stdout
+
+    assert saida.strip() == "", "o fork nao foi tocado"

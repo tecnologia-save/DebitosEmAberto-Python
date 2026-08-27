@@ -537,13 +537,17 @@ def test_j_a_limpeza_insiste_ate_dez_vezes(registro, guardiao_isolado, monkeypat
     assert len(longas) == cert_windows.REPETICOES_APOS_A_MORTE, "espaçadas, não em laço"
 
 
-def test_v_o_log_do_guardiao_grava_o_cn_em_disco(registro, guardiao_isolado, monkeypatch):
-    """SENSITIVE_OUTPUT: `_guard_log.txt` fica ao lado do módulo, contém o CN —
-    ou seja, o nome do cliente — e nunca é removido."""
+def test_v_o_guardiao_NAO_grava_mais_nada_em_disco(registro, guardiao_isolado,
+                                                   monkeypatch):
+    """ANTES (SENSITIVE_PERSISTENT_DIAGNOSTIC): um log ficava ao lado do módulo,
+    continha o CN — ou seja, o nome do cliente — crescia a cada execução e nunca
+    era removido. Ninguém o lia.
+
+    AGORA o guardião não deixa rastro nenhum em disco além da própria policy.
+    """
     monkeypatch.setattr(cert_windows, "_k32", Kernel32Falso())
 
     cert_windows.guardiao(4242, CN_A)
 
-    log = guardiao_isolado / "_guard_log.txt"
-    assert log.exists()
-    assert CN_A in log.read_text(encoding="utf-8")
+    assert list(guardiao_isolado.glob("*.txt")) == []
+    assert list(guardiao_isolado.glob("*.log")) == []

@@ -12,8 +12,10 @@ se ele virasse um alias do `local.py`:
     1. a janela do Tkinter que escolhe a planilha (ui_upload);
     2. o dispatch de `--guard`, que no executável congelado é o próprio .exe
        relançado elevado pelo guardião de policy;
-    3. LEGACY_SECRET_LOADING, inclusive a chave embutida no binário pelo .spec —
-       fallback que os entrypoints novos deliberadamente NÃO têm.
+    3. LEGACY_SECRET_LOADING — ler a configuração de `os.environ` e de um `.env`
+       ao lado. A terceira origem, a chave embutida no binário pelo `.spec`,
+       saiu na fatia 13B: um executável distribuído deixou de ser portador de
+       credencial, e sem configuração externa a execução para.
 
 O que ele NÃO tem mais: laço, retry, sessão, certificado, planilha. Tudo isso é
 do app, e ele o chama pela mesma fronteira pública que os outros dois.
@@ -53,10 +55,6 @@ from automation.domain import remover_acentos as _remover_acentos          # noq
 # Os certificados vêm do Windows Certificate Store (Cert:\CurrentUser\My), não
 # mais de uma pasta com .pfx e um senhas.json ao lado.
 
-# Nome do arquivo com a chave embutida no exe pelo debitos_em_aberto.spec
-_CHAVE_EMBUTIDA = "chave_gemini.env"
-
-
 def _ler_chave_de(caminho: Path) -> str:
     """Lê GEMINI_API_KEY de um arquivo no formato .env. '' se não achar."""
     try:
@@ -72,13 +70,17 @@ def _resolver_gemini_key() -> tuple[str, str]:
     """Resolve a chave do Gemini. Retorna (chave, origem) para o log.
 
     Ordem de precedência:
-        1. Variável de ambiente já definida — permite trocar a chave numa máquina
-           específica sem rebuild.
+        1. Variável de ambiente já definida.
         2. .env ao lado do executável (ou do script, em desenvolvimento).
-        3. Cópia embutida no binário durante o build.
 
-    A chave nunca está no repositório: o .env é gitignored e a cópia embutida é
-    gerada pelo .spec a partir dele no momento do build.
+    HAVIA UM TERCEIRO (fatia 13B): a cópia embutida no binário pelo `.spec`.
+    Ela existia para que o .exe funcionasse em qualquer máquina sem
+    configuração, e o custo era que qualquer pessoa com o .exe extraía a chave.
+    LEGACY_EMBEDDED_SECRET_REMOVAL_BEHAVIOR_CHANGE — sem configuração externa,
+    a execução agora para em vez de rodar com uma credencial que viajou no
+    binário.
+
+    A chave nunca esteve no repositório: o `.env` é gitignored.
     """
     valor = os.environ.get("GEMINI_API_KEY", "").strip()
     if valor:
@@ -88,12 +90,6 @@ def _resolver_gemini_key() -> tuple[str, str]:
     valor = _ler_chave_de(env_local)
     if valor:
         return valor, f"{env_local.name} ao lado do executável"
-
-    base_embutida = getattr(sys, "_MEIPASS", None)
-    if base_embutida:
-        valor = _ler_chave_de(Path(base_embutida) / _CHAVE_EMBUTIDA)
-        if valor:
-            return valor, "chave embutida no executável"
 
     return "", "nenhuma"
 
@@ -241,7 +237,12 @@ def main() -> None:
         # e, com `--log`, para um arquivo — SENSITIVE_OUTPUT sem contrapartida.
         print(f"Chave Gemini:  configurada (origem: {_origem})")
     else:
-        print("  [!] GEMINI_API_KEY não encontrada — o captcha não será resolvido.")
+        # Falha de CONFIGURACAO, e nao aviso. Mensagem constante: sem valor
+        # parcial da chave, sem caminho de arquivo, sem conteudo de bundle.
+        print("  [!] Configuração ausente: a chave do serviço de captcha não "
+              "foi encontrada. Defina-a no ambiente ou num .env ao lado do "
+              "executável.")
+        sys.exit(5)
 
     # Passo 2: a execução inteira. Descoberta de certificados, leitura da
     # planilha, login, representação, consulta e persistência são do app; o que

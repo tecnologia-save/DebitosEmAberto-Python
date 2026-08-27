@@ -273,7 +273,7 @@ def test_i_a_policy_sobrevive_ao_retorno_de_app_executar():
     fonte = (RAIZ / "cert_windows.py").read_text(encoding="utf-8")
 
     guarda = fonte[fonte.index("def guardiao("):fonte.index("def _lancar_guardiao")]
-    assert "_limpar_confirmando(cn, _log)" in guarda
+    assert "_limpar_confirmando(cn)" in guarda
     assert "WaitForMultipleObjects" in guarda, (
         "a limpeza deixou de depender da morte do processo: o pedido tambem acorda"
     )

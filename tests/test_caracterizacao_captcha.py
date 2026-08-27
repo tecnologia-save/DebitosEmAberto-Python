@@ -49,18 +49,27 @@ def test_e_precedencia_2_env_ao_lado_do_executavel(monkeypatch, tmp_path):
     assert ".env" in origem
 
 
-def test_e_precedencia_3_chave_embutida_no_executavel(monkeypatch, tmp_path):
-    """LEGACY_EMBEDDED_SECRET: no .exe congelado, a chave vem de dentro do bundle."""
+def test_e_NAO_HA_MAIS_precedencia_3_chave_embutida(monkeypatch, tmp_path):
+    """ANTES (LEGACY_EMBEDDED_SECRET): no .exe congelado a chave vinha de dentro
+    do bundle, e o executável funcionava em qualquer máquina sem configuração —
+    ao custo de qualquer pessoa com o .exe conseguir extraí-la.
+
+    AGORA sobram duas origens: ambiente e `.env` ao lado. Um bundle com chave
+    dentro não é mais consultado, e nem existe.
+    """
     embutido = tmp_path / "bundle"
     embutido.mkdir()
-    (embutido / main._CHAVE_EMBUTIDA).write_text(f"GEMINI_API_KEY={CHAVE}\n", encoding="utf-8")
+    (embutido / "chave_gemini.env").write_text(
+        f"GEMINI_API_KEY={CHAVE}\n", encoding="utf-8"
+    )
     monkeypatch.setattr(main, "LOGIN_ECAC_DIR", tmp_path / "vazio")
     monkeypatch.setattr(main.sys, "_MEIPASS", str(embutido), raising=False)
 
     chave, origem = main._resolver_gemini_key()
 
-    assert chave == CHAVE
-    assert "embutida no executável" in origem
+    assert chave == ""
+    assert origem == "nenhuma"
+    assert not hasattr(main, "_CHAVE_EMBUTIDA")
 
 
 def test_e_ambiente_vence_o_env(monkeypatch, tmp_path):

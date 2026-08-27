@@ -8,30 +8,19 @@ import patchright as _pw
 DEBITOS_DIR      = Path(SPECPATH)
 PATCHRIGHT_HOOKS = str(Path(_pw.__file__).parent / '_impl' / '__pyinstaller')
 
-# ── Chave Gemini embutida no binário ─────────────────────────────────────────
-# O .env do projeto é gitignored, então a chave nunca chega ao repositório.
-# Aqui ela é copiada para dentro do exe no momento do build, para que o
-# executável funcione em qualquer máquina sem depender de um .env ao lado dele.
-# Só a GEMINI_API_KEY entra — a senha do certificado fica de fora de propósito.
-# Consequência: quem tiver o .exe consegue extrair a chave. Distribua o binário
-# apenas internamente.
-_chave = ''
-_env_origem = DEBITOS_DIR / '.env'
-if _env_origem.exists():
-    for _linha in _env_origem.read_text(encoding='utf-8').splitlines():
-        if _linha.strip().startswith('GEMINI_API_KEY='):
-            _chave = _linha.split('=', 1)[1].strip()
-
-_chave_arquivo = DEBITOS_DIR / 'build' / 'chave_gemini.env'
-_chave_arquivo.parent.mkdir(parents=True, exist_ok=True)
-_chave_arquivo.write_text(f'GEMINI_API_KEY={_chave}\n', encoding='utf-8')
-
-if _chave:
-    print(f'[spec] Chave Gemini embutida ({len(_chave)} chars, '
-          f'{_chave[:6]}...{_chave[-4:]}).')
-else:
-    print('[spec] AVISO: GEMINI_API_KEY vazia ou ausente no .env — '
-          'o exe sairá sem chave e o captcha nao sera resolvido.')
+# ── A chave do Gemini NAO entra no binário (fatia 13B) ───────────────────────
+# Até aqui o build lia a chave do serviço de captcha do `.env` do operador,
+# gravava uma cópia em `build/` e a injetava no bundle, para que o .exe
+# funcionasse em qualquer máquina sem configuração. O próprio comentário antigo
+# reconhecia a consequência: quem tivesse o .exe extraía a chave.
+#
+# LEGACY_EMBEDDED_SECRET_REMOVAL_BEHAVIOR_CHANGE. O executável passa a exigir
+# configuração externa — variável de ambiente ou `.env` ao lado dele — e falha
+# de forma segura sem ela. Um binário distribuído deixa de ser um portador de
+# credencial.
+#
+# Nenhum literal jamais esteve neste arquivo: a chave vinha do `.env`, que é
+# gitignored. O que sai daqui é o MECANISMO.
 
 a = Analysis(
     [str(DEBITOS_DIR / 'main.py')],
@@ -40,7 +29,6 @@ a = Analysis(
     datas=[
         (str(DEBITOS_DIR / 'logo_save.png'), '.'),
         (str(DEBITOS_DIR / 'PLANILHA MODELO.xlsx'), '.'),
-        (str(_chave_arquivo), '.'),
         *collect_data_files('patchright'),
         *collect_data_files('servicos_rf_login'),
         *collect_data_files('resolvedor_captcha'),

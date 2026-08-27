@@ -144,7 +144,9 @@ def test_4_e_o_guardiao_REVALIDA_antes_de_escrever(registro):
 
     assert "avaliar_estado_inicial(" in antes
     assert "inventario_da_policy()" in antes
-    assert "abortando sem escrever" in antes
+    # ANTES havia uma frase de log marcando o aborto; ela saiu na fatia 13B.
+    assert "if decisao.decisao == policy_certificado.RECUSAR:" in antes
+    assert "return" in antes[antes.index("RECUSAR:"):]
 
 
 def test_4_sao_duas_camadas_e_a_segunda_e_a_garantia(registro):
@@ -279,7 +281,7 @@ def test_14_a_confirmacao_ignora_o_externo_e_enxerga_o_nosso(registro):
     cert_windows.definir_autoselect(CN_A)
     registro.dados["HKCU"][CAMINHO]["RegraDaEmpresa"] = externo()
 
-    assert cert_windows._limpar_confirmando(CN_A, lambda _m: None) is True
+    assert cert_windows._limpar_confirmando(CN_A) is True
     assert registro.valores("HKCU", CAMINHO) == {"RegraDaEmpresa": externo()}
 
 
@@ -288,7 +290,7 @@ def test_18_fail_closed_nao_significa_bloquear_por_estado_alheio(registro):
     e nao ficar preso porque preservamos o de outra pessoa."""
     registro.dados["HKCU"][CAMINHO] = {"RegraDaEmpresa": externo()}
 
-    assert cert_windows._limpar_confirmando(CN_A, lambda _m: None) is True
+    assert cert_windows._limpar_confirmando(CN_A) is True
 
 
 def test_17_o_crash_path_usa_a_MESMA_regra(registro):
@@ -296,7 +298,7 @@ def test_17_o_crash_path_usa_a_MESMA_regra(registro):
     passam por `_limpar_confirmando`, e ela e a nao destrutiva."""
     guarda = inspect.getsource(cert_windows.guardiao)
 
-    assert guarda.count("_limpar_confirmando(cn, _log)") == 2
+    assert guarda.count("_limpar_confirmando(cn)") == 2
     assert "limpar_autoselect()" not in guarda, "o DeleteKey saiu do guardiao"
 
 

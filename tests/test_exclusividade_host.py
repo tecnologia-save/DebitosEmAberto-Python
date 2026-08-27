@@ -267,7 +267,12 @@ def test_g_o_nome_ser_o_mesmo_nao_basta_e_por_isso_o_pai_e_conferido():
     guarda = fonte[fonte.index("def guardiao("):fonte.index("def _lancar_guardiao")]
     trecho = guarda[:guarda.index("definir_autoselect(cn)")]
     assert "OpenProcess(SYNCHRONIZE, False, int(pid))" in trecho
-    assert "pai ja morreu antes da escrita" in trecho
+    # ANTES este aborto era identificado por uma frase de log, que saiu na fatia
+    # 13B. O que o identifica agora e o `return` imediato quando o handle do pai
+    # nao vem — e ele prova a mesma coisa.
+    depois = trecho[trecho.index("OpenProcess(SYNCHRONIZE"):]
+    assert "if not h:" in depois
+    assert "return" in depois[depois.index("if not h:"):]
 
 
 # ── §15 · o handshake ─────────────────────────────────────────────────────────

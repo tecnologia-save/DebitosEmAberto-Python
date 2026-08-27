@@ -248,7 +248,7 @@ def test_5_o_guardiao_encerra_o_lifecycle_como_sucesso(monkeypatch):
     falso = registro_com(monkeypatch, protegidas=("HKCU",))
     semear(falso, "HKCU", CN_A)
 
-    assert cert_windows._limpar_confirmando(CN_A, lambda _m: None) is False
+    assert cert_windows._limpar_confirmando(CN_A) is False
     assert falso.tem("HKCU", CAMINHO), "o estado ficou, e ele NAO confirmou"
 
 
@@ -487,11 +487,11 @@ def test_5_cadeia_o_guardiao_nao_sai_do_laco(registro, monkeypatch):
     falso = registro_com(monkeypatch, protegidas=("HKCU",))
     semear(falso, "HKCU", CN_A)
 
-    assert cert_windows._limpar_confirmando(CN_A, lambda _m: None) is False
+    assert cert_windows._limpar_confirmando(CN_A) is False
 
     fonte = inspect.getsource(cert_windows.guardiao)
-    assert "if _limpar_confirmando(cn, _log):" in fonte
-    assert fonte.index("if _limpar_confirmando(cn, _log):") < fonte.index("break")
+    assert "if _limpar_confirmando(cn):" in fonte
+    assert fonte.index("if _limpar_confirmando(cn):") < fonte.index("break")
     assert fonte.index("break") < fonte.index("finally:")
 
 
@@ -508,7 +508,7 @@ def test_5_cadeia_HOST_RELEASE_SAFE_continua_valendo(registro, monkeypatch):
     falso = registro_com(monkeypatch, protegidas=("HKCU",))
     semear(falso, "HKCU", CN_A)
 
-    assert cert_windows._limpar_confirmando(CN_A, lambda _m: None) is False
+    assert cert_windows._limpar_confirmando(CN_A) is False
 
     # E o lease continua sem saber nada de policy: nada nele mudou.
     fonte = inspect.getsource(exclusividade_host)

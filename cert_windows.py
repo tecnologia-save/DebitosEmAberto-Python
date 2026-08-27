@@ -630,7 +630,7 @@ INTERVALO_REPETICAO_S = 30
 REPETICOES_APOS_A_MORTE = 20
 
 
-def _limpar_confirmando(cn: str, _log) -> bool:
+def _limpar_confirmando(cn: str) -> bool:
     """Remove o que ESTA execucao instalou e CONFIRMA que saiu.
 
     Fatia 13A: `limpar_autoselect` (DeleteKey da chave inteira) saiu daqui. O
@@ -641,10 +641,8 @@ def _limpar_confirmando(cn: str, _log) -> bool:
     for _ in range(10):
         remover_autoselect_owned(cn)
         if not policy_owned_existe(cn):
-            _log("limpeza confirmada")
             return True
         time.sleep(0.5)
-    _log("limpeza NAO confirmada")
     return False
 
 
@@ -664,14 +662,15 @@ def guardiao(pid: int, cn: str, canal: str = "") -> None:
 
     `canal` é opcional: sem ele o comportamento é exatamente o de antes.
     """
-    _glog = Path(__file__).parent / "_guard_log.txt"
-    def _log(m):
-        try:
-            with open(_glog, "a", encoding="utf-8") as f:
-                f.write(f"{time.time():.1f} {m}\n")
-        except Exception:
-            pass
-    _log(f"=== guardiao start pid={pid} admin={is_admin()} ===")
+    # SEM DIAGNOSTICO PERSISTENTE (fatia 13B). Ate aqui esta funcao acumulava um
+    # arquivo de log ao lado do modulo, com o PID e com o CN do certificado
+    # que a leitura de estado devolve. Ninguem o lia: era diagnostico, e nao
+    # arquivo com a identidade da empresa, crescendo em disco e sobrevivendo a
+    # execucao, nao se justifica por poder ajudar a depurar.
+    #
+    # O custo esta registrado: o guardiao roda elevado, destacado e sem janela,
+    # e agora nao tem canal de observacao nenhum. Quem precisar ve-lo agir ve
+    # pelo efeito — a policy no registro e o lease do host.
 
     # ── ORDEM OBRIGATORIA, e ela e a prova da fatia 12C ──────────────────────
     # 1. anexar ao lease do host    2. conferir que o pai vive    3. so entao
@@ -679,12 +678,10 @@ def guardiao(pid: int, cn: str, canal: str = "") -> None:
     # segunda execucao entra, e este guardiao escreve policy por cima dela.
     lease = exclusividade_host.anexar()
     if lease is None:
-        _log("lease do host nao existe — o pai ja morreu; abortando sem escrever")
         return
 
     h = _k32.OpenProcess(SYNCHRONIZE, False, int(pid))
     if not h:
-        _log("pai ja morreu antes da escrita; abortando")
         _k32.CloseHandle(lease)
         return
     # O pai estava vivo quando ja tinhamos o lease. Dai em diante a morte dele
@@ -698,7 +695,6 @@ def guardiao(pid: int, cn: str, canal: str = "") -> None:
         inventario_da_policy(), cn, tuple(CERT_URLS)
     )
     if decisao.decisao == policy_certificado.RECUSAR:
-        _log("estado do host mudou depois da decisao; abortando sem escrever")
         _k32.CloseHandle(h)
         _k32.CloseHandle(lease)
         return
@@ -708,15 +704,13 @@ def guardiao(pid: int, cn: str, canal: str = "") -> None:
         escrita = definir_autoselect(cn)
         # Registra em QUAL colmeia caiu: se só HKCU tiver valor e o processo
         # principal não enxergar, é sinal de elevação em outra conta de usuário
-        _log(f"policy escrita={escrita} | {diagnostico()}")
-    except Exception as e:
-        _log(f"erro definir: {type(e).__name__}: {e}")
+    except Exception:  # noqa: BLE001 — a falha vira NAO_INSTALADA logo abaixo
+        pass
 
     if escrita == NAO_INSTALADA:
         # Nao instalamos nada e nada nosso ficou, entao nao possuimos nada — e
         # um guardiao que nao possui estado nao pode segurar o host. O processo
         # principal descobre relendo o estado, e reavalia.
-        _log("nada foi escrito; abortando sem assumir posse")
         _k32.CloseHandle(h)
         _k32.CloseHandle(lease)
         return
@@ -725,10 +719,7 @@ def guardiao(pid: int, cn: str, canal: str = "") -> None:
     # nosso precisa de dono. No segundo caso a instalacao falhou e a compensacao
     # nao confirmou — o processo principal nunca vera a policy, vai recusar, e
     # este guardiao continua sendo quem limpa.
-    if escrita == RESIDUO_OWNED:
-        _log("instalacao falhou com residuo owned; mantendo o lifecycle")
     evento = _k32.OpenEventW(SYNCHRONIZE, False, canal) if canal else None
-    _log(f"canal -> {evento}")
     try:
         while True:
             if evento:
@@ -738,22 +729,19 @@ def guardiao(pid: int, cn: str, canal: str = "") -> None:
             else:
                 _k32.WaitForSingleObject(h, INFINITE)
                 pai_morreu = True
-            _log(f"acordou ({'pid morreu' if pai_morreu else 'limpeza pedida'})")
 
-            if _limpar_confirmando(cn, _log):
+            if _limpar_confirmando(cn):
                 break
 
             # NAO confirmado. Nao encerramos: uma policy OWNED sem processo
             # elevado responsavel e pior do que um host ocupado.
             if not pai_morreu:
-                _log("limpeza pedida falhou; voltando a vigiar o pai")
                 continue
 
             # O pai ja morreu e a limpeza falhou. HOST_EXCLUSIVITY_FAIL_CLOSED.
-            _log("FAIL-CLOSED: policy owned continua; host permanece ocupado")
             for _ in range(REPETICOES_APOS_A_MORTE):
                 time.sleep(INTERVALO_REPETICAO_S)
-                if _limpar_confirmando(cn, _log):
+                if _limpar_confirmando(cn):
                     break
             else:
                 # Esgotou. NAO fechamos o lease: uma policy owned sem processo
@@ -761,7 +749,6 @@ def guardiao(pid: int, cn: str, canal: str = "") -> None:
                 # ficamos girando sobre o registro — este processo PARA aqui,
                 # bloqueado no proprio lease, que nunca e sinalizado. Sem CPU,
                 # sem laco, e o host continua nosso ate alguem olhar.
-                _log("FAIL-CLOSED definitivo: aguardando intervencao")
                 _k32.WaitForSingleObject(lease, INFINITE)
             break
     finally:
@@ -771,7 +758,6 @@ def guardiao(pid: int, cn: str, canal: str = "") -> None:
             _k32.CloseHandle(evento)
         # POR ULTIMO: enquanto este handle existir, o host continua ocupado.
         _k32.CloseHandle(lease)
-        _log("lease do host liberado")
 
 
 _SEQUENCIA_DE_GUARDIOES = itertools.count(1)
@@ -869,12 +855,15 @@ if __name__ == "__main__":
         try:
             guardiao(int(sys.argv[2]), base64.b64decode(sys.argv[3]).decode("utf-8"),
                      sys.argv[4] if len(sys.argv) >= 5 else "")
-        except Exception as e:
-            try:
-                (Path(__file__).parent / "_wincert_erro.log").write_text(
-                    f"guard: {type(e).__name__}: {e}", encoding="utf-8")
-            except Exception:
-                pass
+        except Exception:
+            # Antes isto gravava um arquivo de erro com a mensagem da excecao,
+            # que pode carregar caminho de registro. Saiu junto com o resto do
+            # diagnostico persistente (fatia 13B).
+            #
+            # GUARDIAN_CLEANUP_DELETES_WHOLE_KEY residual, REGISTRADO e nao
+            # corrigido: esta limpeza continua sendo a destrutiva. Ela escapou
+            # da fatia 13A porque vive no `__main__`, fora de `guardiao`, e o
+            # subsistema de policy esta congelado ate a 12E.
             limpar_autoselect()
         sys.exit(0)
 

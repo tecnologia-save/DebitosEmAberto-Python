@@ -282,7 +282,7 @@ def test_f_o_crash_path_limpa_e_e_a_razao_de_o_guardiao_existir():
     helper = fonte[fonte.index("def _limpar_confirmando"):fonte.index("def guardiao(")]
 
     assert "finally:" in guarda
-    assert "_limpar_confirmando(cn, _log)" in guarda
+    assert "_limpar_confirmando(cn)" in guarda
     assert "for _ in range(10):" in helper
     # Fatia 13A: o que ele confirma e a ausencia do que ELE instalou.
     assert "if not policy_owned_existe(cn):" in helper, "confirma o que removeu"
@@ -297,7 +297,7 @@ def test_f_a_confirmacao_do_guardiao_agora_DECIDE_o_que_ele_faz():
     assert "return True" in helper and "return False" in helper
 
     guarda = fonte[fonte.index("def guardiao("):fonte.index("def _lancar_guardiao")]
-    assert "if _limpar_confirmando(cn, _log):" in guarda
+    assert "if _limpar_confirmando(cn):" in guarda
 
 
 # ── §28 · o lifecycle novo ────────────────────────────────────────────────────
@@ -508,7 +508,10 @@ def test_o_guardiao_nao_desiste_mais_e_nao_abandona_a_policy():
     fonte = (RAIZ / "cert_windows.py").read_text(encoding="utf-8")
     guarda = fonte[fonte.index("def guardiao("):fonte.index("def _lancar_guardiao")]
 
-    assert "voltando a vigiar o pai" in guarda
+    # ANTES este ramo era identificado por uma frase de log. O log saiu na
+    # fatia 13B; o que o identifica agora e o proprio `continue`.
+    assert "if not pai_morreu:" in guarda
+    assert "continue" in guarda[guarda.index("if not pai_morreu:"):]
     assert "REPETICOES_APOS_A_MORTE" in guarda
     assert "WaitForSingleObject(lease, INFINITE)" in guarda, "para, e nao gira"
     assert guarda.index("WaitForSingleObject(lease") < guarda.index("finally:")
@@ -532,8 +535,12 @@ def test_o_guardiao_anexa_ao_lease_e_confere_o_pai_ANTES_de_escrever():
     escreve = guarda.index("definir_autoselect(cn)")
 
     assert anexa < confere < escreve
-    assert "abortando sem escrever" in guarda
-    assert "abortando" in guarda[confere:escreve]
+
+    # ANTES os abortos eram identificados por frases de log, que sairam na
+    # fatia 13B. O que os identifica agora e o `return` antes da escrita — e ele
+    # continua provando a mesma coisa: nao se escreve sem lease e sem o pai.
+    assert "return" in guarda[anexa:confere], "sem lease, aborta"
+    assert "return" in guarda[confere:escreve], "sem o pai, aborta"
 
 
 def test_todo_entrypoint_adquire_o_lease_de_host():
