@@ -342,7 +342,9 @@ def _clicar_popup(page, nome: str, seletor: str) -> bool:
         try:
             loc.evaluate("el => el.click()")
         except Exception as e:
-            print(f"[popup] Falha ao clicar em '{nome}': {type(e).__name__}: {e}")
+            # A classe fica; a mensagem sai. A de um erro de navegador traz
+            # endereco, seletor e o que mais estiver na call log.
+            print(f"[popup] Falha ao clicar em '{nome}': {type(e).__name__}.")
             return False
 
     print(f"[popup] '{nome}' clicado.")
@@ -438,7 +440,11 @@ def _try_solve_captcha(page, etapa: str, max_attempts: int = 3,
                 return True
             print(f"[{etapa}] tentativa {tentativa}/{max_attempts}: solver retornou False.")
         except Exception as e:
-            print(f"[{etapa}] tentativa {tentativa}/{max_attempts}: {type(e).__name__}: {e}")
+            # Quem levanta aqui e o resolvedor, que fala com um servico
+            # externo autenticado: a mensagem pode trazer o endereco, o corpo da
+            # resposta do fornecedor e credencial. So a classe sai.
+            print(f"[{etapa}] tentativa {tentativa}/{max_attempts}: "
+                  f"{type(e).__name__}.")
     return False
 
 
@@ -467,7 +473,8 @@ def _recuperar_acesso_bloqueado(page, api_key: str | None = None) -> bool:
     try:
         page.go_back(wait_until="domcontentloaded", timeout=15_000)
     except Exception as e:
-        print(f"[bloqueado] go_back falhou ({e}). Recarregando URL de login...")
+        print(f"[bloqueado] go_back falhou ({type(e).__name__}). "
+              "Recarregando URL de login...")
         try:
             page.goto(SERVICOS_RF_URL, wait_until="domcontentloaded", timeout=30_000)
         except Exception:
@@ -480,7 +487,8 @@ def _recuperar_acesso_bloqueado(page, api_key: str | None = None) -> bool:
         govbr_btn.click()
         page.wait_for_load_state("domcontentloaded", timeout=20_000)
     except Exception as e:
-        print(f"[bloqueado] Botão 'Entrar com gov.br' não encontrado após go_back: {e}")
+        print("[bloqueado] Botão 'Entrar com gov.br' não encontrado após "
+              f"go_back: {type(e).__name__}.")
         return False
 
     return _try_solve_captcha(page, "captcha-pos-bloqueado", api_key=api_key)
@@ -555,7 +563,8 @@ def _representar_cnpj_procurador(page, cnpj: str) -> bool:
             return True
 
         except Exception as e:
-            print(f"[cnpj] Erro na tentativa {tentativa}/3: {type(e).__name__}: {e}")
+            print(f"[cnpj] Erro na tentativa {tentativa}/3: "
+                  f"{type(e).__name__}.")
             if tentativa == 3:
                 return False
 

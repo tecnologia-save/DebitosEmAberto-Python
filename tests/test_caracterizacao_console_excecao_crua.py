@@ -92,15 +92,20 @@ class PopupQueSoFalhaNoJS:
         raise ErroDoNavegador(MENSAGEM_DO_NAVEGADOR)
 
 
-def test_1_clicar_popup_imprime_a_mensagem_do_navegador(login, capsys):
-    """O fallback por JS falhou, e a mensagem sai inteira."""
+def test_1_clicar_popup_NAO_imprime_mais_a_mensagem(login, capsys):
+    """ANTES o fallback por JS falhava e a mensagem saia inteira: endereco,
+    seletor, call log e a resposta do servidor.
+
+    §3: so a apresentacao mudou — a tentativa, o retorno e a excecao capturada
+    sao os mesmos.
+    """
     assert login._clicar_popup(PopupQueSoFalhaNoJS(), "aviso", "#qualquer") is False
 
     saida = capsys.readouterr().out
 
-    assert sentinelas_em(saida) == {URL_SENTINELA, SELETOR_SENTINELA,
-                                    TOKEN_SENTINELA, RESPOSTA_SENTINELA}
-    assert "ErroDoNavegador" in saida
+    assert sentinelas_em(saida) == set()
+    assert "ErroDoNavegador" in saida, "a classe fica"
+    assert "Falha ao clicar em 'aviso'" in saida, "e a etapa tambem"
 
 
 # ── 2 · _try_solve_captcha ───────────────────────────────────────────────────
@@ -129,11 +134,12 @@ class PaginaInerte:
         return None
 
 
-def test_2_try_solve_captcha_imprime_a_RESPOSTA_DO_FORNECEDOR(login, monkeypatch,
-                                                              capsys):
-    """§4: a excecao aqui vem de integracao com servico externo. Ela pode
-    carregar endereco, corpo da resposta e identificadores de autenticacao — e
-    hoje sai tudo."""
+def test_2_try_solve_captcha_NAO_imprime_a_resposta_do_fornecedor(login,
+                                                                  monkeypatch,
+                                                                  capsys):
+    """ANTES saia tudo. §4: a excecao aqui vem de integracao com servico
+    externo, e pode carregar endereco, corpo da resposta e identificadores de
+    autenticacao. Nao da para tratar como "detalhe tecnico"."""
     def recusar(page, api_key=None):
         raise ErroDoServicoExterno(MENSAGEM_DO_SERVICO)
 
@@ -144,8 +150,9 @@ def test_2_try_solve_captcha_imprime_a_RESPOSTA_DO_FORNECEDOR(login, monkeypatch
 
     saida = capsys.readouterr().out
 
-    assert sentinelas_em(saida) == {CAPTCHA_SENTINELA, URL_SENTINELA,
-                                    RESPOSTA_SENTINELA, TOKEN_SENTINELA}
+    assert sentinelas_em(saida) == set()
+    assert "ErroDoServicoExterno" in saida, "a classe fica"
+    assert "402" not in saida, "nem o codigo da resposta"
 
 
 def test_2_e_o_numero_de_TENTATIVAS_e_o_que_e(login, monkeypatch, capsys):
@@ -179,28 +186,32 @@ class PaginaSemBotaoGovBr(PaginaInerte):
         raise ErroDoNavegador(MENSAGEM_DO_NAVEGADOR)
 
 
-def test_3_o_go_back_que_falha_imprime_a_mensagem(login, monkeypatch, capsys):
+def test_3_o_go_back_que_falha_NAO_imprime_mais_a_mensagem(login, monkeypatch,
+                                                           capsys):
+    """ANTES a mensagem inteira ia entre parenteses. §5: a etapa fica, a
+    recuperacao e a navegacao nao mudam."""
     monkeypatch.setattr(login, "_try_solve_captcha", lambda *a, **k: True)
 
     login._recuperar_acesso_bloqueado(PaginaQueNaoVolta())
 
     saida = capsys.readouterr().out
 
-    assert sentinelas_em(saida) == {URL_SENTINELA, SELETOR_SENTINELA,
-                                    TOKEN_SENTINELA, RESPOSTA_SENTINELA}
-    assert "go_back falhou" in saida
+    assert sentinelas_em(saida) == set()
+    assert "go_back falhou (ErroDoNavegador)" in saida
+    assert "Recarregando URL de login" in saida
 
 
-def test_4_o_botao_govbr_ausente_tambem(login, monkeypatch, capsys):
+def test_4_o_botao_govbr_ausente_tambem_NAO_imprime(login, monkeypatch, capsys):
+    """§6: mesma regra, e nem locator, nem clique, nem retry, nem fallback
+    mudaram — o retorno `False` continua sendo o que o chamador ve."""
     monkeypatch.setattr(login, "_try_solve_captcha", lambda *a, **k: True)
 
     assert login._recuperar_acesso_bloqueado(PaginaSemBotaoGovBr()) is False
 
     saida = capsys.readouterr().out
 
-    assert sentinelas_em(saida) == {URL_SENTINELA, SELETOR_SENTINELA,
-                                    TOKEN_SENTINELA, RESPOSTA_SENTINELA}
-    assert "não encontrado após go_back" in saida
+    assert sentinelas_em(saida) == set()
+    assert "não encontrado após go_back: ErroDoNavegador." in saida
 
 
 # ── 5 · _representar_cnpj_procurador ─────────────────────────────────────────
@@ -219,9 +230,12 @@ class PaginaQueNaoRepresenta(PaginaInerte):
         raise ErroDoNavegador(MENSAGEM_DO_NAVEGADOR)
 
 
-def test_5_o_erro_de_cada_tentativa_imprime_a_mensagem(login, monkeypatch,
-                                                       capsys):
-    """Tres tentativas, tres mensagens inteiras."""
+def test_5_o_erro_de_cada_tentativa_NAO_imprime_mais_a_mensagem(login,
+                                                                monkeypatch,
+                                                                capsys):
+    """ANTES eram tres tentativas e tres mensagens inteiras. §7: os dois
+    vazamentos deste auxiliar — o CNPJ da 13B.3 e a mensagem crua — ficam
+    fechados juntos, e nenhum dos dois pode regredir."""
     monkeypatch.setattr(login, "fechar_tutorial_pos_login", lambda page, **k: None)
 
     assert login._representar_cnpj_procurador(PaginaQueNaoRepresenta(),
@@ -229,9 +243,9 @@ def test_5_o_erro_de_cada_tentativa_imprime_a_mensagem(login, monkeypatch,
 
     saida = capsys.readouterr().out
 
-    assert sentinelas_em(saida) == {URL_SENTINELA, SELETOR_SENTINELA,
-                                    TOKEN_SENTINELA, RESPOSTA_SENTINELA}
-    assert saida.count("Erro na tentativa") == 3
+    assert sentinelas_em(saida) == set()
+    assert CNPJ_SENTINELA not in saida
+    assert saida.count("Erro na tentativa") == 3, "as tres tentativas ficam"
 
 
 def test_5_e_o_CNPJ_ja_NAO_sai_junto(login, monkeypatch, capsys):
@@ -328,3 +342,99 @@ def test_14_e_a_guarda_esta_ATIVA_neste_teste_tambem():
     import cert_windows
 
     assert cert_windows._shell32.ShellExecuteExW.__name__ == "recusar"
+
+
+# ── §8 · §10 · o inventario do caminho vivo, depois ──────────────────────────
+
+def _prints_vivos_com_excecao_crua():
+    """`print` que interpolam a excecao sem ser so a classe.
+
+    O fork tem prints de varias linhas, entao a busca e sobre o TEXTO da
+    chamada, e nao sobre a linha. Comentarios fora: a prosa desta correcao cita
+    `{e}` para explicar o que saiu.
+    """
+    import re
+
+    fonte = LOGIN.read_text(encoding="utf-8")
+    codigo = chr(10).join(linha for linha in fonte.splitlines()
+                          if not linha.lstrip().startswith("#"))
+
+    achados = []
+    for chamada in re.findall(r"print\((?:[^()]|\([^()]*\))*\)", codigo):
+        sem_classe = chamada.replace("{type(e).__name__}", "")
+        if "{e}" in sem_classe:
+            achados.append(" ".join(chamada.split()))
+    return achados
+
+
+def test_8_sobrou_UM_print_com_a_mensagem_crua_e_ele_e_do_PFX():
+    """ANTES eram seis: cinco nos auxiliares vivos e um no modo `.pfx`.
+
+    O que sobra e o do `senhas.json`, e ele esta fora da autorizacao desta
+    fatia — §11 e §12 mandam apenas caracterizar a reachability.
+    """
+    achados = _prints_vivos_com_excecao_crua()
+
+    assert len(achados) == 1
+    assert "senhas.json" in achados[0]
+
+
+def test_8_e_nenhuma_sentinela_sai_por_nenhum_dos_cinco(login, monkeypatch,
+                                                        capsys):
+    """Os cinco call sites, na mesma execucao, todos falhando."""
+    monkeypatch.setattr(login, "fechar_tutorial_pos_login", lambda page, **k: None)
+    monkeypatch.setattr(login, "solve_hcaptcha",
+                        lambda page, api_key=None: (_ for _ in ()).throw(
+                            ErroDoServicoExterno(MENSAGEM_DO_SERVICO)))
+
+    login._clicar_popup(PopupQueSoFalhaNoJS(), "aviso", "#qualquer")
+    login._try_solve_captcha(PaginaInerte(), "etapa", max_attempts=1)
+    login._recuperar_acesso_bloqueado(PaginaQueNaoVolta())
+    login._recuperar_acesso_bloqueado(PaginaSemBotaoGovBr())
+    login._representar_cnpj_procurador(PaginaQueNaoRepresenta(), CNPJ_SENTINELA)
+
+    capturado = capsys.readouterr()
+
+    for lugar in (capturado.out, capturado.err):
+        assert sentinelas_em(lugar) == set()
+        assert CNPJ_SENTINELA not in lugar
+
+
+def test_9_o_console_continua_contando_as_etapas(login, monkeypatch, capsys):
+    """§9: nao era para silenciar o fork. As etapas constantes ficam."""
+    monkeypatch.setattr(login, "_try_solve_captcha", lambda *a, **k: True)
+
+    login._recuperar_acesso_bloqueado(PaginaQueNaoVolta())
+
+    saida = capsys.readouterr().out
+
+    assert "Mensagem de acesso bloqueado detectada" in saida
+    assert "Re-clicando 'Entrar com gov.br'" in saida
+
+
+def test_2_a_mensagem_nao_voltou_por_outra_porta():
+    """§2: nenhum `repr(e)`, `e.args`, `traceback` ou `format_exc` entrou no
+    lugar do que saiu."""
+    fonte = LOGIN.read_text(encoding="utf-8")
+    codigo = chr(10).join(linha for linha in fonte.splitlines()
+                          if not linha.lstrip().startswith("#"))
+
+    for porta in ("repr(e)", "e.args", "traceback.", "logging.exception",
+                  "format_exc"):
+        assert porta not in codigo
+
+
+def test_10_nenhum_print_vivo_interpola_dado_dinamico_sensivel():
+    """O inventario do §10 sobre o arquivo inteiro: CN, CNPJ, endereco, titulo,
+    serial, subject e conteudo."""
+    fonte = LOGIN.read_text(encoding="utf-8")
+    codigo = [linha.strip() for linha in fonte.splitlines()
+              if not linha.lstrip().startswith("#")]
+
+    proibidos = ("{cert_subject_cn}", "{cnpj}", "page.url", "page.title",
+                 "{serial}", "{subject}", "content()")
+    suspeitos = [linha for linha in codigo
+                 if linha.startswith(("print(", "registrar_erro("))
+                 and any(marca in linha for marca in proibidos)]
+
+    assert suspeitos == []

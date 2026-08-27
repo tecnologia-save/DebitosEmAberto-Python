@@ -261,68 +261,35 @@ def _linhas_com_excecao_crua():
             if linha.startswith("print(") and "{e}" in linha]
 
 
-def test_10_sobraram_SEIS_prints_com_a_mensagem_crua_do_navegador():
-    """ANTES eram SETE. Saiu o dos popups de `main()` — o unico dos sete que
-    esta na autorizacao desta fatia.
+def test_10_sobrou_UM_print_com_a_mensagem_crua_do_navegador():
+    """Eram SETE quando a 13B.3 comecou. Ela fechou o dos popups de `main()`,
+    e sobraram seis — cinco em auxiliares vivos e um no modo `.pfx`.
 
-    Os outros seis sao REPORTADOS e nao alterados. Cinco vivem em auxiliares
-    que `main()` chama no caminho vivo; o sexto e do modo `.pfx`
-    (senhas.json), fora do caminho promovido.
+    A 13B.4 fechou os cinco. O que resta e o do `senhas.json`, caracterizado e
+    nao alterado por decisao explicita.
     """
     linhas = _linhas_com_excecao_crua()
 
-    assert len(linhas) == 6
-    assert [linha for linha in linhas if "popups iniciais" in linha] == []
-    assert len([linha for linha in linhas if "senhas.json" in linha]) == 1
+    assert len(linhas) == 1
+    assert "senhas.json" in linhas[0]
 
 
-@pytest.mark.parametrize("marca", [
-    "[popup] Falha ao clicar em",
-    "[bloqueado] go_back falhou",
-    "[bloqueado] Botão 'Entrar com gov.br' não encontrado",
-    "[cnpj] Erro na tentativa",
-])
-def test_10_e_os_dos_AUXILIARES_estao_fora_da_autorizacao(marca):
-    """REPORTADOS, e nao alterados. A autorizacao da 13B.3 nomeia tres call
-    sites: o CN, os popups de `main()` e os CNPJs da representacao. Nenhum
-    destes e um deles."""
-    assert any(marca in linha for linha in _linhas_com_excecao_crua())
+def test_10_os_dos_AUXILIARES_foram_fechados_pela_13B4():
+    """ANTES este arquivo prendia CINCO marcadores como REPORTADOS e nao
+    alterados — estavam fora da autorizacao da 13B.3:
 
+        [popup] Falha ao clicar em ...
+        [{etapa}] tentativa .../...
+        [bloqueado] go_back falhou ...
+        [bloqueado] Botão 'Entrar com gov.br' não encontrado ...
+        [cnpj] Erro na tentativa .../3
 
-def test_10_o_do_captcha_tambem(monkeypatch, capsys):
-    """`_try_solve_captcha` imprime a excecao do solver inteira. Fora da
-    autorizacao, e com um agravante proprio: quem levanta ali e o resolvedor,
-    que fala com um servico externo autenticado.
-
-    Sem a fixture: ela substitui justamente esta funcao.
+    A 13B.4 os fechou. As provas de comportamento vivem em
+    `test_caracterizacao_console_excecao_crua.py`; aqui fica so a contagem.
     """
-    from servicos_rf_login import login as modulo
-
-    def solver_que_falha(page, api_key=None):
-        raise ErroDoNavegador(MENSAGEM_DO_NAVEGADOR)
-
-    monkeypatch.setattr(modulo, "solve_hcaptcha", solver_que_falha)
-
-    assert modulo._try_solve_captcha(PaginaFalsa(), "etapa-ficticia",
-                                     max_attempts=1) is False
-
-    assert sentinelas_do_navegador_em(capsys.readouterr().out) != set()
-
-
-def test_10_o_do_go_back_tambem(monkeypatch, capsys):
-    """Behavioral, e nao so de texto: o `except` do `go_back` realmente
-    imprime a mensagem do navegador."""
-    from servicos_rf_login import login as modulo
-
-    class PaginaQueNaoVolta(PaginaFalsa):
-        def go_back(self, *a, **k):
-            raise ErroDoNavegador(MENSAGEM_DO_NAVEGADOR)
-
-    monkeypatch.setattr(modulo, "_try_solve_captcha", lambda *a, **k: True)
-
-    modulo._recuperar_acesso_bloqueado(PaginaQueNaoVolta())
-
-    assert sentinelas_do_navegador_em(capsys.readouterr().out) != set()
+    assert _linhas_com_excecao_crua() == [
+        'print(f"[cert] Erro ao ler senhas.json: {e}")'
+    ]
 
 
 # ── §13 · §14 · o que ja estava fechado continua fechado ─────────────────────
