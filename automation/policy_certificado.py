@@ -280,7 +280,6 @@ class ResultadoDaPolicy:
 def garantir_policy(
     cn: str,
     avaliar_inicio: Callable[[], DecisaoDeStartup],
-    ler_cn_atual: Callable[[], str],
     lancar_guardiao: Callable[[str], int],
     aguardar: Callable[[], None],
 ) -> ResultadoDaPolicy:
@@ -289,11 +288,22 @@ def garantir_policy(
     As primitivas entram por parametro porque todas precisam de Windows real — e
     sem elas o protocolo inteiro roda em qualquer maquina.
 
-    A espera e pelo CN PEDIDO, nunca pela mera existencia da policy. Isso e o que
-    torna seguro trocar de certificado no meio da execucao: a policy do
-    certificado anterior ainda esta escrita quando o novo guardiao sobe, e
-    conferir so a existencia devolveria True de imediato — o Chrome subiria com o
-    certificado errado, autenticando na empresa errada.
+    UMA PERGUNTA SO (fatia 13A.1). `avaliar_inicio` decide o comeco E confirma o
+    fim. Ate aqui a confirmacao era outra, mais fraca: `ler_cn_atual() == cn`,
+    onde `ler_cn_atual` lia a primeira colmeia nao vazia, valor "1". Bastava
+    encontrar o CN em ALGUM lugar — e com estado alheio num nome que essa
+    leitura nao alcanca, a resposta vinha da outra colmeia e o protocolo
+    declarava ATIVADA sobre colmeias divergentes
+    (POLICY_ACTIVATION_FALSE_POSITIVE).
+
+    `EMPRESTAR` e estritamente mais forte que "o CN bate": exige que toda
+    colmeia com conteudo esteja completa, coerente e apontando para o
+    certificado pedido. Continua garantindo o que a leitura antiga garantia — a
+    troca de certificado nao aceita a policy do anterior — e passa a garantir
+    que o estado FINAL e coerente entre as colmeias.
+
+    E `RECUSAR` durante a espera para na hora, em vez de esperar os 30 segundos
+    para so entao descobrir o que ja se sabia.
 
     A FRONTEIRA DE MUTACAO (fatia 12D)
     ----------------------------------
@@ -321,24 +331,19 @@ def garantir_policy(
         return ResultadoDaPolicy(ELEVACAO_RECUSADA, tem_guardiao=False)
 
     for _ in range(SONDAGENS):
-        if ler_cn_atual() == cn:
+        atual = avaliar_inicio()
+        if atual.decisao == EMPRESTAR:
+            # O estado do host e agora exatamente a policy que pedimos, nas
+            # colmeias que existem. E o guardiao desta execucao que o instalou.
             return ResultadoDaPolicy(ATIVADA, tem_guardiao=True, controle=controle)
+        if atual.decisao == RECUSAR:
+            raise ConfiguracaoDeHostIncompativel(atual.motivo)
         aguardar()
 
-    # O guardiao subiu e a policy nao apareceu. Antes de degradar, PERGUNTAR POR
-    # QUE (fatia 13A): desde que ele revalida o host antes de escrever, uma das
-    # razoes possiveis e que o estado mudou entre a decisao daqui e a escrita de
-    # la — e nesse caso degradar seria abrir o Chrome com configuracao de outra
-    # pessoa, exatamente o que o RECUSAR existe para impedir.
-    #
-    # O canal e o proprio registro: nao ha IPC novo, so uma segunda leitura.
-    segunda = avaliar_inicio()
-    if segunda.decisao == RECUSAR:
-        raise ConfiguracaoDeHostIncompativel(segunda.motivo)
-
-    # Nao foi isso. Continua sendo o caso conhecido: a policy nao ficou visivel
-    # DESTE processo — e o Chrome, que roda no mesmo contexto, tambem nao a
-    # veria. Elevacao em outra conta.
+    # O guardiao subiu e a policy nao apareceu — e nao apareceu por RECUSAR, que
+    # o laco acima ja trataria. Continua sendo o caso conhecido: a policy nao
+    # ficou visivel DESTE processo, e o Chrome, que roda no mesmo contexto,
+    # tambem nao a veria. Elevacao em outra conta.
     return ResultadoDaPolicy(NAO_APARECEU, tem_guardiao=True, controle=controle)
 
 

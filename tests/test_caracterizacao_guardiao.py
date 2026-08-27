@@ -69,8 +69,7 @@ def _decisao_de_antes(ler, cn):
 
 def pedir(m, cn):
     return garantir_policy(cn, avaliar_inicio=_decisao_de_antes(m.ler_cn, cn),
-                           ler_cn_atual=m.ler_cn, lancar_guardiao=m.lancar,
-                           aguardar=lambda: None)
+                           lancar_guardiao=m.lancar, aguardar=lambda: None)
 
 
 # ── A · o guardiao espera SO o PID ────────────────────────────────────────────
@@ -189,14 +188,17 @@ def test_d_o_pid_vigiado_e_sempre_o_do_processo_principal():
 
 
 def test_d_o_guardiao_antigo_sobrevive_e_limparia_policy_alheia():
-    """STALE_GUARDIAN_DESTRUCTIVE_CLEANUP_RISK.
+    """STALE_GUARDIAN_DESTRUCTIVE_CLEANUP_RISK, fechado duas vezes.
 
-    O guardiao de A continua esperando o PID. Muito depois — outra execucao no
-    mesmo processo, outra policy — o PID morre, e ele acorda e apaga o que
-    encontrar. Ele nao sabe qual CN esta escrito; `limpar_autoselect` nao le
-    nada antes de remover.
+    ANTES: o guardiao de A continuava esperando o PID; muito depois — outra
+    execucao no mesmo processo, outra policy — o PID morria, ele acordava e
+    apagava o que encontrasse. Nao sabia qual CN estava escrito, e
+    `limpar_autoselect` nao lia nada antes de remover.
 
-    Mecanismo possivel. Nao afirmo ocorrencia.
+    A 12B.2 fechou pelo ciclo de vida: a policy anterior sai ANTES de a proxima
+    entrar, entao guardiao velho nao se acumula. A 13A fechou de novo, por outro
+    caminho: mesmo acordando tarde, ele agora compara — e a policy de B nao e a
+    de A, entao ele nao a toca.
     """
     m = Maquina()
     pedir(m, CN_A)          # guardiao A

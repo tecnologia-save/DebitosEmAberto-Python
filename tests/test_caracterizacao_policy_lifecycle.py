@@ -88,7 +88,6 @@ def _decisao_de_antes(ler, cn):
 def pedir(registro, cn, lancar=None):
     return garantir_policy(
         cn, avaliar_inicio=_decisao_de_antes(registro.ler_cn, cn),
-        ler_cn_atual=registro.ler_cn,
         lancar_guardiao=lancar or registro.lancar,
         aguardar=lambda: None,
     )
@@ -148,7 +147,7 @@ def test_b_a_espera_e_pelo_CN_PEDIDO_e_nao_pela_existencia():
 
     resultado = garantir_policy(
         CN_B, avaliar_inicio=_decisao_de_antes(reg.ler_cn, CN_B),
-        ler_cn_atual=reg.ler_cn, lancar_guardiao=demora, aguardar=lambda: None
+        lancar_guardiao=demora, aguardar=lambda: None,
     )
 
     assert resultado.situacao == NAO_APARECEU, "nunca aceitou o CN_A como suficiente"
@@ -236,11 +235,11 @@ def test_d_a_escrita_NAO_apaga_mais_os_valores_anteriores():
     """
     fonte = (RAIZ / "cert_windows.py").read_text(encoding="utf-8")
     escrita = fonte[
-        fonte.index("def definir_autoselect"):fonte.index("def remover_autoselect_owned")
+        fonte.index("def definir_autoselect"):fonte.index("def _remover_owned_da_colmeia")
     ]
 
     assert "DeleteValue" not in escrita
-    assert "if _conflita(key, esperados):" in escrita
+    assert "_conflita_na_colmeia(raiz, esperados)" in escrita
     assert "is _AUSENTE" in escrita, "so escreve o que nao existe"
 
 
@@ -351,17 +350,19 @@ def test_h_a_decisao_de_ownership_le_apenas_a_primeira_colmeia_nao_vazia():
 
 
 def test_h_o_protocolo_passou_a_receber_o_ESTADO_e_nao_so_um_cn():
-    """ANTES: `garantir_policy` recebia quatro coisas — cn, ler_cn_atual,
-    lancar_guardiao, aguardar — e decidia com UM valor lido de UMA colmeia. A
+    """ANTES (ate a 12D): `garantir_policy` recebia cn, ler_cn_atual,
+    lancar_guardiao e aguardar, e decidia com UM valor lido de UMA colmeia. A
     divergencia entre HKCU e HKLM simplesmente nao chegava ate ele.
 
-    AGORA existe `avaliar_inicio`, e quem o fornece le as duas colmeias
-    inteiras. A decisao de startup deixou de nascer de uma leitura parcial.
+    A 12D acrescentou `avaliar_inicio` para a DECISAO, mas a CONFIRMACAO
+    continuou saindo de `ler_cn_atual` — e era por ali que a divergencia
+    voltava a passar.
+
+    AGORA (13A.1) ha uma pergunta so, e ela e a forte. `ler_cn_atual` saiu.
     """
     parametros = list(inspect.signature(policy_certificado.garantir_policy).parameters)
 
-    assert parametros == ["cn", "avaliar_inicio", "ler_cn_atual",
-                          "lancar_guardiao", "aguardar"]
+    assert parametros == ["cn", "avaliar_inicio", "lancar_guardiao", "aguardar"]
 
     # E a avaliacao vem ANTES do unico ponto que escreve no registro.
     fonte = inspect.getsource(policy_certificado.garantir_policy)

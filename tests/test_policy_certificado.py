@@ -74,7 +74,7 @@ def _decisao_de_antes(ler, cn):
 
 
 def pedir(maquina, cn=CN_A):
-    return garantir_policy(cn, _decisao_de_antes(maquina.ler, cn), maquina.ler,
+    return garantir_policy(cn, _decisao_de_antes(maquina.ler, cn),
                            maquina.lancar, maquina.aguardar)
 
 

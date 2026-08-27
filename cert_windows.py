@@ -106,31 +106,90 @@ def _conflita(key, esperados: dict[str, str]) -> bool:
     )
 
 
-def definir_autoselect(cn: str) -> bool:
-    """Instala a policy SEM destruir o que não é nosso. True se alguma colmeia
-    ficou com o nosso estado completo.
+# Desfechos de uma tentativa de instalacao. Strings pelo mesmo motivo dos
+# desfechos em `policy_certificado`: o consumidor de hoje precisa distinguir
+# tres casos, e um bool nao distingue tres.
+INSTALADA = "instalada e coerente"
+NAO_INSTALADA = "nao instalada, e nada nosso ficou"
+RESIDUO_OWNED = "nao instalada, e sobrou estado nosso"
 
-    Até a fatia 13A isto apagava `1`, `2`, `3`... até o primeiro buraco e
-    escrevia por cima de `1..N`. Qualquer regra alheia nesse intervalo — de um
-    administrador, de uma GPO, de outra ferramenta — desaparecia sem aviso, e a
-    decisão que autorizava a escrita tinha sido tomada noutro processo, antes de
-    uma elevação de UAC (POLICY_WRITE_TOCTOU_EXTERNAL_STATE_RISK).
 
-    Agora é CONFERIR e depois ESCREVER, por colmeia:
+def _conflita_na_colmeia(raiz, esperados: dict[str, str]) -> bool:
+    """Algum nome nosso ja esta ocupado por conteudo que nao e o nosso?
 
-        nome ausente               -> escreve
-        nome com o nosso conteúdo  -> já está certo, não toca
-        nome com outro conteúdo    -> NÃO sobrescreve; esta colmeia sai inteira
+    Colmeia ausente nao conflita — e o caso de quem nunca teve a chave.
+    Colmeia ILEGIVEL conflita: nao escrevemos no que nao conseguimos ver.
+    """
+    try:
+        key = winreg.OpenKeyEx(raiz, REG_PATH, 0, winreg.KEY_READ)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    try:
+        return _conflita(key, esperados)
+    finally:
+        winreg.CloseKey(key)
 
-    A colmeia sai inteira, e não valor a valor, para não deixar meia policy
-    instalada: metade das URLs apontando para o nosso CN e metade para outro é
-    pior do que nenhuma.
 
-    Ainda há uma janela entre conferir e escrever, agora medida em operações de
-    registro em vez de um prompt de UAC. Fica registrada, e não escondida.
+def _coerente(cn: str) -> bool:
+    """O estado FINAL das duas colmeias e exatamente a policy deste CN?
+
+    Usa a mesma semantica forte da fatia 12D — e nao "achei o meu CN em algum
+    lugar". `EMPRESTAR` quer dizer: toda colmeia com conteudo esta completa,
+    coerente e aponta para o certificado pedido. Uma colmeia ausente nao viola
+    isso; uma colmeia com outra coisa dentro, viola.
+    """
+    decisao = policy_certificado.avaliar_estado_inicial(
+        inventario_da_policy(), cn, tuple(CERT_URLS)
+    )
+    return decisao.decisao == policy_certificado.EMPRESTAR
+
+
+def definir_autoselect(cn: str) -> str:
+    """Instala a policy, ou nao instala em lugar nenhum.
+
+    Historia curta desta funcao, porque cada camada corrigiu a anterior:
+
+    ate a 13A   apagava `1`, `2`, `3`... e escrevia por cima. Regra alheia
+                nesse intervalo desaparecia sem aviso.
+    13A         passou a conferir antes de escrever, e a pular a colmeia em
+                conflito. So que pulava SO ela, e escrevia na outra — e o
+                resultado era HKCU apontando para um certificado e HKLM para
+                outro. Divergencia criada por nos
+                (CROSS_HIVE_PARTIAL_WRITE_RISK).
+    13A.1       tres passos, e o segundo so acontece se o primeiro liberar:
+
+        1. CONFERIR AS DUAS. Uma colmeia em conflito ja impede tudo. Instalar
+           em metade das colmeias e precisamente o estado divergente que esta
+           fatia existe para nunca produzir.
+        2. ESCREVER onde for possivel. Colmeia indisponivel por permissao nao
+           e conflito: e ausencia, e ausencia sempre fez parte do contrato.
+        3. RELER O ESTADO FINAL e exigir que ele seja exatamente o nosso. Se um
+           terceiro escreveu DURANTE o passo 2, o resultado nao passa aqui.
+
+    Falhando o passo 3, COMPENSA: remove os valores owned que esta tentativa
+    instalou — compare-and-delete, nunca `DeleteKey` — e devolve o que sobrou.
+    Nao ha transacao de registro nenhuma nisto; ha tentar, verificar e desfazer
+    o proprio rastro.
+
+    A JANELA que resta, dita em voz alta: entre o passo 1 e o passo 2, e dentro
+    do proprio passo 2, um terceiro ainda pode escrever. O que mudou e o que
+    acontece depois — o passo 3 percebe e desfaz o nosso, em vez de o resultado
+    divergente ficar instalado e ser aceito como valido.
     """
     esperados = _valores_esperados(cn)
-    gravadas, conflitantes = [], []
+
+    conflitantes = [
+        rotulo for rotulo, raiz in _COLMEIAS
+        if _conflita_na_colmeia(raiz, esperados)
+    ]
+    if conflitantes:
+        print(f"[wincert] {'+'.join(conflitantes)}: ja ha configuracao de outra "
+              "origem nestes valores; nada foi escrito em colmeia nenhuma.")
+        return NAO_INSTALADA
+
+    gravadas = []
     for rotulo, raiz in _COLMEIAS:
         try:
             key = winreg.CreateKeyEx(raiz, REG_PATH, 0, winreg.KEY_ALL_ACCESS)
@@ -138,67 +197,85 @@ def definir_autoselect(cn: str) -> bool:
             print(f"[wincert] {rotulo} indisponivel ({e.__class__.__name__}).")
             continue
         try:
-            if _conflita(key, esperados):
-                conflitantes.append(rotulo)
-                continue
             for nome, valor in esperados.items():
                 if _valor_atual(key, nome) is _AUSENTE:
                     winreg.SetValueEx(key, nome, 0, winreg.REG_SZ, valor)
-            gravadas.append(rotulo)
+            gravadas.append((rotulo, raiz))
         finally:
             winreg.CloseKey(key)
 
-    if conflitantes:
-        print(f"[wincert] {'+'.join(conflitantes)}: ja ha configuracao de outra "
-              "origem nestes valores; nada foi sobrescrito.")
-    if gravadas:
-        print(f"[wincert] AutoSelect configurado em {'+'.join(gravadas)} para: {cn}")
-    else:
+    if gravadas and _coerente(cn):
+        rotulos = "+".join(rotulo for rotulo, _ in gravadas)
+        print(f"[wincert] AutoSelect configurado em {rotulos} para: {cn}")
+        return INSTALADA
+
+    if not gravadas:
         print(f"[wincert] FALHA: nao foi possivel escrever a policy para: {cn}")
-    return bool(gravadas)
+        return NAO_INSTALADA
+
+    # O estado final nao e o nosso: alguem escreveu enquanto escreviamos. Sai o
+    # que ESTA tentativa instalou, e so ele.
+    print("[wincert] O estado do host mudou durante a escrita; desfazendo o que "
+          "esta execucao instalou.")
+    for _, raiz in gravadas:
+        _remover_owned_da_colmeia(raiz, esperados)
+
+    if policy_owned_existe(cn):
+        # A compensacao nao confirmou. Ha estado nosso no host, e ele precisa de
+        # dono — HOST_EXCLUSIVITY_FAIL_CLOSED.
+        print("[wincert] FALHA: sobrou estado desta execucao no host.")
+        return RESIDUO_OWNED
+    return NAO_INSTALADA
+
+
+def _remover_owned_da_colmeia(raiz, esperados: dict[str, str]) -> bool:
+    """Compare-and-delete numa colmeia. True se removeu alguma coisa."""
+    try:
+        key = winreg.OpenKeyEx(raiz, REG_PATH, 0, winreg.KEY_ALL_ACCESS)
+    except OSError:
+        return False
+    removeu = False
+    try:
+        for nome, esperado in esperados.items():
+            if _valor_atual(key, nome) != esperado:
+                continue
+            try:
+                winreg.DeleteValue(key, nome)
+                removeu = True
+            except OSError:
+                # Sem privilegio para remover. Quem percebe e a confirmacao, que
+                # le depois — engolir aqui e mentir la e o defeito que a fatia
+                # 12D.1 tirou do caminho.
+                pass
+    finally:
+        winreg.CloseKey(key)
+    return removeu
 
 
 def remover_autoselect_owned(cn: str) -> None:
-    """Remove SÓ os valores que ainda são exatamente os que escrevemos.
+    """Remove SO os valores que ainda sao exatamente os que escrevemos.
 
-    Compare-and-delete, e nunca `DeleteKey`. Três consequências deliberadas:
+    Compare-and-delete, e nunca `DeleteKey`. Tres consequencias deliberadas:
 
     - valor extra que outra origem acrescentou (`8`, `RegraDaEmpresa`)
       permanece — a fatia 13A existe por causa dele;
-    - valor com nome nosso cujo conteúdo alguém trocou permanece: o nosso já
-      não está lá, e a posse daquele nome terminou quando foi sobrescrito.
+    - valor com nome nosso cujo conteudo alguem trocou permanece: o nosso ja
+      nao esta la, e a posse daquele nome terminou quando foi sobrescrito.
       Restaurar o nosso seria destruir o de outra pessoa;
-    - a chave pode ficar vazia, e fica. Conferir que está vazia e só então
-      apagá-la abriria uma corrida nova, para um ganho puramente cosmético — e
-      a decisão de startup já trata chave vazia como host limpo.
+    - a chave pode ficar vazia, e fica. Conferir que esta vazia e so entao
+      apaga-la abriria uma corrida nova, para um ganho puramente cosmetico — e
+      a decisao de startup ja trata chave vazia como host limpo.
 
-    `limpar_autoselect` continua existindo para o `--clean` manual, que é outra
-    coisa: lá quem manda apagar tudo é uma pessoa.
+    `limpar_autoselect` continua existindo para o `--clean` manual, que e outra
+    coisa: la quem manda apagar tudo e uma pessoa.
     """
-    esperados = _valores_esperados(cn)
-    removidas = []
-    for rotulo, raiz in _COLMEIAS:
-        try:
-            key = winreg.OpenKeyEx(raiz, REG_PATH, 0, winreg.KEY_ALL_ACCESS)
-        except OSError:
-            continue
-        try:
-            for nome, esperado in esperados.items():
-                if _valor_atual(key, nome) != esperado:
-                    continue
-                try:
-                    winreg.DeleteValue(key, nome)
-                    removidas.append(rotulo)
-                except OSError:
-                    # Sem privilégio para remover. Quem percebe é a confirmação,
-                    # que lê depois — engolir aqui e mentir lá é o defeito que a
-                    # fatia 12D.1 tirou do caminho.
-                    pass
-        finally:
-            winreg.CloseKey(key)
+    removidas = [
+        rotulo for rotulo, raiz in _COLMEIAS
+        if _remover_owned_da_colmeia(raiz, _valores_esperados(cn))
+    ]
     if removidas:
         print(f"[wincert] Policy desta execucao removida de "
-              f"{'+'.join(sorted(set(removidas)))}.")
+              f"{'+'.join(removidas)}.")
 
 
 def policy_owned_existe(cn: str) -> bool:
@@ -216,6 +293,19 @@ def policy_owned_existe(cn: str) -> bool:
 
     Colmeia ilegível responde True: ignorância não é ausência, e pode haver
     estado nosso ali (UNREADABLE_HIVE_BLOCKS_HOST_RELEASE).
+
+    O QUE "OWNED" PROVA, E O QUE NAO PROVA
+    --------------------------------------
+    Prova CONTENT_MATCH: o payload e exatamente o que esta execucao instalaria
+    para este CN. E o suficiente para a decisao que esta funcao serve — remover
+    so o nosso, e nao segurar o host por causa do alheio.
+
+    NAO prova proveniencia. Se um terceiro reescrever um nome nosso com um
+    payload identico ao nosso, a igualdade e a mesma e nao ha como distinguir os
+    dois pelo conteudo — IDENTICAL_EXTERNAL_POLICY_REASSERTION_AMBIGUITY,
+    subcaso de EXTERNAL_POLICY_MUTATION_DURING_EXECUTION. Registrado, e nao
+    corrigido: distinguir exigiria marcador de dono, que a fatia 12D avaliou e
+    recusou por nao resolver o estado que ja esta no host.
     """
     esperados = _valores_esperados(cn)
     for _, raiz in _COLMEIAS:
@@ -574,23 +664,30 @@ def guardiao(pid: int, cn: str, canal: str = "") -> None:
         _k32.CloseHandle(lease)
         return
 
-    escreveu = False
+    escrita = NAO_INSTALADA
     try:
-        escreveu = definir_autoselect(cn)
+        escrita = definir_autoselect(cn)
         # Registra em QUAL colmeia caiu: se só HKCU tiver valor e o processo
         # principal não enxergar, é sinal de elevação em outra conta de usuário
-        _log(f"policy escrita={escreveu} | {diagnostico()}")
+        _log(f"policy escrita={escrita} | {diagnostico()}")
     except Exception as e:
         _log(f"erro definir: {type(e).__name__}: {e}")
 
-    if not escreveu:
-        # Nao instalamos nada, entao nao possuimos nada — e um guardiao que nao
-        # possui estado nao pode segurar o host. O processo principal descobre
-        # pela ausencia da policy, e reavalia.
+    if escrita == NAO_INSTALADA:
+        # Nao instalamos nada e nada nosso ficou, entao nao possuimos nada — e
+        # um guardiao que nao possui estado nao pode segurar o host. O processo
+        # principal descobre relendo o estado, e reavalia.
         _log("nada foi escrito; abortando sem assumir posse")
         _k32.CloseHandle(h)
         _k32.CloseHandle(lease)
         return
+
+    # INSTALADA ou RESIDUO_OWNED: em ambos ha estado nosso no host, e estado
+    # nosso precisa de dono. No segundo caso a instalacao falhou e a compensacao
+    # nao confirmou — o processo principal nunca vera a policy, vai recusar, e
+    # este guardiao continua sendo quem limpa.
+    if escrita == RESIDUO_OWNED:
+        _log("instalacao falhou com residuo owned; mantendo o lifecycle")
     evento = _k32.OpenEventW(SYNCHRONIZE, False, canal) if canal else None
     _log(f"canal -> {evento}")
     try:
@@ -693,7 +790,6 @@ def iniciar_guarda_detalhado(cn: str) -> policy_certificado.ResultadoDaPolicy:
         avaliar_inicio=lambda: policy_certificado.avaliar_estado_inicial(
             inventario_da_policy(), cn, tuple(CERT_URLS)
         ),
-        ler_cn_atual=policy_cn,
         lancar_guardiao=_lancar_guardiao,
         aguardar=lambda: time.sleep(policy_certificado.INTERVALO_SONDAGEM_S),
     )

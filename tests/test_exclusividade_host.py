@@ -286,7 +286,9 @@ def test_a_policy_visivel_ja_prova_que_o_guardiao_anexou():
     from automation.policy_certificado import garantir_policy
 
     protocolo = inspect_fonte(garantir_policy)
-    assert "if ler_cn_atual() == cn:" in protocolo, "espera a policy APARECER"
+    # Fatia 13A.1: a espera deixou de ser por um CN e passou a ser pelo estado
+    # completo. Continua sendo espera, e continua sendo pelo que PEDIMOS.
+    assert "if atual.decisao == EMPRESTAR:" in protocolo, "espera a policy APARECER"
 
 
 # ── §6 · o lease nao usa estado sinalizado ────────────────────────────────────

@@ -286,7 +286,6 @@ def test_policy_preexistente_com_outro_cn_e_destruida(monkeypatch):
     resultado = garantir_policy(
         CN_B,
         avaliar_inicio=_decisao_de_antes(lambda: maquina_falsa["cn"], CN_B),
-        ler_cn_atual=lambda: maquina_falsa["cn"],
         lancar_guardiao=lancar, aguardar=lambda: None,
     )
 

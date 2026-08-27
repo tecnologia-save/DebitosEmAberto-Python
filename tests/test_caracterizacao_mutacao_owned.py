@@ -58,7 +58,7 @@ def test_2_agora_ele_CONFERE_antes_de_escrever(registro):
     fonte = inspect.getsource(cert_windows.definir_autoselect)
 
     assert "DeleteValue" not in fonte, "nenhuma remocao no caminho da escrita"
-    assert "if _conflita(key, esperados):" in fonte
+    assert "_conflita_na_colmeia(raiz, esperados)" in fonte
     assert "is _AUSENTE" in fonte, "so preenche o que falta"
 
 
@@ -82,21 +82,25 @@ def test_2_nome_ocupado_por_conteudo_alheio_faz_a_colmeia_inteira_ser_deixada(
     outra pessoa seria pior do que nenhuma.
     """
     registro.dados["HKCU"][CAMINHO] = {"5": externo()}
-    registro.protegidas = {"HKLM"}
 
-    assert cert_windows.definir_autoselect(CN_A) is False
+    assert cert_windows.definir_autoselect(CN_A) == cert_windows.NAO_INSTALADA
 
     assert registro.valores("HKCU", CAMINHO) == {"5": externo()}, "nada mudou"
 
 
-def test_2_a_outra_colmeia_ainda_e_escrita(registro):
-    """Conflito e por colmeia. HKLM limpo continua recebendo a nossa policy."""
+def test_2_a_outra_colmeia_TAMBEM_deixa_de_ser_escrita(registro):
+    """ANTES (13A): o conflito era por colmeia, e HKLM limpo continuava
+    recebendo a nossa policy.
+
+    AGORA (13A.1) uma colmeia em conflito impede a instalacao inteira —
+    instalar em metade das colmeias e o estado divergente que a 13A.1 fecha.
+    """
     registro.dados["HKCU"][CAMINHO] = {"5": externo()}
 
-    assert cert_windows.definir_autoselect(CN_A) is True
+    assert cert_windows.definir_autoselect(CN_A) == cert_windows.NAO_INSTALADA
 
     assert registro.valores("HKCU", CAMINHO) == {"5": externo()}
-    assert len(registro.valores("HKLM", CAMINHO)) == QUANTAS
+    assert registro.valores("HKLM", CAMINHO) == {}
 
 
 def test_2_valor_nosso_que_ja_esta_certo_nao_e_reescrito(registro):
@@ -105,7 +109,7 @@ def test_2_valor_nosso_que_ja_esta_certo_nao_e_reescrito(registro):
     cert_windows.definir_autoselect(CN_A)
     registro.operacoes.clear()
 
-    assert cert_windows.definir_autoselect(CN_A) is True
+    assert cert_windows.definir_autoselect(CN_A) == cert_windows.INSTALADA
 
     assert not [op for op in registro.operacoes if op[0] == "SetValueEx"]
 
@@ -148,7 +152,7 @@ def test_4_sao_duas_camadas_e_a_segunda_e_a_garantia(registro):
     que alguem escreva entre as duas, nada nosso passa por cima."""
     fonte = inspect.getsource(cert_windows.definir_autoselect)
 
-    assert "if _conflita(key, esperados):" in fonte
+    assert "_conflita_na_colmeia(raiz, esperados)" in fonte
     assert "DeleteValue" not in fonte
 
 

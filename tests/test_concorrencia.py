@@ -143,10 +143,10 @@ def test_a_policy_e_um_valor_so_para_a_maquina_inteira():
     # risco de concorrencia continua sendo o caminho fixo e sem dono; o que saiu
     # foi a parte destrutiva.
     escrita = fonte[
-        fonte.index("def definir_autoselect"):fonte.index("def remover_autoselect_owned")
+        fonte.index("def definir_autoselect"):fonte.index("def _remover_owned_da_colmeia")
     ]
     assert "DeleteValue" not in escrita
-    assert "if _conflita(key, esperados):" in escrita
+    assert "_conflita_na_colmeia(raiz, esperados)" in escrita
 
 
 def test_a_policy_vai_para_as_duas_colmeias_inclusive_a_da_maquina():

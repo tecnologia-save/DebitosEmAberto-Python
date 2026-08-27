@@ -285,7 +285,6 @@ def test_recusar_nunca_chega_a_escrever():
         policy_certificado.garantir_policy(
             CN_NOSSO,
             avaliar_inicio=lambda: decidir(colmeia("HKCU", CN_ALHEIO)),
-            ler_cn_atual=lambda: CN_ALHEIO,
             lancar_guardiao=lambda cn: escritas.append(cn),
             aguardar=lambda: None,
         )
@@ -299,7 +298,6 @@ def test_emprestar_nunca_chega_a_escrever():
     resultado = policy_certificado.garantir_policy(
         CN_NOSSO,
         avaliar_inicio=lambda: decidir(colmeia("HKCU", CN_NOSSO)),
-        ler_cn_atual=lambda: CN_NOSSO,
         lancar_guardiao=lambda cn: escritas.append(cn),
         aguardar=lambda: None,
     )
@@ -316,16 +314,26 @@ def test_nao_ha_mais_porta_para_pular_a_avaliacao():
     avaliacao acontece SEMPRE, e e a unica porta para `lancar_guardiao`.
     """
     avaliacoes = []
+    instalado = []
+
+    def avaliar():
+        avaliacoes.append(1)
+        # Antes do guardiao, host limpo; depois dele, a policy no lugar. E a
+        # mesma pergunta respondendo ao mundo, e nao dois predicados.
+        if instalado:
+            return decidir(colmeia("HKCU", CN_NOSSO))
+        return decidir()
 
     resultado = policy_certificado.garantir_policy(
         CN_NOSSO,
-        avaliar_inicio=lambda: avaliacoes.append(1) or decidir(),
-        ler_cn_atual=lambda: CN_NOSSO,
-        lancar_guardiao=lambda cn: object(),
+        avaliar_inicio=avaliar,
+        lancar_guardiao=lambda cn: instalado.append(cn) or object(),
         aguardar=lambda: None,
     )
 
-    assert avaliacoes == [1], "avaliou, e nao ha argumento que evite isso"
+    # Uma na decisao e as demais na confirmacao: desde a 13A.1 e a mesma
+    # pergunta que abre e fecha o protocolo.
+    assert len(avaliacoes) >= 2, "avaliou, e nao ha argumento que evite isso"
     assert resultado.situacao == policy_certificado.ATIVADA
 
 

@@ -70,7 +70,6 @@ def protocolo(cn, lancamentos):
         avaliar_inicio=lambda: policy_certificado.avaliar_estado_inicial(
             cert_windows.inventario_da_policy(), cn, tuple(cert_windows.CERT_URLS)
         ),
-        ler_cn_atual=cert_windows.policy_cn,
         lancar_guardiao=lancar,
         aguardar=lambda: None,
     )
@@ -400,8 +399,7 @@ def test_j_nem_a_nossa_propria_policy_e_sobrescrita(registro):
     )
 
     assert "policy_ja_e_nossa" not in parametros
-    assert parametros == ["cn", "avaliar_inicio", "ler_cn_atual",
-                          "lancar_guardiao", "aguardar"]
+    assert parametros == ["cn", "avaliar_inicio", "lancar_guardiao", "aguardar"]
 
 
 def test_j_a_execucao_seguinte_a_um_crash_duplo_para_em_vez_de_herdar(registro):

@@ -72,7 +72,7 @@ def test_a_reescrita_NAO_substitui_mais_os_valores(registro):
     """
     cert_windows.definir_autoselect(CN_A)
 
-    assert cert_windows.definir_autoselect(CN_B) is False
+    assert cert_windows.definir_autoselect(CN_B) == cert_windows.NAO_INSTALADA
 
     valores = registro.valores("HKCU", CAMINHO)
     assert json.loads(valores["1"])["filter"]["SUBJECT"]["CN"] == CN_A
@@ -107,7 +107,7 @@ def test_a_nenhuma_colmeia_disponivel_apenas_avisa(monkeypatch, capsys):
     """Nao levanta: o chamador descobre pela leitura, nao por exception."""
     registro_com(monkeypatch, protegidas=("HKCU", "HKLM"))
 
-    assert cert_windows.definir_autoselect(CN_A) is False
+    assert cert_windows.definir_autoselect(CN_A) == cert_windows.NAO_INSTALADA
     assert "FALHA" in capsys.readouterr().out
 
 
@@ -231,11 +231,23 @@ def test_n_a_policy_nao_carrega_dono(registro):
     assert set(json.loads(payload)) == {"pattern", "filter"}
 
 
-def test_n_nao_ha_lock_nem_compare_and_swap():
+def test_n_nao_ha_lock_sobre_a_chave_do_registro():
+    """ANTES este teste tambem proibia a palavra "compare", porque nada no
+    modulo comparava coisa nenhuma.
+
+    A fatia 13A introduziu compare-and-delete, e a 13A.1 compare-before-write.
+    Nenhum dos dois e um lock: eles nao impedem ninguem de escrever, so impedem
+    NOS de destruir o que nao instalamos. A chave do registro continua sem
+    mecanismo de exclusao — quem exclui e o lease de host, e ele so vale entre
+    execucoes de DebitosEmAberto.
+    """
     fonte = (cert_windows.Path(cert_windows.__file__)).read_text(encoding="utf-8")
 
-    for mecanismo in ("Mutex", "mutex", "lock", "LockFile", "flock", "compare"):
+    for mecanismo in ("Mutex", "mutex", "LockFile", "flock"):
         assert mecanismo not in fonte, f"nao ha {mecanismo}"
+
+    # E o que existe compara CONTEUDO, e nao toma posse de nada.
+    assert "_valor_atual(key, nome)" in fonte
 
 
 def test_n_a_chave_e_a_mesma_para_qualquer_execucao():
