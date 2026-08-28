@@ -89,26 +89,24 @@ CABECALHO_PROCESSOS = [
     "Valor Original", "Saldo Devedor", "Processo de Crédito",
 ]
 
-# Ate onde as DUAS fontes concordam sobre o cabecalho de cada aba de detalhe.
+# TODAS as oito posicoes de cada aba de detalhe sao conferidas (fatia 14A.1).
+# A automacao escreve oito valores; conferir seis deixava a possibilidade de o
+# oitavo cair sob um cabecalho de outro significado.
 #
-# `Débitos`: o modelo tem nove colunas e as oito primeiras sao exatamente estas.
-# A nona, 'Informações Complementares', o codigo nunca preenche.
+# A oitava de `Processos Fiscais` foi decidida pelo PRODUTOR, e nao por voto
+# entre artefatos. O valor sai de `div.processo-credito`, revelado por um botao
+# cujo `aria-label` e "Expandir processo de crédito": e o processo de credito
+# daquele card, e nada mais. O `PLANILHA MODELO.xlsx` a chamava de 'Informações
+# Complementares' — que e o rotulo do botao que ABRE o card, e nao o nome do
+# dado. O modelo foi corrigido; o codigo ja estava certo.
 #
-# `Processos Fiscais`: duas posicoes ficam de fora, e por motivos diferentes.
-#
-# A QUINTA porque as grafias divergem alem do espaco — o codigo escreve
-# 'Dt.Vcto.' e o modelo traz 'Dt. Vcto', sem o ponto final. Normalizar
-# pontuacao para faze-las coincidir seria inventar uma regra que nenhuma das
-# duas fontes sustenta.
-#
-# A OITAVA porque as fontes discordam sobre o que aquela coluna SIGNIFICA: o
-# modelo a chama de 'Informações Complementares' e o codigo escreve
-# 'Processo de Crédito' ali. DETALHE_PROCESSOS_CABECALHO_DIVERGENTE, registrado
-# e nao corrigido — a decisao sobre qual das duas vale nao e desta fatia.
-#
-# A setima diverge so por um espaco no fim, e essa a comparacao resolve.
-CONFERIDAS_DEBITOS = (0, 1, 2, 3, 4, 5, 6, 7)
-CONFERIDAS_PROCESSOS = (0, 1, 2, 3, 5, 6)
+# As duas grafias aceitas na quinta posicao NAO sao normalizacao: sao um
+# conjunto finito e comprovado. O modelo trazia 'Dt. Vcto' nesta aba e
+# 'Dt.Vcto.' na de Débitos — discordava de si mesmo. A forma canonica e a do
+# codigo, e a antiga fica como alias para nao recusar planilha ja em uso.
+ALIAS_DO_CABECALHO = {
+    ABA_PROCESSOS: {4: ("Dt. Vcto",)},
+}
 
 CAMPOS_DEBITO = (
     "cnpj", "tipo", "tributo", "receita", "pa_ex", "dt_vcto", "valor_original", "saldo",
@@ -595,13 +593,20 @@ def _cabecalho_da_aba(ws) -> list:
     return list(next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ()))
 
 
-def _conferir(ws, esperado: dict) -> None:
-    """`esperado` mapeia POSICAO (0-based) -> texto do cabecalho."""
+def _conferir(ws, esperado: dict, alias: dict | None = None) -> None:
+    """`esperado` mapeia POSICAO (0-based) -> texto canonico do cabecalho.
+
+    `alias` mapeia POSICAO -> outras grafias HISTORICAS aceitas naquela posicao.
+    Cada uma delas foi encontrada num artefato do projeto; nao ha aproximacao.
+    """
     lido = _cabecalho_da_aba(ws)
+    alias = alias or {}
 
     for posicao, texto in esperado.items():
         atual = lido[posicao] if posicao < len(lido) else None
-        if _normalizar_cabecalho(atual) != _normalizar_cabecalho(texto):
+        aceitos = {_normalizar_cabecalho(t)
+                   for t in (texto, *alias.get(posicao, ()))}
+        if _normalizar_cabecalho(atual) not in aceitos:
             # A mensagem nomeia a ABA e a COLUNA, que sao do formato, e nunca o
             # que foi lido: uma celula de cabecalho trocada pode conter qualquer
             # coisa que estivesse na planilha.
@@ -636,13 +641,17 @@ def validar_schema(wb) -> None:
 
     # As abas de detalhe so existem se ja houve execucao — ou se vieram do
     # modelo. Quando existem, o append escreve nelas: conferir antes e o que
-    # impede o CNPJ de ir parar sob a coluna de outra pessoa.
-    for nome, cabecalho, posicoes in (
-        (ABA_DEBITOS, CABECALHO_DEBITOS, CONFERIDAS_DEBITOS),
-        (ABA_PROCESSOS, CABECALHO_PROCESSOS, CONFERIDAS_PROCESSOS),
-    ):
+    # impede um valor de ir parar sob uma coluna de outro significado.
+    #
+    # Sao as OITO de cada uma. A automacao escreve oito valores, entao precisa
+    # saber o que as oito colunas querem dizer. Colunas ALEM da oitava nao sao
+    # conferidas: a automacao nao escreve nelas, e o proprio modelo traz uma
+    # nona em `Débitos`.
+    for nome, cabecalho in ((ABA_DEBITOS, CABECALHO_DEBITOS),
+                            (ABA_PROCESSOS, CABECALHO_PROCESSOS)):
         if nome in wb.sheetnames:
-            _conferir(wb[nome], {i: cabecalho[i] for i in posicoes})
+            _conferir(wb[nome], dict(enumerate(cabecalho)),
+                      ALIAS_DO_CABECALHO.get(nome))
 
 
 def validar_recurso(caminho: str) -> None:

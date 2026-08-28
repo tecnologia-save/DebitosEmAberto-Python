@@ -97,31 +97,28 @@ def test_3_o_modelo_prova_os_cabecalhos_de_A_a_E():
                          "PROCESSOS FISCAIS")
 
 
-def test_3_e_o_README_esta_DESATUALIZADO():
-    """REPORTADO. O README documenta quatro colunas e chama a D de 'RESULTADO';
-    o modelo tem cinco e as chama de 'DÉBITOS' e 'PROCESSOS FISCAIS'.
+def test_3_o_README_deixou_de_divergir_do_modelo():
+    """ANTES documentava quatro colunas e chamava a D de 'RESULTADO'; o modelo
+    tem cinco e as chama de 'DÉBITOS' e 'PROCESSOS FISCAIS'.
 
-    Quando duas fontes discordam, a que vale e o artefato que a automacao le.
+    A prova de que ele passou a descrever um formato ACEITO esta em
+    `test_caracterizacao_schema_detalhe.py`, montando a planilha que a tabela
+    descreve. Aqui fica so a ausencia do rotulo antigo.
     """
     texto = (RAIZ / "README.md").read_text(encoding="utf-8")
     tabela = texto[texto.index("## Formato da Planilha"):]
     tabela = tabela[: tabela.index("## Execução")]
 
-    assert "| D | RESULTADO |" in tabela
-    assert "PROCESSOS FISCAIS" not in tabela, "a coluna E nem aparece"
+    assert "RESULTADO" not in tabela
 
 
-def test_3_e_o_cabecalho_dos_DETALHES_bate_em_um_e_diverge_no_outro():
-    """A outra metade da evidencia, e ela nao e limpa.
+def test_3_e_o_cabecalho_dos_DETALHES_agora_bate_nos_dois():
+    """ANTES `Processos Fiscais` divergia na oitava: o modelo a chamava de
+    'Informações Complementares' e o codigo escreve 'Processo de Crédito' ali.
+    A fatia 14A.1 rastreou o valor ate o produtor e corrigiu o modelo.
 
-    `Débitos`: o modelo tem NOVE colunas e as oito primeiras sao exatamente as
-    que o codigo escreve. A nona, 'Informações Complementares', o codigo nunca
-    preenche.
-
-    `Processos Fiscais`: o modelo tem oito, e a oitava e
-    'Informações Complementares' — enquanto o codigo escreve
-    'Processo de Crédito' ali. As duas fontes discordam sobre o que essa coluna
-    significa.
+    A NONA coluna de `Débitos` continua sendo do modelo e nao do codigo — a
+    automacao nunca escreve nela.
     """
     wb = openpyxl.load_workbook(MODELO)
     try:
@@ -134,8 +131,8 @@ def test_3_e_o_cabecalho_dos_DETALHES_bate_em_um_e_diverge_no_outro():
     assert list(debitos[:8]) == planilha.CABECALHO_DEBITOS
     assert debitos[8] == "Informações Complementares"
 
-    assert processos[7] == "Informações Complementares"
-    assert planilha.CABECALHO_PROCESSOS[7] == "Processo de Crédito"
+    assert [str(valor).strip() for valor in processos] == \
+        planilha.CABECALHO_PROCESSOS
 
 
 # ── §1 · §2 · a aba principal e escolhida por NOME ───────────────────────────
@@ -484,14 +481,14 @@ def test_24_e_as_abas_de_detalhe_CRIADAS_por_nos_sao_reabertas(tmp_path, sessao)
 
 
 def test_24_e_as_abas_de_detalhe_do_MODELO_tambem(tmp_path, sessao):
-    """As do modelo tem outra grafia em duas colunas e uma coluna a mais. Sao
-    validas: e o artefato que o projeto distribui."""
+    """As do modelo tem uma coluna a mais em `Débitos` e espaco sobrando em
+    `Saldo Devedor `. Sao validas: e o artefato que o projeto distribui."""
     modelo_debitos = ["CNPJ", "TIPO", "TRIBUTO", "Rec.", "PA/Ex.", "Dt.Vcto.",
                       "Valor Original", "Saldo Devedor",
                       "Informações Complementares"]
-    modelo_processos = ["CNPJ", "TIPO", "RECEITA", "PA/Ex.", "Dt. Vcto",
+    modelo_processos = ["CNPJ", "TIPO", "RECEITA", "PA/Ex.", "Dt.Vcto.",
                         "Valor Original", "Saldo Devedor ",
-                        "Informações Complementares"]
+                        "Processo de Crédito"]
     caminho = montar(
         tmp_path / "p.xlsx",
         ["CNPJ", "EMPRESA", "CERTIFICADO", "DÉBITOS", "PROCESSOS FISCAIS"],
@@ -503,6 +500,27 @@ def test_24_e_as_abas_de_detalhe_do_MODELO_tambem(tmp_path, sessao):
     sessao.abrir(caminho)
 
     assert sessao.wb is not None
+
+
+def test_24_e_a_aba_de_detalhe_do_MODELO_ANTIGO_e_RECUSADA(tmp_path, sessao):
+    """PLANILHA_SCHEMA_FAIL_CLOSED, aplicado ao template anterior.
+
+    Uma planilha montada a partir do modelo ANTES da fatia 14A.1 tem
+    'Informações Complementares' na oitava coluna de `Processos Fiscais` — e o
+    que a automacao grava ali e o processo de credito. Ela para, e quem opera
+    corrige o cabecalho ou parte do modelo novo.
+    """
+    antigo = ["CNPJ", "TIPO", "RECEITA", "PA/Ex.", "Dt. Vcto", "Valor Original",
+              "Saldo Devedor ", "Informações Complementares"]
+    caminho = montar(
+        tmp_path / "p.xlsx",
+        ["CNPJ", "EMPRESA", "CERTIFICADO", "DÉBITOS", "PROCESSOS FISCAIS"],
+        [(ALFA[0], ALFA[1], CERT_ALFA, "", "")],
+        extras=[("Processos Fiscais", antigo, [])],
+    )
+
+    with pytest.raises(planilha.PlanilhaIndisponivel):
+        sessao.abrir(caminho)
 
 
 # ── §18 · o que continua fora de escopo ──────────────────────────────────────

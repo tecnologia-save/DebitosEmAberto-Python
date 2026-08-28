@@ -213,10 +213,13 @@ def test_4_informacoes_complementares_e_o_nome_do_CARD_e_nao_de_uma_coluna():
 
 # ── §7 · a coluna 5, e a inconsistencia do proprio modelo ────────────────────
 
-def test_7_as_duas_grafias_da_coluna_5_e_de_onde_vem_cada_uma():
-    """O codigo escreve 'Dt.Vcto.'. O modelo traz 'Dt.Vcto.' na aba de Débitos e
-    'Dt. Vcto' na de Processos Fiscais — ele discorda de SI MESMO, e e isso que
-    torna a segunda forma um erro de digitacao, e nao um contrato."""
+def test_7_a_coluna_5_do_modelo_foi_CANONIZADA():
+    """ANTES o modelo trazia 'Dt.Vcto.' na aba de Débitos e 'Dt. Vcto' na de
+    Processos Fiscais — discordava de SI MESMO, e era isso que tornava a segunda
+    forma um erro de digitacao, e nao um contrato.
+
+    A forma canonica e a do codigo, e agora as duas abas do modelo a usam.
+    """
     debitos = cabecalho_do_modelo("Débitos")
     processos = cabecalho_do_modelo("Processos Fiscais")
 
@@ -224,7 +227,32 @@ def test_7_as_duas_grafias_da_coluna_5_e_de_onde_vem_cada_uma():
     assert planilha.CABECALHO_PROCESSOS[4] == "Dt.Vcto."
 
     assert debitos[5] == "Dt.Vcto."
-    assert processos[4] == "Dt. Vcto"
+    assert processos[4] == "Dt.Vcto."
+
+
+def test_7_e_a_grafia_ANTIGA_continua_aceita_como_alias(tmp_path, sessao):
+    """§7, opcao A: quem ja tem planilha feita a partir do modelo antigo nao e
+    recusado por causa de um ponto final. E um conjunto FINITO de duas strings
+    comprovadas — nao ha regex, nem strip de pontuacao, nem aproximacao."""
+    antiga = [*planilha.CABECALHO_PROCESSOS]
+    antiga[4] = "Dt. Vcto"
+    caminho = montar(tmp_path / "p.xlsx",
+                     extras=[("Processos Fiscais", antiga, [])])
+
+    sessao.abrir(caminho)
+
+    assert sessao.wb is not None
+
+
+def test_7_e_o_alias_e_uma_LISTA_e_nao_uma_regra(tmp_path, sessao):
+    """Uma terceira grafia qualquer nao passa: o conjunto e fechado."""
+    inventada = [*planilha.CABECALHO_PROCESSOS]
+    inventada[4] = "Dt Vencimento"
+    caminho = montar(tmp_path / "p.xlsx",
+                     extras=[("Processos Fiscais", inventada, [])])
+
+    with pytest.raises(planilha.PlanilhaIndisponivel):
+        sessao.abrir(caminho)
 
 
 def test_7_e_a_coluna_7_diverge_so_por_ESPACO():
@@ -237,58 +265,134 @@ def test_7_e_a_coluna_7_diverge_so_por_ESPACO():
 
 # ── §10 · o residual que a 14A deixou aberto ─────────────────────────────────
 
-def test_10_hoje_seis_colunas_certas_bastam_para_o_append_passar(tmp_path,
-                                                                  sessao):
-    """O buraco, reproduzido: a oitava coluna diz outra coisa, a validacao nao
-    olha para ela, e `processo_credito` e gravado sob o cabecalho errado."""
+def test_10_seis_colunas_certas_NAO_bastam_mais(tmp_path, sessao):
+    """ANTES a oitava coluna podia dizer outra coisa: a validacao nao olhava
+    para ela, e `processo_credito` era gravado sob o cabecalho errado.
+
+    §11: nada e appendado, nada e alterado, nada e salvo.
+    """
     cabecalho_alheio = [*planilha.CABECALHO_PROCESSOS[:7], "OUTRA COISA"]
     caminho = montar(tmp_path / "p.xlsx",
                      extras=[("Processos Fiscais", cabecalho_alheio, [])])
+    antes = ler_aba(caminho, "Processos Fiscais")
 
-    sessao.abrir(caminho)                       # passa
-    sessao.anexar_processos([processo_marcado()])
-    sessao.gravar()
+    with pytest.raises(planilha.PlanilhaIndisponivel):
+        sessao.abrir(caminho)
 
-    linhas = ler_aba(caminho, "Processos Fiscais")
-    assert linhas[0][7] == "OUTRA COISA"
-    assert linhas[1][7] == "<processo_credito>", "gravado sob outro significado"
+    assert ler_aba(caminho, "Processos Fiscais") == antes
+    assert sessao.wb is None
 
 
-def test_10_e_a_aba_do_MODELO_ATUAL_tem_exatamente_esse_problema(tmp_path,
-                                                                 sessao):
-    """E nao e um caso hipotetico: e o template que o projeto distribui."""
+def test_10_e_o_MODELO_deixou_de_ter_esse_problema(tmp_path, sessao):
+    """ANTES nao era um caso hipotetico: era o template que o projeto
+    distribui. Agora a aba dele recebe cada valor sob a coluna certa.
+
+    §9: copia sintetica do cabecalho do modelo, sem dado nenhum.
+    """
     caminho = montar(
         tmp_path / "p.xlsx",
         extras=[("Processos Fiscais", cabecalho_do_modelo("Processos Fiscais"),
                  [])],
     )
+    sessao.abrir(caminho)
 
-    sessao.abrir(caminho)                       # passa
     sessao.anexar_processos([processo_marcado()])
     sessao.gravar()
 
     linhas = ler_aba(caminho, "Processos Fiscais")
-    assert linhas[0][7] == "Informações Complementares"
-    assert linhas[1][7] == "<processo_credito>"
+    sob = dict(zip(linhas[0], linhas[1], strict=True))
+
+    assert sob["Processo de Crédito"] == "<processo_credito>"
+    assert sob["Dt.Vcto."] == "<dt_vcto>"
 
 
 # ── §13 · o README, como ele esta ────────────────────────────────────────────
 
-def test_13_o_README_descreve_um_formato_que_o_validador_RECUSA(tmp_path,
-                                                                sessao):
-    """Marcador estrutural minimo, e nao busca de prosa: monto a planilha que o
-    README manda montar e mostro que ela nao passa.
+def test_13_a_planilha_QUE_O_README_MANDA_MONTAR_e_aceita(tmp_path, sessao):
+    """ANTES o README descrevia quatro colunas, com a D chamada de 'RESULTADO' —
+    uma planilha que o validador recusa.
 
-    Quatro colunas, com a D chamada de 'RESULTADO'.
+    §15: marcador estrutural minimo, e nao busca de prosa. O teste le a TABELA
+    do README, monta a planilha que ela descreve, e exige que ela passe. Se a
+    documentacao voltar a divergir do produto, e aqui que aparece.
     """
+    texto = (RAIZ / "README.md").read_text(encoding="utf-8")
+    tabela = texto[texto.index("## Formato da Planilha"):]
+    tabela = tabela[: tabela.index("## Execução")]
+
+    colunas = []
+    for linha in tabela.splitlines():
+        partes = [pedaco.strip() for pedaco in linha.split("|")]
+        if len(partes) > 3 and len(partes[1]) == 1 and partes[1].isalpha():
+            colunas.append(partes[2])
+
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Empresas"
-    ws.append(["CNPJ", "EMPRESA", "CERTIFICADO", "RESULTADO"])
-    ws.append([ALFA[0], ALFA[1], CERT_ALFA, ""])
+    ws.append(colunas)
+    ws.append([ALFA[0], ALFA[1], CERT_ALFA, "", ""][: len(colunas)])
     caminho = str(tmp_path / "readme.xlsx")
     wb.save(caminho)
     wb.close()
 
+    sessao.abrir(caminho)
+
+    assert sessao.wb is not None
+
+
+# ── §8 · §12 · o que a fatia passou a garantir ───────────────────────────────
+
+def test_8_a_aba_CRIADA_do_zero_e_semanticamente_coerente(tmp_path, sessao):
+    """§8: criar, appendar, e cada valor sob o cabecalho correspondente. As duas
+    abas, e nao so a que tinha o problema."""
+    caminho = montar(tmp_path / "p.xlsx")
+    sessao.abrir(caminho)
+
+    sessao.anexar_debitos([debito_marcado()])
+    sessao.anexar_processos([processo_marcado()])
+    sessao.gravar()
+    sessao.descartar()
+
+    for aba, campos in (("Débitos", planilha.CAMPOS_DEBITO),
+                        ("Processos Fiscais", planilha.CAMPOS_PROCESSO)):
+        linhas = ler_aba(caminho, aba)
+        valores = list(linhas[1])
+        assert valores[0] == ALFA[0]
+        assert valores[1:] == [f"<{campo}>" for campo in campos[1:]]
+
+    # E o que foi escrito e reaberto sem reclamacao.
+    planilha.validar_recurso(caminho)
+
+
+def test_12_as_oito_de_DEBITOS_tambem_passaram_a_ser_conferidas(tmp_path,
+                                                                 sessao):
+    """§12: o metodo foi aplicado as duas abas. Débitos nao tinha divergencia —
+    e agora tambem nao tem coluna sem conferencia."""
+    cabecalho_alheio = [*planilha.CABECALHO_DEBITOS[:7], "OUTRA COISA"]
+    caminho = montar(tmp_path / "p.xlsx",
+                     extras=[("Débitos", cabecalho_alheio, [])])
+
     with pytest.raises(planilha.PlanilhaIndisponivel):
         sessao.abrir(caminho)
+
+
+def test_12_e_a_NONA_coluna_de_debitos_continua_livre(tmp_path, sessao):
+    """§17: nao se confere coluna que a automacao nao escreve. O modelo traz uma
+    nona em `Débitos`, e ela e assunto de quem monta a planilha."""
+    com_nona = [*planilha.CABECALHO_DEBITOS, "QUALQUER COISA MINHA"]
+    caminho = montar(tmp_path / "p.xlsx",
+                     extras=[("Débitos", com_nona, [])])
+
+    sessao.abrir(caminho)
+
+    assert sessao.wb is not None
+
+
+def test_17_toda_coluna_ESCRITA_tem_cabecalho_conferido():
+    """O criterio do §17, em uma frase: a automacao escreve oito valores em cada
+    aba, e as oito posicoes sao conferidas."""
+    assert len(planilha.CAMPOS_DEBITO) == len(planilha.CABECALHO_DEBITOS) == 8
+    assert len(planilha.CAMPOS_PROCESSO) == len(planilha.CABECALHO_PROCESSOS) == 8
+
+    fonte = (RAIZ / "automation" / "planilha.py").read_text(encoding="utf-8")
+    assert "dict(enumerate(cabecalho))" in fonte, "todas as posicoes, e nao um subconjunto"
