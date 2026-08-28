@@ -87,7 +87,17 @@ Use `PLANILHA MODELO.xlsx` como base. A aba **`Empresas`** deve ter:
 | A | CNPJ | `12345678000195` |
 | B | EMPRESA | `Empresa XYZ Ltda` |
 | C | CERTIFICADO | `Cristiano` |
-| D | RESULTADO | *(preenchido pela automação)* |
+| D | DÉBITOS | *(preenchido pela automação)* |
+| E | PROCESSOS FISCAIS | *(preenchido pela automação)* |
+
+O cabeçalho da linha 1 é **conferido antes de qualquer gravação**: se as colunas
+A, C, D e E não tiverem esses nomes, a automação recusa a planilha e não altera
+nada. Maiúsculas e espaço sobrando são tolerados; o resto, não — uma coluna a
+mais no início deslocaria tudo, e a automação escreveria no lugar errado.
+
+As abas de detalhe **`Débitos`** e **`Processos Fiscais`** são criadas pela
+automação quando não existem. Se já existirem, o cabeçalho delas também é
+conferido.
 
 - CNPJs podem ser formatados (`XX.XXX.XXX/XXXX-XX`) ou apenas dígitos
 - A coluna C aceita o nome do certificado **como você o chama** — não precisa ser
