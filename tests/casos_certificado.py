@@ -25,7 +25,7 @@ BERNARDO = _cert(
     "BB02",
 )
 XYZ = _cert("X Y Z CONSULTORIAS", "X Y Z CONSULTORIAS", "00000000000002", "CC03")
-CARDOSO = _cert("EMPRESARIAL FICTICIA LTDA", "EMPRESARIAL FICTICIA LTDA", "00000000000003", "DD04")
+GAMA = _cert("EMPRESARIAL FICTICIA LTDA", "EMPRESARIAL FICTICIA LTDA", "00000000000003", "DD04")
 DES = _cert("D&S ASSESSORIA", "D&S ASSESSORIA", "00000000000004", "EE05")
 DSR = _cert("D.S.R. ASSESSORIA", "D.S.R. ASSESSORIA", "00000000000005", "FF06")
 
@@ -42,7 +42,7 @@ def _indexar(*certificados: dict) -> dict[str, dict]:
     return mapa
 
 
-CERTS = _indexar(ALVORADA, BERNARDO, XYZ, CARDOSO, DES, DSR)
+CERTS = _indexar(ALVORADA, BERNARDO, XYZ, GAMA, DES, DSR)
 
 # Um unico certificado, indexado sob tres chaves — serve para provar que a
 # deduplicacao por identidade nao transforma isso em empate.

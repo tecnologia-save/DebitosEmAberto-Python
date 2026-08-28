@@ -86,7 +86,7 @@ Use `PLANILHA MODELO.xlsx` como base. A aba **`Empresas`** deve ter:
 |--------|-------|---------|
 | A | CNPJ | `12345678000195` |
 | B | EMPRESA | `Empresa XYZ Ltda` |
-| C | CERTIFICADO | `Cristiano` |
+| C | CERTIFICADO | `Alfa` |
 | D | DÉBITOS | *(preenchido pela automação)* |
 | E | PROCESSOS FISCAIS | *(preenchido pela automação)* |
 
@@ -101,9 +101,10 @@ conferido.
 
 - CNPJs podem ser formatados (`XX.XXX.XXX/XXXX-XX`) ou apenas dígitos
 - A coluna C aceita o nome do certificado **como você o chama** — não precisa ser
-  o nome completo. `Cristiano` encontra `CRISTIANO VASCONCELOS BOAVENTURA LEITE`,
-  `GSH` encontra `G S H CONSULTORIAS`, `Cardoso` encontra `EMPRESARIAL CARDOSO LTDA`.
-  Acentos e maiúsculas são ignorados
+  o nome completo. Os exemplos abaixo são fictícios e servem só para mostrar as
+  três formas de abreviar: `Alfa` encontra `ALFA COMERCIO FICTICIO LTDA`, `BDM`
+  encontra `B D M SERVICOS DEMONSTRACAO`, e `Gama` encontra
+  `EMPRESA GAMA EXEMPLO LTDA`. Acentos e maiúsculas são ignorados
 - Se o nome descrever **mais de um** certificado instalado, a automação avisa e
   pula a linha em vez de escolher — usar o certificado errado significaria entrar
   na conta de outra empresa
