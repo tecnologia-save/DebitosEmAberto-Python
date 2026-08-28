@@ -340,7 +340,7 @@ def _execucao(monkeypatch, aberturas):
 def _item():
     from automation.planilha import ItemPendente
 
-    return ItemPendente(posicao=0, cnpj="11111111000191", certificado=CN_NOSSO)
+    return ItemPendente(posicao=0, cnpj="11111111000191", certificado=CN_NOSSO, linha=2)
 
 
 def test_17_o_caminho_BORROW_nao_abre_sessao_com_colmeia_ilegivel(

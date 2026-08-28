@@ -12,6 +12,13 @@ from automation import planilha as p
 from automation.planilha import SessaoPlanilha
 from automation.status_portal import status_encerra_linha
 
+# A planilha sintetica poe ALFA na linha 2, BETA na 3 e GAMA na 4 — o cabecalho
+# e a 1. Desde a fatia 15 a identidade da unidade de trabalho e a LINHA, e nao o
+# CNPJ; o que cada teste daqui afirma nao mudou.
+LINHA_ALFA = 2
+LINHA_BETA = 3
+LINHA_AUSENTE = 99
+
 AUSENTE = "99999999000199"
 
 
@@ -39,7 +46,7 @@ def coluna(caminho, linha, col):
 def test_cada_desfecho_grava_a_sua_celula(sessao, metodo, col, esperado):
     s, caminho = sessao
 
-    assert getattr(s, metodo)(ALFA[0]) is True
+    assert getattr(s, metodo)(LINHA_ALFA) is True
     s.gravar()
 
     assert coluna(caminho, 1, col) == esperado
@@ -49,7 +56,7 @@ def test_a_recusa_do_portal_grava_o_status_recebido(sessao):
     """O texto vem da classificacao da recusa, nao da mensagem bruta do portal."""
     s, caminho = sessao
 
-    assert s.registrar_recusa_do_portal(ALFA[0], "Procuração sem autorização") is True
+    assert s.registrar_recusa_do_portal(LINHA_ALFA, "Procuração sem autorização") is True
     s.gravar()
 
     assert coluna(caminho, 1, 3) == "Procuração sem autorização"
@@ -60,7 +67,7 @@ def test_cnpj_ausente_devolve_false_em_vez_de_levantar(sessao):
     agora quem chama SABE — antes so havia um print."""
     s, _ = sessao
 
-    assert s.registrar_sem_debitos(AUSENTE) is False
+    assert s.registrar_sem_debitos(LINHA_AUSENTE) is False
     assert s.sujo is False
 
 
@@ -70,7 +77,7 @@ def test_debitos_gravam_a_aba_e_depois_a_coluna(sessao):
     from planilhas_sinteticas import linhas_de_debito
 
     s, caminho = sessao
-    registro = s.registrar_debitos(ALFA[0], linhas_de_debito(ALFA[0], 2))
+    registro = s.registrar_debitos(LINHA_ALFA, linhas_de_debito(ALFA[0], 2))
     s.gravar()
 
     assert registro.linhas == 2
@@ -83,7 +90,7 @@ def test_processos_gravam_a_aba_e_depois_a_coluna(sessao):
     from planilhas_sinteticas import linhas_de_processo
 
     s, caminho = sessao
-    registro = s.registrar_processos(BETA[0], linhas_de_processo(BETA[0], 3))
+    registro = s.registrar_processos(LINHA_BETA, linhas_de_processo(BETA[0], 3))
     s.gravar()
 
     assert registro.linhas == 3
@@ -116,7 +123,7 @@ def test_detalhe_que_cai_nao_marca_a_coluna(sessao, monkeypatch, metodo, anexar)
 def test_linha_intocada_nao_tem_nada_feito(sessao):
     s, caminho = sessao
 
-    r = s.retomada(caminho, ALFA[0], status_encerra_linha)
+    r = s.retomada(caminho, LINHA_ALFA, status_encerra_linha)
 
     assert (r.dctfweb_feito, r.processos_feitos, r.encerrada) == (False, False, False)
     assert r.concluida is False
@@ -129,7 +136,7 @@ def test_linha_com_as_duas_colunas_esta_concluida(tmp_path):
     s = SessaoPlanilha()
     s.abrir(caminho)
 
-    r = s.retomada(caminho, ALFA[0], status_encerra_linha)
+    r = s.retomada(caminho, LINHA_ALFA, status_encerra_linha)
 
     assert r.concluida is True
     assert r.encerrada is False, "concluida por preenchimento, nao por status terminal"
@@ -142,7 +149,7 @@ def test_status_terminal_em_d_encerra_a_linha(tmp_path):
     s = SessaoPlanilha()
     s.abrir(caminho)
 
-    r = s.retomada(caminho, ALFA[0], status_encerra_linha)
+    r = s.retomada(caminho, LINHA_ALFA, status_encerra_linha)
 
     assert r.encerrada is True
     assert r.concluida is False, "a coluna E continua vazia"
@@ -152,10 +159,10 @@ def test_a_regra_de_status_terminal_entra_por_parametro(sessao):
     """Quais status terminam uma linha e regra do PORTAL. A planilha nao a
     conhece — pelo mesmo motivo de `linhas_pendentes`."""
     s, caminho = sessao
-    s.registrar_debitos_concluidos(ALFA[0])
+    s.registrar_debitos_concluidos(LINHA_ALFA)
 
-    assert s.retomada(caminho, ALFA[0], lambda v: True).encerrada is True
-    assert s.retomada(caminho, ALFA[0], lambda v: False).encerrada is False
+    assert s.retomada(caminho, LINHA_ALFA, lambda v: True).encerrada is True
+    assert s.retomada(caminho, LINHA_ALFA, lambda v: False).encerrada is False
 
 
 def test_a_retomada_enxerga_o_que_foi_gravado_nesta_execucao(sessao):
@@ -166,10 +173,10 @@ def test_a_retomada_enxerga_o_que_foi_gravado_nesta_execucao(sessao):
     que ja tinha terminado.
     """
     s, caminho = sessao
-    antes = s.retomada(caminho, ALFA[0], status_encerra_linha)
+    antes = s.retomada(caminho, LINHA_ALFA, status_encerra_linha)
 
-    s.registrar_debitos_concluidos(ALFA[0])
-    depois = s.retomada(caminho, ALFA[0], status_encerra_linha)
+    s.registrar_debitos_concluidos(LINHA_ALFA)
+    depois = s.retomada(caminho, LINHA_ALFA, status_encerra_linha)
 
     assert antes.dctfweb_feito is False
     assert depois.dctfweb_feito is True, "sem gravar no disco, so em memoria"
@@ -180,9 +187,9 @@ def test_a_retomada_nao_carrega_os_textos_das_colunas(sessao):
     import dataclasses
 
     s, caminho = sessao
-    s.registrar_recusa_do_portal(ALFA[0], "Procuração sem autorização")
+    s.registrar_recusa_do_portal(LINHA_ALFA, "Procuração sem autorização")
 
-    r = s.retomada(caminho, ALFA[0], status_encerra_linha)
+    r = s.retomada(caminho, LINHA_ALFA, status_encerra_linha)
 
     assert "Procuração" not in str(dataclasses.asdict(r))
     assert all(isinstance(v, bool) for v in dataclasses.asdict(r).values())

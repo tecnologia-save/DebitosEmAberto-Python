@@ -57,6 +57,21 @@ COL_CERTIFICADO = 2
 COL_STATUS_DCTFWEB = 3
 COL_STATUS_PROCESSOS = 4
 
+# A primeira linha de dados: a 1 e o cabecalho.
+#
+# E a ponte entre os dois mundos deste modulo. O pandas indexa a partir de zero
+# a partir da linha 2 da planilha, entao `linha = indice + 2` — e e assim que a
+# LINHA vira a identidade da unidade de trabalho.
+#
+# Ate aqui a identidade era o CNPJ, e isso quebrava quando ele se repetia:
+# `mapa_status` guardava a ULTIMA ocorrencia e `escrever_status` marcava a
+# PRIMEIRA. Uma linha ja concluida podia ser sobrescrita, outra podia nunca ser
+# processada, e a segunda ocorrencia voltava pendente em toda execucao.
+#
+# Nao ha identificador novo, nem coluna tecnica: o indice do DataFrame ja era a
+# linha, e so precisava parar de ser jogado fora a cada `reset_index`.
+PRIMEIRA_LINHA_DE_DADOS = 2
+
 # Os valores gravados nas colunas de status. Ficam aqui porque sao conteudo da
 # planilha: a aplicacao pede "registre que nao ha debitos", nao escreve o texto.
 STATUS_CONCLUIDO = "Concluído"
@@ -189,17 +204,25 @@ def ler_e_ordenar(caminho: str) -> tuple[pd.DataFrame, int]:
     else:
         df = pd.read_csv(caminho, dtype=str)
 
-    df = df.dropna(how="all").reset_index(drop=True)
+    # O INDICE E A IDENTIDADE daqui para a frente. Nada de `reset_index` nem de
+    # `ignore_index`: filtrar e reordenar mudam a ORDEM, e nao quem cada linha e.
+    df = df.dropna(how="all")
 
-    total_antes = len(df)
-    df = df.drop_duplicates(ignore_index=True)
-    removidas = total_antes - len(df)
+    # As repetidas sao CONTADAS, e nao removidas.
+    #
+    # Descartar linha repetida era descartar uma linha da planilha que ninguem
+    # mais escreveria: ela ficava em branco para sempre. E ninguem era avisado —
+    # o numero voltava daqui e o app o descartava.
+    #
+    # Repetir nao e invalido. Duas linhas do mesmo CNPJ podem existir por motivo
+    # legitimo, e agora cada uma tem o proprio destino.
+    repetidas = int(df.duplicated().sum())
 
     col_certificado = df.columns[COL_CERTIFICADO]
-    df = df.sort_values(by=col_certificado, kind="stable", ignore_index=True)
-    # A contagem de duplicatas volta em vez de virar print: a integracao nao
-    # decide o que aparece no console.
-    return df, removidas
+    df = df.sort_values(by=col_certificado, kind="stable")
+    # A contagem volta em vez de virar print: a integracao nao decide o que
+    # aparece no console.
+    return df, repetidas
 
 
 def linhas_pendentes(df: pd.DataFrame, mapa: dict, encerra_linha) -> tuple[pd.DataFrame, int]:
@@ -212,17 +235,14 @@ def linhas_pendentes(df: pd.DataFrame, mapa: dict, encerra_linha) -> tuple[pd.Da
     `encerra_linha` chega como parametro em vez de import: a regra de quais
     status terminam uma linha e do portal, nao da planilha.
     """
-    col_cnpj = df.columns[COL_CNPJ]
-
-    def _pendente(valor) -> bool:
-        cnpj = normalizar_cnpj(re.sub(r"\.0+$", "", str(valor).strip()))
-        val_d, val_e = mapa.get(cnpj, ("", ""))
+    def _pendente(indice) -> bool:
+        val_d, val_e = mapa.get(int(indice) + PRIMEIRA_LINHA_DE_DADOS, ("", ""))
         if encerra_linha(val_d):
             return False
         return not (val_d and val_e)
 
-    mask = df[col_cnpj].map(_pendente)
-    return df[mask].reset_index(drop=True), int((~mask).sum())
+    mask = pd.Series(df.index.map(_pendente), index=df.index)
+    return df[mask], int((~mask).sum())
 
 
 # ── O item que a aplicacao consome ────────────────────────────────────────────
@@ -241,19 +261,24 @@ class ItemPendente:
     """Uma linha da aba 'Empresas' a processar.
 
     `posicao` e OPACA: serve so para dizer ao operador em que ponto da lista a
-    execucao esta. A identidade continua sendo o CNPJ, exatamente como hoje —
-    inclusive com o PLANILHA_POSSIBLE_DEFECT do CNPJ duplicado, que uma
-    identidade por linha consertaria por acidente. Nao e desta fatia.
+    execucao esta. Ela muda com a ordenacao por certificado e NAO identifica
+    nada.
+
+    `linha` e a identidade. E o numero da linha na aba 'Empresas', carregado
+    desde a leitura, e e por ele que o progresso e lido e gravado. Antes disso a
+    identidade era o CNPJ, e duas linhas com o mesmo CNPJ disputavam o mesmo
+    destino.
 
     O que NAO esta aqui, de proposito: o estado das colunas D e E. Ele muda
     DURANTE a execucao — o DCTFWeb grava D antes de os Processos comecarem — e
-    uma retentativa do mesmo CNPJ precisa ler o valor novo, nao o do inicio da
+    uma retentativa da mesma linha precisa ler o valor novo, nao o do inicio da
     lista. Congelar D/E no item quebraria a retomada dentro da propria execucao.
     """
 
     posicao: int
     cnpj: str
     certificado: str
+    linha: int
 
     @property
     def utilizavel(self) -> bool:
@@ -271,11 +296,12 @@ def itens_pendentes(df: pd.DataFrame) -> list[ItemPendente]:
     col_cert = df.columns[COL_CERTIFICADO]
     return [
         ItemPendente(
-            posicao=int(idx),
+            posicao=posicao,
             cnpj=normalizar_cnpj(re.sub(r"\.0+$", "", str(linha[col_cnpj]).strip())),
             certificado=str(linha[col_cert]).strip(),
+            linha=int(idx) + PRIMEIRA_LINHA_DE_DADOS,
         )
-        for idx, linha in df.iterrows()
+        for posicao, (idx, linha) in enumerate(df.iterrows())
     ]
 
 
@@ -402,16 +428,21 @@ class SessaoPlanilha:
 
     # ── Aba 'Empresas' ────────────────────────────────────────────────────────
 
-    def mapa_status(self, caminho: str) -> dict[str, tuple[str, str]]:
-        """Mapa {cnpj: (coluna_D, coluna_E)}, montado uma so vez por sessao.
+    def mapa_status(self, caminho: str) -> dict[int, tuple[str, str]]:
+        """Mapa {linha: (coluna_D, coluna_E)}, montado uma so vez por sessao.
 
-        Varrer a aba a cada consulta era O(n) por CNPJ; com o mapa a consulta
-        vira uma busca em dicionario.
+        Varrer a aba a cada consulta era O(n) por consulta; com o mapa ela vira
+        uma busca em dicionario.
+
+        A chave e a LINHA, e nao o CNPJ. Com o CNPJ, duas ocorrencias colapsavam
+        numa entrada so — a ultima vencia — e o progresso de uma era lido como
+        se fosse o da outra.
         """
         if self.estado["status"] is None or self.estado["caminho"] != caminho:
             ws = self.wb[ABA_EMPRESAS]
-            mapa: dict[str, tuple[str, str]] = {}
-            for linha in ws.iter_rows(min_row=2):
+            mapa: dict[int, tuple[str, str]] = {}
+            for numero, linha in enumerate(ws.iter_rows(min_row=PRIMEIRA_LINHA_DE_DADOS),
+                                           start=PRIMEIRA_LINHA_DE_DADOS):
                 if not linha[COL_CNPJ].value:
                     continue
                 val_d = (
@@ -422,23 +453,26 @@ class SessaoPlanilha:
                     str(linha[COL_STATUS_PROCESSOS].value or "").strip()
                     if len(linha) > COL_STATUS_PROCESSOS else ""
                 )
-                mapa[normalizar_cnpj(linha[COL_CNPJ].value)] = (val_d, val_e)
+                mapa[numero] = (val_d, val_e)
             self.estado["status"] = mapa
         return self.estado["status"]
 
-    def escrever_status(self, cnpj: str, valor: str, coluna: int) -> bool:
-        """Escreve na coluna indicada da linha do CNPJ. False se nao achou a linha.
+    def escrever_status(self, linha: int, valor: str, coluna: int) -> bool:
+        """Escreve na coluna indicada DAQUELA linha. False se ela nao serve.
 
-        PLANILHA_POSSIBLE_DEFECT preservado: com o CNPJ repetido na aba, escreve
-        na PRIMEIRA linha, enquanto `mapa_status` guarda a ULTIMA. A segunda
-        linha nunca e marcada e volta pendente em toda execucao.
+        Nao ha busca. A linha vem do item que esta sendo processado, e o item a
+        carrega desde a leitura — e por isso que duas ocorrencias do mesmo CNPJ
+        deixaram de disputar o mesmo destino.
+
+        `False` quando a linha esta fora da aba ou nao tem CNPJ. Nao se procura
+        "a linha parecida": quem chamou fica sabendo que nao gravou.
         """
         ws = self.wb[ABA_EMPRESAS]
 
-        for linha in ws.iter_rows(min_row=2):
-            celula_cnpj = linha[COL_CNPJ]
-            if celula_cnpj.value and normalizar_cnpj(celula_cnpj.value) == cnpj:
-                celula = linha[coluna]
+        if PRIMEIRA_LINHA_DE_DADOS <= linha <= ws.max_row:
+            celulas = ws[linha]
+            if celulas[COL_CNPJ].value:
+                celula = celulas[coluna]
                 celula.value = valor
                 celula.alignment = Alignment(horizontal="center", vertical="center")
                 self.estado["sujo"] = True
@@ -446,8 +480,8 @@ class SessaoPlanilha:
                 # Mantem o mapa em sincronia com a celula.
                 mapa = self.estado["status"]
                 if mapa is not None:
-                    val_d, val_e = mapa.get(cnpj, ("", ""))
-                    mapa[cnpj] = (
+                    val_d, val_e = mapa.get(linha, ("", ""))
+                    mapa[linha] = (
                         (valor, val_e) if coluna == COL_STATUS_DCTFWEB else (val_d, valor)
                     )
                 return True
@@ -462,8 +496,8 @@ class SessaoPlanilha:
     # Cada metodo devolve o que aconteceu, em vez de imprimir: o diagnostico
     # continua sendo de quem chama.
 
-    def retomada(self, caminho: str, cnpj: str, encerra_linha) -> RetomadaDaLinha:
-        """O que ja foi feito por esta linha em execucoes anteriores.
+    def retomada(self, caminho: str, linha: int, encerra_linha) -> RetomadaDaLinha:
+        """O que ja foi feito por ESTA linha em execucoes anteriores.
 
         `encerra_linha` entra por parametro pelo mesmo motivo de
         `linhas_pendentes`: quais status terminam uma linha e regra do portal,
@@ -471,42 +505,45 @@ class SessaoPlanilha:
 
         Lida a cada consulta de proposito. Dentro de uma mesma execucao o valor
         muda — o DCTFWeb grava D antes de os Processos comecarem, e uma
-        retentativa do mesmo CNPJ tem de enxergar o D novo.
+        retentativa da mesma linha tem de enxergar o D novo.
+
+        Por LINHA, e nao por CNPJ: com duas ocorrencias do mesmo documento, uma
+        recebia o progresso da outra.
         """
-        val_d, val_e = self.mapa_status(caminho).get(cnpj, ("", ""))
+        val_d, val_e = self.mapa_status(caminho).get(linha, ("", ""))
         return RetomadaDaLinha(
             dctfweb_feito=bool(val_d),
             processos_feitos=bool(val_e),
             encerrada=bool(encerra_linha(val_d)),
         )
 
-    def registrar_sem_debitos(self, cnpj: str) -> bool:
-        return self.escrever_status(cnpj, STATUS_SEM_DEBITOS, COL_STATUS_DCTFWEB)
+    def registrar_sem_debitos(self, linha: int) -> bool:
+        return self.escrever_status(linha, STATUS_SEM_DEBITOS, COL_STATUS_DCTFWEB)
 
-    def registrar_debitos_nao_compensaveis(self, cnpj: str) -> bool:
+    def registrar_debitos_nao_compensaveis(self, linha: int) -> bool:
         return self.escrever_status(
-            cnpj, STATUS_DEBITOS_NAO_COMPENSAVEIS, COL_STATUS_DCTFWEB
+            linha, STATUS_DEBITOS_NAO_COMPENSAVEIS, COL_STATUS_DCTFWEB
         )
 
-    def registrar_sem_processos(self, cnpj: str) -> bool:
-        return self.escrever_status(cnpj, STATUS_SEM_PROCESSOS, COL_STATUS_PROCESSOS)
+    def registrar_sem_processos(self, linha: int) -> bool:
+        return self.escrever_status(linha, STATUS_SEM_PROCESSOS, COL_STATUS_PROCESSOS)
 
-    def registrar_debitos_concluidos(self, cnpj: str) -> bool:
+    def registrar_debitos_concluidos(self, linha: int) -> bool:
         """Fecha a coluna do DCTFWeb sem ter havido tabela de DCTFWeb.
 
         Acontece quando so existe Processo Fiscal: o portal nao oferece a divida
         DCTFWeb, e a linha nao pode ficar pendente para sempre por causa disso.
         """
-        return self.escrever_status(cnpj, STATUS_CONCLUIDO, COL_STATUS_DCTFWEB)
+        return self.escrever_status(linha, STATUS_CONCLUIDO, COL_STATUS_DCTFWEB)
 
-    def registrar_recusa_do_portal(self, cnpj: str, status: str) -> bool:
+    def registrar_recusa_do_portal(self, linha: int, status: str) -> bool:
         """Grava o motivo pelo qual o portal recusou o CNPJ.
 
         O texto vem da classificacao da recusa, nao da mensagem bruta do portal.
         """
-        return self.escrever_status(cnpj, status, COL_STATUS_DCTFWEB)
+        return self.escrever_status(linha, status, COL_STATUS_DCTFWEB)
 
-    def registrar_debitos(self, cnpj: str, linhas: list[dict]) -> RegistroDeDetalhe:
+    def registrar_debitos(self, linha: int, linhas: list[dict]) -> RegistroDeDetalhe:
         """Detalhe primeiro, status depois — nesta ordem, e ela e o contrato.
 
         Se a gravacao do detalhe cair, a coluna nao e marcada e a proxima
@@ -516,15 +553,15 @@ class SessaoPlanilha:
         destinos = self.anexar_debitos(linhas)
         return RegistroDeDetalhe(
             destinos=destinos,
-            marcado=self.escrever_status(cnpj, STATUS_CONCLUIDO, COL_STATUS_DCTFWEB),
+            marcado=self.escrever_status(linha, STATUS_CONCLUIDO, COL_STATUS_DCTFWEB),
         )
 
-    def registrar_processos(self, cnpj: str, linhas: list[dict]) -> RegistroDeDetalhe:
+    def registrar_processos(self, linha: int, linhas: list[dict]) -> RegistroDeDetalhe:
         """Mesma ordem e mesmo motivo do DCTFWeb, na coluna dos Processos."""
         destinos = self.anexar_processos(linhas)
         return RegistroDeDetalhe(
             destinos=destinos,
-            marcado=self.escrever_status(cnpj, STATUS_CONCLUIDO, COL_STATUS_PROCESSOS),
+            marcado=self.escrever_status(linha, STATUS_CONCLUIDO, COL_STATUS_PROCESSOS),
         )
 
     # ── Abas de detalhe ───────────────────────────────────────────────────────

@@ -473,7 +473,7 @@ def test_7_policy_emprestada_nao_e_liberada(monkeypatch):
 
     ex = app._Execucao(_PlanilhaInerte(), "p.xlsx", CONFIG, None)
     ex.certificados = {"c": {"subject_cn": CN_A, "serial": "0A01"}}
-    ex.trocar_certificado(ItemPendente(0, "11111111000191", CN_A))
+    ex.trocar_certificado(ItemPendente(0, "11111111000191", CN_A, 2))
     ex.liberar_policy()
 
     assert pedidos == [], "nada foi pedido a ninguem"
@@ -507,10 +507,10 @@ def test_8_a_troca_de_certificado_nao_acumula_guardioes(monkeypatch):
     ex.certificados = {"a": {"subject_cn": CN_A, "serial": "0A01"},
                        "b": {"subject_cn": CN_B, "serial": "0B02"}}
 
-    ex.trocar_certificado(ItemPendente(0, "11111111000191", CN_A))
+    ex.trocar_certificado(ItemPendente(0, "11111111000191", CN_A, 2))
     assert len(vivos) == 1
 
-    ex.trocar_certificado(ItemPendente(1, "22222222000172", CN_B))
+    ex.trocar_certificado(ItemPendente(1, "22222222000172", CN_B, 3))
     assert len(vivos) == 1, "o guardiao de A saiu antes de o de B entrar"
 
     ex.liberar_policy()

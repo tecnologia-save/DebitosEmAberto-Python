@@ -112,13 +112,16 @@ def test_o_item_nao_carrega_o_estado_das_colunas_d_e_e():
     """O motivo e funcional, nao estetico.
 
     D e E mudam DURANTE a execucao — o DCTFWeb grava D antes de os Processos
-    comecarem — e uma retentativa do mesmo CNPJ precisa ler o valor novo. Um
+    comecarem — e uma retentativa da mesma linha precisa ler o valor novo. Um
     item com D/E congelados no inicio da lista faria a retentativa refazer o
     DCTFWeb que ja tinha terminado.
+
+    A fatia 15 acrescentou `linha`, e ela nao e estado: e a IDENTIDADE, e nao
+    muda durante a execucao. E o que continua fora sao os valores.
     """
     campos = {c.name for c in __import__("dataclasses").fields(ItemPendente)}
 
-    assert campos == {"posicao", "cnpj", "certificado"}
+    assert campos == {"posicao", "cnpj", "certificado", "linha"}
 
 
 # ── O resumo por certificado ──────────────────────────────────────────────────

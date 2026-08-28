@@ -413,7 +413,7 @@ def _extrair_debitos(execucao: _Execucao, item) -> None:
     """
     extracao = consulta_fiscal.consultar_dctfweb(execucao.sessao, item.cnpj)
     _avisos_como_eventos(execucao, extracao)
-    registro = execucao.planilha.registrar_debitos(item.cnpj, list(extracao.linhas))
+    registro = execucao.planilha.registrar_debitos(item.linha, list(extracao.linhas))
     execucao.emitir(eventos.DEBITOS_REGISTRADOS, posicao=item.posicao,
                     quantidade=len(extracao), paginas=extracao.paginas)
     if not registro.marcado:
@@ -424,7 +424,7 @@ def _extrair_processos(execucao: _Execucao, item) -> None:
     """Consulta os Processos Fiscais e grava, na mesma ordem e pelo mesmo motivo."""
     extracao = consulta_fiscal.consultar_processos(execucao.sessao, item.cnpj)
     _avisos_como_eventos(execucao, extracao)
-    registro = execucao.planilha.registrar_processos(item.cnpj, list(extracao.linhas))
+    registro = execucao.planilha.registrar_processos(item.linha, list(extracao.linhas))
     execucao.emitir(eventos.PROCESSOS_REGISTRADOS, posicao=item.posicao,
                     quantidade=len(extracao), paginas=extracao.paginas)
     if not registro.marcado:
@@ -438,7 +438,7 @@ def _consultar_situacao(execucao: _Execucao, item, retomada) -> None:
     NADA, entao a linha volta pendente na proxima execucao — e voltara sempre,
     enquanto o texto nao for reconhecido. Caracterizado, nao corrigido.
     """
-    cnpj, posicao = item.cnpj, item.posicao
+    posicao = item.posicao
     situacao = consulta_fiscal.ler_situacao(execucao.sessao)
 
     if not situacao.reconhecida:
@@ -448,20 +448,21 @@ def _consultar_situacao(execucao: _Execucao, item, retomada) -> None:
     if not situacao.com_pendencia:
         if not retomada.dctfweb_feito:
             execucao.registrar(eventos.SEM_DEBITOS_REGISTRADO,
-                               "registrar_sem_debitos", posicao, cnpj)
+                               "registrar_sem_debitos", posicao, item.linha)
         if not retomada.processos_feitos:
             execucao.registrar(eventos.SEM_PROCESSOS_REGISTRADO,
-                               "registrar_sem_processos", posicao, cnpj)
+                               "registrar_sem_processos", posicao, item.linha)
         return
 
     # Nenhum botao de acao encontrado.
     if not situacao.tem_dctfweb and not situacao.tem_processo:
         if not retomada.dctfweb_feito:
             execucao.registrar(eventos.DEBITOS_NAO_COMPENSAVEIS_REGISTRADO,
-                               "registrar_debitos_nao_compensaveis", posicao, cnpj)
+                               "registrar_debitos_nao_compensaveis", posicao,
+                               item.linha)
         if not retomada.processos_feitos:
             execucao.registrar(eventos.SEM_PROCESSOS_REGISTRADO,
-                               "registrar_sem_processos", posicao, cnpj)
+                               "registrar_sem_processos", posicao, item.linha)
         return
 
     # ── Divida DCTFWeb ────────────────────────────────────────────────────────
@@ -477,13 +478,13 @@ def _consultar_situacao(execucao: _Execucao, item, retomada) -> None:
             # So havia Processo Fiscal: o portal nunca ofereceu a divida DCTFWeb,
             # e a linha nao pode ficar pendente para sempre por causa disso.
             execucao.registrar(eventos.DEBITOS_REGISTRADOS,
-                               "registrar_debitos_concluidos", posicao, cnpj)
+                               "registrar_debitos_concluidos", posicao, item.linha)
     elif situacao.tem_processo and retomada.processos_feitos:
         execucao.emitir(eventos.RETOMADA_PULA_PROCESSOS, posicao=posicao)
     elif not retomada.processos_feitos:
         # Nao existe botao de Processo Fiscal.
         execucao.registrar(eventos.SEM_PROCESSOS_REGISTRADO,
-                           "registrar_sem_processos", posicao, cnpj)
+                           "registrar_sem_processos", posicao, item.linha)
 
 
 def _processar_item(execucao: _Execucao, item) -> None:
@@ -494,7 +495,7 @@ def _processar_item(execucao: _Execucao, item) -> None:
     concluido nao ser refeito.
     """
     retomada = execucao.planilha.retomada(
-        execucao.caminho, item.cnpj, status_portal.status_encerra_linha
+        execucao.caminho, item.linha, status_portal.status_encerra_linha
     )
 
     if retomada.encerrada:
@@ -520,7 +521,7 @@ def _processar_item(execucao: _Execucao, item) -> None:
             if resultado.status_coluna_d:
                 execucao.registrar(eventos.RECUSA_REGISTRADA,
                                    "registrar_recusa_do_portal", item.posicao,
-                                   item.cnpj, resultado.status_coluna_d)
+                                   item.linha, resultado.status_coluna_d)
             raise _RecusaDoPortal
 
         if not resultado.representado:

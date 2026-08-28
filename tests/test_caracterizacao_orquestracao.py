@@ -498,7 +498,7 @@ def verificar_pendencias(sessao, cnpj, caminho, escritas,
     execucao = _execucao(escritas, sessao=sessao)
     app._consultar_situacao(
         execucao,
-        planilha.ItemPendente(posicao=0, cnpj=cnpj, certificado="CERT"),
+        planilha.ItemPendente(posicao=0, cnpj=cnpj, certificado="CERT", linha=2),
         planilha.RetomadaDaLinha(skip_dctfweb, skip_processo, encerrada=False),
     )
 
@@ -510,7 +510,7 @@ def processar_item(sessao, cnpj, escritas, retomada=None):
                              lambda e: codigos.append(e.codigo))
     execucao.sessao = sessao
     app._processar_item(
-        execucao, planilha.ItemPendente(posicao=0, cnpj=cnpj, certificado="CERT")
+        execucao, planilha.ItemPendente(posicao=0, cnpj=cnpj, certificado="CERT", linha=2)
     )
     return codigos
 

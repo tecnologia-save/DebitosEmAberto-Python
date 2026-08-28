@@ -277,7 +277,7 @@ def test_ja_ativa_e_estado_EMPRESTADO_e_nao_proprio(monkeypatch):
     ex = app._Execucao(PlanilhaInerte(), "p.xlsx", CONFIG, None)
     ex.certificados = {"c": {"subject_cn": CN_A, "serial": "0A01"}}
 
-    ex.trocar_certificado(ItemPendente(0, "11111111000191", CN_A))
+    ex.trocar_certificado(ItemPendente(0, "11111111000191", CN_A, 2))
 
     assert ex.controle_da_policy is None, "emprestada: nao ha guardiao nosso"
 

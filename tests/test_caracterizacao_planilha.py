@@ -82,9 +82,27 @@ def _relatar_status(cnpj, rotulo, valor, gravou):
     print(f"    [!] CNPJ {cnpj} não encontrado na planilha para escrita em {rotulo}.")
 
 
+def _linha_do(caminho, cnpj):
+    """CHARACTERIZATION_TARGET_CHANGE (fase 15): a API grava por LINHA.
+
+    Os testes deste arquivo falam de CNPJ, e continuam falando: a traducao
+    acontece aqui, no teste. Ela procura a PRIMEIRA ocorrencia — que era o que a
+    producao fazia antes —, entao cada assercao daqui significa exatamente o que
+    significava. O CNPJ repetido tem arquivo proprio.
+    """
+    _wb_sessao(caminho)
+    ws = _SESSAO.wb[planilha_mod.ABA_EMPRESAS]
+    for numero, linha in enumerate(ws.iter_rows(min_row=2), start=2):
+        celula = linha[planilha_mod.COL_CNPJ]
+        if celula.value and planilha_mod.normalizar_cnpj(celula.value) == cnpj:
+            return numero
+    return 999          # fora da aba: a gravacao devolve False, como antes
+
+
 def _registrar(caminho, cnpj, rotulo, valor, metodo):
     _wb_sessao(caminho)
-    _relatar_status(cnpj, rotulo, valor, getattr(_SESSAO, metodo)(cnpj))
+    gravou = getattr(_SESSAO, metodo)(_linha_do(caminho, cnpj))
+    _relatar_status(cnpj, rotulo, valor, gravou)
 
 _METODO_D = {
     planilha_mod.STATUS_CONCLUIDO: "registrar_debitos_concluidos",
@@ -113,7 +131,7 @@ def escrever_aba_processos_fiscais(caminho, dados):
 
 
 def ler_status_cnpj(caminho, cnpj):
-    return mapa_status(caminho).get(cnpj, ("", ""))
+    return mapa_status(caminho).get(_linha_do(caminho, cnpj), ("", ""))
 
 
 @pytest.fixture(autouse=True)
@@ -236,7 +254,7 @@ def test_d_e_uma_LINHA_mais_curta_que_o_cabecalho_continua_valendo(tmp_path):
     wb.save(caminho)
     wb.close()
 
-    assert mapa_status(str(caminho))[ALFA[0]] == ("", "")
+    assert mapa_status(str(caminho))[2] == ("", "")
 
 
 # ── E · F · pendentes e concluidos ────────────────────────────────────────────
@@ -518,11 +536,14 @@ def test_r_retomada_duplica_detalhe_se_o_status_nao_tiver_sido_gravado(tmp_path)
 
 
 def test_r_cnpj_duplicado_na_aba_empresas(tmp_path):
-    """PLANILHA_POSSIBLE_DEFECT: com o mesmo CNPJ em duas linhas, a ESCRITA vai
-    para a primeira e a LEITURA do mapa reflete a ultima.
+    """ANTES, PLANILHA_POSSIBLE_DEFECT: com o mesmo CNPJ em duas linhas, a
+    ESCRITA ia para a primeira e a LEITURA do mapa refletia a ultima. A segunda
+    linha nunca era marcada e voltava pendente em toda execucao.
 
-    Consequencia: a segunda linha nunca e marcada e volta pendente em toda
-    execucao — retrabalho silencioso e sem fim.
+    A fase 15 trocou a identidade da unidade de trabalho: agora cada linha e a
+    sua propria. O ajudante `_linha_do` deste arquivo continua traduzindo pela
+    PRIMEIRA ocorrencia, entao a primeira linha e marcada como antes — mas a
+    LEITURA passou a enxergar as duas linhas separadamente.
     """
     caminho = str(criar_planilha(tmp_path / "dup.xlsx", linhas=[ALFA, ALFA]))
 
@@ -535,5 +556,6 @@ def test_r_cnpj_duplicado_na_aba_empresas(tmp_path):
     assert empresas[2][3] is None, "segunda linha intocada"
 
     df = ler_e_ordenar(caminho)
-    _, concluidas = filtrar_pendentes(df, caminho)
-    assert concluidas == 0, "o mapa reflete a ULTIMA linha, que esta vazia"
+    pendentes, concluidas = filtrar_pendentes(df, caminho)
+    assert concluidas == 1, "a linha marcada saiu da lista"
+    assert len(pendentes) == 1, "e a que falta continua la, sozinha"

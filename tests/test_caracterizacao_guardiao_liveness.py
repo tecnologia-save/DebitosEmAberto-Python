@@ -364,7 +364,7 @@ def execucao(monkeypatch, vida=None, propria=True):
 
 
 def item():
-    return planilha.ItemPendente(posicao=0, cnpj=CNPJ, certificado=CERT)
+    return planilha.ItemPendente(posicao=0, cnpj=CNPJ, certificado=CERT, linha=2)
 
 
 def test_12_com_guardiao_vivo_a_sessao_abre_como_sempre(monkeypatch):

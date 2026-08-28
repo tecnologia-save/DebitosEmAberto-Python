@@ -106,7 +106,8 @@ class PlanilhaFalsa:
 
 
 def item(posicao=0, cnpj=CNPJ, certificado=CERT):
-    return planilha.ItemPendente(posicao=posicao, cnpj=cnpj, certificado=certificado)
+    return planilha.ItemPendente(posicao=posicao, cnpj=cnpj,
+                                 certificado=certificado, linha=posicao + 2)
 
 
 def execucao_com(sessao_planilha=None, emissor=None, sessao=None):

@@ -395,7 +395,7 @@ def _execucao(monkeypatch, aberturas):
 def _item(cn):
     from automation.planilha import ItemPendente
 
-    return ItemPendente(posicao=0, cnpj="11111111000191", certificado=cn)
+    return ItemPendente(posicao=0, cnpj="11111111000191", certificado=cn, linha=2)
 
 
 def test_12_nenhum_login_comeca_quando_a_escrita_encontra_conflito(

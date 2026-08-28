@@ -492,7 +492,7 @@ def test_bug_de_teardown_no_retry_nao_aborta_a_execucao(monkeypatch):
     ex.certificados = {"cert": {"subject_cn": "ALFA:11111111000191", "serial": "0A01"}}
     ex.certificado_atual = "CERT"
 
-    app._percorrer(ex, [ItemPendente(0, CNPJ, "CERT")])
+    app._percorrer(ex, [ItemPendente(0, CNPJ, "CERT", 2)])
 
     assert codigos.count(eventos.ITEM_FALHOU) == 2, "as duas tentativas aconteceram"
     assert eventos.ITEM_ESGOTOU_RETENTATIVAS in codigos
@@ -517,7 +517,7 @@ def test_o_teardown_falho_nao_conta_como_falha_do_cnpj(monkeypatch):
     ex.certificados = {"cert": {"subject_cn": "ALFA:11111111000191", "serial": "0A01"}}
     ex.certificado_atual = "CERT"
 
-    app._percorrer(ex, [ItemPendente(0, CNPJ, "CERT")])
+    app._percorrer(ex, [ItemPendente(0, CNPJ, "CERT", 2)])
 
     tentativas = [e.tentativa for e in eventos_vistos if e.codigo == eventos.ITEM_FALHOU]
     assert tentativas == [1, 2], "duas tentativas, e nao quatro"

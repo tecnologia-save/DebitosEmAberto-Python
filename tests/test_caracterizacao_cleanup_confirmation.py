@@ -327,7 +327,7 @@ def execucao(monkeypatch):
 
 
 def item(cn, posicao=0):
-    return ItemPendente(posicao=posicao, cnpj="11111111000191", certificado=cn)
+    return ItemPendente(posicao=posicao, cnpj="11111111000191", certificado=cn, linha=posicao + 2)
 
 
 def test_8a_host_vazio_com_dois_certificados_continua_funcionando(

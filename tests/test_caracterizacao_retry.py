@@ -80,7 +80,7 @@ def percorrer(monkeypatch, falha, itens=1):
     execucao.certificado_atual = "CERT"
 
     app._percorrer(execucao, [
-        ItemPendente(posicao=n, cnpj=f"{n + 11111111000191}", certificado="CERT")
+        ItemPendente(posicao=n, cnpj=f"{n + 11111111000191}", certificado="CERT", linha=n + 2)
         for n in range(itens)
     ])
     return emitidos, tentativas, sessoes
@@ -140,7 +140,7 @@ def test_o_desfecho_nao_representado_chega_ao_retry_pelo_caminho_real(monkeypatc
     execucao.certificados = CERTS
     execucao.certificado_atual = "CERT"
 
-    app._percorrer(execucao, [ItemPendente(posicao=0, cnpj=CNPJ, certificado="CERT")])
+    app._percorrer(execucao, [ItemPendente(posicao=0, cnpj=CNPJ, certificado="CERT", linha=2)])
 
     assert len(sessoes) == 2, "retentou com sessao nova"
     assert [e.codigo for e in emitidos].count(eventos.ITEM_FALHOU) == 2
@@ -182,7 +182,7 @@ def test_bug_nosso_nao_gasta_uma_segunda_tentativa(monkeypatch, bug):
     execucao.certificado_atual = "CERT"
 
     with pytest.raises(type(bug)):
-        app._percorrer(execucao, [ItemPendente(posicao=0, cnpj=CNPJ, certificado="CERT")])
+        app._percorrer(execucao, [ItemPendente(posicao=0, cnpj=CNPJ, certificado="CERT", linha=2)])
 
     assert tentativas == [CNPJ], "uma vez, e para"
 
@@ -204,7 +204,7 @@ def test_bug_nosso_nao_emite_evento_enganoso(monkeypatch):
     execucao.certificado_atual = "CERT"
 
     with pytest.raises(TypeError):
-        app._percorrer(execucao, [ItemPendente(posicao=0, cnpj=CNPJ, certificado="CERT")])
+        app._percorrer(execucao, [ItemPendente(posicao=0, cnpj=CNPJ, certificado="CERT", linha=2)])
 
     codigos = [e.codigo for e in emitidos]
     assert eventos.ITEM_FALHOU not in codigos
@@ -248,7 +248,7 @@ def test_falha_do_adapter_de_eventos_nao_retenta(monkeypatch):
     execucao.certificado_atual = "CERT"
 
     with pytest.raises(AttributeError, match="bug no adapter"):
-        app._percorrer(execucao, [ItemPendente(posicao=0, cnpj=CNPJ, certificado="CERT")])
+        app._percorrer(execucao, [ItemPendente(posicao=0, cnpj=CNPJ, certificado="CERT", linha=2)])
 
     assert len(sessoes) == 1, "nenhum login novo foi pago"
 

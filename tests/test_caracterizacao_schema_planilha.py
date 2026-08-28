@@ -330,7 +330,8 @@ def test_17_os_quatro_estados_de_progresso_sao_todos_validos(valor_d, valor_e,
     planilha.validar_recurso(caminho)
     sessao.abrir(caminho)
 
-    assert sessao.mapa_status(caminho)[ALFA[0]] == (valor_d, valor_e)
+    # Fase 15: o mapa passou a ser {linha: (D, E)}. ALFA e a linha 2.
+    assert sessao.mapa_status(caminho)[2] == (valor_d, valor_e)
 
 
 # ── §5 · §6 · o que a validacao faz, e o que ela recusa fazer ────────────────
@@ -438,8 +439,8 @@ def test_24_o_ciclo_completo_continua_igual(tmp_path, sessao):
 
     assert len(pendentes(caminho, sessao)) == 2
 
-    sessao.registrar_debitos(ALFA[0], linhas_de_debito(ALFA[0], 2))
-    sessao.registrar_processos(ALFA[0], linhas_de_processo(ALFA[0], 1))
+    sessao.registrar_debitos(2, linhas_de_debito(ALFA[0], 2))
+    sessao.registrar_processos(2, linhas_de_processo(ALFA[0], 1))
     sessao.gravar()
     sessao.marcar_gravado()
     sessao.descartar()
@@ -525,10 +526,14 @@ def test_24_e_a_aba_de_detalhe_do_MODELO_ANTIGO_e_RECUSADA(tmp_path, sessao):
 
 # ── §18 · o que continua fora de escopo ──────────────────────────────────────
 
-def test_18_o_CNPJ_duplicado_continua_como_estava(tmp_path, sessao):
-    """PLANILHA_POSSIBLE_DEFECT separado: `escrever_status` marca a PRIMEIRA
-    linha e `mapa_status` guarda a ULTIMA. A validacao de estrutura nao mascara
-    isso, e nao e para mascarar."""
+def test_18_o_CNPJ_duplicado_e_assunto_de_OUTRO_arquivo(tmp_path, sessao):
+    """ANTES: `escrever_status` marcava a PRIMEIRA linha e `mapa_status`
+    guardava a ULTIMA, e a validacao de estrutura nao mascarava isso.
+
+    A fase 15 resolveu o defeito trocando a identidade da unidade de trabalho.
+    O que este teste guarda e o limite: validar ESTRUTURA nunca foi, e continua
+    nao sendo, o mecanismo que decide onde uma gravacao cai.
+    """
     caminho = montar(
         tmp_path / "p.xlsx",
         ["CNPJ", "EMPRESA", "CERTIFICADO", "DÉBITOS", "PROCESSOS FISCAIS"],
@@ -537,13 +542,13 @@ def test_18_o_CNPJ_duplicado_continua_como_estava(tmp_path, sessao):
     )
     sessao.abrir(caminho)
 
-    sessao.escrever_status(ALFA[0], planilha.STATUS_CONCLUIDO,
+    sessao.escrever_status(2, planilha.STATUS_CONCLUIDO,
                            planilha.COL_STATUS_DCTFWEB)
     sessao.gravar()
 
     linhas = ler_aba(caminho, "Empresas")
     assert linhas[1][3] == planilha.STATUS_CONCLUIDO
-    assert linhas[2][3] in (None, ""), "a segunda linha continua sem marca"
+    assert linhas[2][3] in (None, ""), "a linha 3 nao e a linha 2"
 
 
 # ── §8 · §10 · a validacao acontece ANTES de qualquer mutacao ────────────────

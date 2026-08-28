@@ -51,7 +51,9 @@ class PlanilhaEspia:
     def __init__(self, registro):
         self.registro = registro
 
-    def escrever_status(self, cnpj, valor, coluna):
+    def escrever_status(self, linha, valor, coluna):
+        # Fase 15: a primitiva grava por LINHA. O espiao registra o rotulo da
+        # coluna, como sempre — o que este arquivo observa e a ORDEM.
         self.registro.append((self._ROTULOS[coluna], valor))
         return True
 
@@ -99,7 +101,7 @@ def verificar_pendencias(sessao, escritas, skip_dctfweb=False, skip_processo=Fal
     execucao.sessao = sessao
     app._consultar_situacao(
         execucao,
-        planilha.ItemPendente(posicao=0, cnpj=CNPJ, certificado="CERT FICTICIO"),
+        planilha.ItemPendente(posicao=0, cnpj=CNPJ, certificado="CERT FICTICIO", linha=2),
         planilha.RetomadaDaLinha(skip_dctfweb, skip_processo, encerrada=False),
     )
     return codigos
@@ -111,7 +113,7 @@ def _rodar(funcao, sessao, escritas):
                              lambda e: codigos.append(e.codigo))
     execucao.sessao = sessao
     funcao(execucao, planilha.ItemPendente(posicao=0, cnpj=CNPJ,
-                                           certificado="CERT FICTICIO"))
+                                           certificado="CERT FICTICIO", linha=2))
     return codigos
 
 
