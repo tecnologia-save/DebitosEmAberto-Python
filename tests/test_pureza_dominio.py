@@ -39,8 +39,12 @@ MAQUINA = "maquina.py"
 # objeto nomeado do Windows, e portanto ctypes. Mesma natureza de `maquina.py` —
 # adapter de runtime, e nao nucleo.
 EXCLUSIVIDADE = "exclusividade_host.py"
+# `espaco_de_trabalho.py` copia arquivo e cria diretorio temporario: e disco, e
+# portanto integracao. Ele nao decide nada — quem diz se a planilha serve e
+# `planilha.validar_recurso`, e quem a processa e o app.
+ESPACO = "espaco_de_trabalho.py"
 INTEGRACOES = {PLANILHA, CERTIFICADOS, CAPTCHA, FISCAL, NAVEGADOR, REPRESENTACAO,
-               MAQUINA, EXCLUSIVIDADE}
+               MAQUINA, EXCLUSIVIDADE, ESPACO}
 NUCLEO = [m for m in AUTOMATION if m.name not in INTEGRACOES]
 
 # Nada disso pode aparecer no nucleo.
