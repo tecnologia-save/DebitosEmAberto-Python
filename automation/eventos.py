@@ -83,6 +83,10 @@ SEM_PROCESSOS_REGISTRADO = "sem_processos_registrado"
 RECUSA_REGISTRADA = "recusa_registrada"
 LINHA_NAO_ENCONTRADA_NA_PLANILHA = "linha_nao_encontrada_na_planilha"
 SALVAMENTO_PLANILHA_FALHOU = "salvamento_planilha_falhou"
+# O arquivo acabou de ficar consistente em disco. Quem precisa saber disso e
+# quem publica progresso para fora — sem isso, so restaria ler a planilha por
+# fora em intervalos, e ler enquanto o openpyxl grava produz XLSX truncado.
+PLANILHA_GRAVADA = "planilha_gravada"
 
 # ── Repassados das integracoes ────────────────────────────────────────────────
 # So a integracao observa estes fatos, e por isso eles chegam ao app dentro do
@@ -106,6 +110,7 @@ CODIGOS = frozenset({
     SEM_DEBITOS_REGISTRADO, DEBITOS_NAO_COMPENSAVEIS_REGISTRADO,
     SEM_PROCESSOS_REGISTRADO, RECUSA_REGISTRADA,
     LINHA_NAO_ENCONTRADA_NA_PLANILHA, SALVAMENTO_PLANILHA_FALHOU,
+    PLANILHA_GRAVADA,
     REDE_NAO_ESTABILIZOU, PAGINACAO_NAO_ALTERADA,
 })
 

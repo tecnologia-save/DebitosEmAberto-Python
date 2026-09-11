@@ -119,6 +119,8 @@ def frase(e: EventoOperacional) -> str | None:
     if e.codigo == E.LINHA_NAO_ENCONTRADA_NA_PLANILHA:
         return (f"    [!] A {onde} não foi encontrada na planilha para escrita. "
                 "O status foi descartado.")
+    if e.codigo == E.PLANILHA_GRAVADA:
+        return "    → Progresso salvo na planilha."
     if e.codigo == E.SALVAMENTO_PLANILHA_FALHOU:
         acao = (" — feche o arquivo no Excel e a próxima gravação recupera."
                 if e.tipo_da_falha == "PermissionError" else "")

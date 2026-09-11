@@ -34,7 +34,8 @@ def diretorio_de_perfil() -> str:
     return str(Path(__file__).resolve().parent.parent)
 
 
-def preparar_ambiente_do_certificado(cert_subject_cn: str) -> None:
+def preparar_ambiente_do_certificado(cert_subject_cn: str,
+                                     diretorio: str | None = None) -> None:
     """LEGACY_RUNTIME_STATE_TRANSPORT — leva CERT_SUBJECT_CN ate o fork.
 
     Nao e segredo: e qual certificado esta execucao usa.
@@ -74,7 +75,10 @@ def preparar_ambiente_do_certificado(cert_subject_cn: str) -> None:
 
     Condicao de remocao: quando o fork deixar de ler o ambiente.
     """
-    env_path = Path(diretorio_de_perfil()) / ".env"
+    # O diretorio entra por parametro para que uma execucao da plataforma
+    # escreva no chao DELA, e nao na raiz do repositorio. Omitido, e o de
+    # sempre — o desktop nao muda.
+    env_path = Path(diretorio or diretorio_de_perfil()) / ".env"
     existentes: dict[str, str] = {}
     if env_path.exists():
         for linha in env_path.read_text(encoding="utf-8").splitlines():
@@ -94,7 +98,8 @@ def preparar_ambiente_do_certificado(cert_subject_cn: str) -> None:
 
 
 def abrir_sessao(
-    certificado: Certificado, auto_select_disponivel: bool, api_key: str
+    certificado: Certificado, auto_select_disponivel: bool, api_key: str,
+    diretorio_da_execucao: str | None = None,
 ) -> ResultadoDoLogin:
     """Uma sessao autenticada para este certificado, com a fiacao legada dentro.
 
@@ -104,9 +109,13 @@ def abrir_sessao(
     """
     from servicos_rf_login import fazer_login
 
-    preparar_ambiente_do_certificado(certificado.subject_cn)
-    config = ConfigLogin(diretorio_perfil=diretorio_de_perfil(),
-                         gemini_api_key=api_key)
+    # O PERFIL do navegador nasce dentro deste diretorio — quem o cria la e o
+    # fork. Um diretorio por execucao e o que impede duas runs no mesmo host de
+    # dividirem cookies e sessao, e o que faz o perfil morrer junto com a
+    # execucao. Omitido, e o diretorio de sempre, que e o do desktop.
+    perfil = diretorio_da_execucao or diretorio_de_perfil()
+    preparar_ambiente_do_certificado(certificado.subject_cn, perfil)
+    config = ConfigLogin(diretorio_perfil=perfil, gemini_api_key=api_key)
     return login.autenticar(
         certificado, config, auto_select_disponivel, fazer_login=fazer_login
     )

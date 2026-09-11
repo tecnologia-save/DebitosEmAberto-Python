@@ -13,6 +13,7 @@ from planilhas_sinteticas import criar_planilha
 
 import runner
 from automation import espaco_de_trabalho
+from automation.eventos import EventoOperacional
 from certificados_do_cofre import CertificadosDoCofre
 
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
@@ -69,10 +70,24 @@ class CtxFalso:
         self._planilha = str(planilha)
         self.secrets = SecretsFalso(cofre or {}, chave_gemini)
         self.entradas_pedidas = []
+        self.checkpoints = []
+        self.artefatos = []
+        self.saidas = []
 
     def input_file(self, nome):
         self.entradas_pedidas.append(nome)
         return self._planilha
+
+    def checkpoint(self, nome, conteudo, mime="application/octet-stream",
+                   kind="file"):
+        self.checkpoints.append((nome, bytes(conteudo), mime, kind))
+
+    def artifact(self, nome, conteudo, mime="application/octet-stream",
+                 kind="file"):
+        self.artefatos.append((nome, bytes(conteudo), mime, kind))
+
+    def output(self, dados):
+        self.saidas.append(dados)
 
 
 @pytest.fixture(autouse=True)
@@ -462,3 +477,162 @@ def test_o_dominio_nao_conhece_navegador_nem_gemini():
     proibidos = {"patchright", "playwright", "google", "resolvedor_captcha",
                  "autohub_sdk", "autohub"}
     assert not (_importados(RAIZ / "automation" / "domain.py") & proibidos)
+
+
+# ── perfil do navegador por execucao ─────────────────────────────────────────
+
+def test_o_chao_da_execucao_chega_a_aplicacao(tmp_path, _sem_execucao_real):
+    """Dele nasce o perfil do navegador — e a aplicação não sabe disso."""
+    caminho = _planilha(tmp_path)
+    ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
+
+    runner.executar_no_save(ctx)
+
+    (args, kwargs), = _sem_execucao_real
+    chao = pathlib.Path(kwargs["diretorio_da_execucao"])
+    assert chao == pathlib.Path(args[0].planilha).parent
+    assert chao != RAIZ, "nunca a raiz do repositorio"
+
+
+def test_duas_execucoes_recebem_CHAOS_DIFERENTES(tmp_path, _sem_execucao_real):
+    caminho = _planilha(tmp_path)
+    aliases = _certificados_da_planilha(caminho)
+
+    runner.executar_no_save(CtxFalso(caminho, _cofre(tmp_path, aliases)))
+    runner.executar_no_save(CtxFalso(caminho, _cofre(tmp_path, aliases)))
+
+    (_, a), (_, b) = _sem_execucao_real
+    assert a["diretorio_da_execucao"] != b["diretorio_da_execucao"]
+
+
+def test_o_chao_e_o_perfil_somem_com_a_execucao(tmp_path, _sem_execucao_real):
+    caminho = _planilha(tmp_path)
+    ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
+
+    runner.executar_no_save(ctx)
+
+    (_, kwargs), = _sem_execucao_real
+    assert not pathlib.Path(kwargs["diretorio_da_execucao"]).exists()
+
+
+def test_o_desktop_continua_com_o_diretorio_de_sempre(tmp_path, _sem_execucao_real,
+                                                      monkeypatch):
+    """`executar` sem chão é o caminho de quem roda sem plataforma."""
+    monkeypatch.setenv("GEMINI_API_KEY", "chave-do-ambiente-ficticia")
+    caminho = _planilha(tmp_path)
+
+    runner.executar({"planilha": str(caminho)})
+
+    (_, kwargs), = _sem_execucao_real
+    assert kwargs["diretorio_da_execucao"] is None, "a fiação decide, como sempre"
+
+
+def test_a_fiacao_deriva_o_perfil_do_chao_recebido():
+    """Quem transforma um diretório em perfil continua sendo `maquina`."""
+    import inspect
+
+    from automation import maquina
+
+    fonte = inspect.getsource(maquina.abrir_sessao)
+    assert "diretorio_da_execucao or diretorio_de_perfil()" in fonte
+    assert "diretorio_perfil=perfil" in fonte
+
+
+# ── checkpoint, artefato e output ────────────────────────────────────────────
+
+def test_cada_gravacao_da_planilha_vira_um_CHECKPOINT(tmp_path, _sem_execucao_real):
+    """Sem thread e sem relógio: o checkpoint sai no instante em que o arquivo
+    ficou consistente, que é o único em que lê-lo é seguro."""
+    from automation import eventos
+
+    caminho = _planilha(tmp_path)
+    ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
+
+    def duas_gravacoes(entrada, config, **kwargs):
+        emitir = kwargs["emitir_evento"]
+        emitir(EventoOperacional(eventos.PLANILHA_GRAVADA))
+        emitir(EventoOperacional(eventos.PLANILHA_GRAVADA))
+
+    runner.app.executar = duas_gravacoes
+    runner.executar_no_save(ctx)
+
+    assert len(ctx.checkpoints) == 2
+    nome, conteudo, mime, kind = ctx.checkpoints[0]
+    assert nome == runner.NOME_DA_SAIDA
+    assert mime == runner.TIPO_DA_SAIDA
+    assert conteudo.startswith(b"PK"), "é a planilha, e ela abre"
+    assert kind == "spreadsheet"
+
+
+def test_evento_QUALQUER_nao_vira_checkpoint(tmp_path, _sem_execucao_real):
+    from automation import eventos
+
+    caminho = _planilha(tmp_path)
+    ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
+
+    def so_ruido(entrada, config, **kwargs):
+        kwargs["emitir_evento"](EventoOperacional(eventos.ITEM_INICIADO, posicao=0))
+
+    runner.app.executar = so_ruido
+    runner.executar_no_save(ctx)
+
+    assert ctx.checkpoints == []
+
+
+def test_o_artefato_final_e_a_planilha(tmp_path, _sem_execucao_real):
+    caminho = _planilha(tmp_path)
+    ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
+
+    runner.executar_no_save(ctx)
+
+    (nome, conteudo, mime, kind), = ctx.artefatos
+    assert nome == runner.NOME_DA_SAIDA
+    assert mime == runner.TIPO_DA_SAIDA
+    assert kind == "spreadsheet"
+    assert conteudo.startswith(b"PK")
+
+
+def test_o_output_e_pequeno_e_sem_segredo(tmp_path, _sem_execucao_real):
+    caminho = _planilha(tmp_path)
+    ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
+
+    runner.executar_no_save(ctx)
+
+    saida, = ctx.saidas
+    assert set(saida) == {"ok"}
+    texto = repr(saida)
+    for segredo in (CHAVE_FICTICIA, SENHA_FICTICIA, ".pfx", str(tmp_path)):
+        assert segredo not in texto
+
+
+def test_execucao_que_morre_NAO_publica_artefato_mas_mantem_o_checkpoint(tmp_path,
+                                                                         monkeypatch):
+    """O checkpoint existe justamente para sobreviver ao que o artefato não
+    sobrevive."""
+    from automation import eventos
+
+    caminho = _planilha(tmp_path)
+    ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
+
+    def gravar_e_morrer(entrada, config, **kwargs):
+        kwargs["emitir_evento"](EventoOperacional(eventos.PLANILHA_GRAVADA))
+        raise ZeroDivisionError("a execução morreu no meio")
+
+    monkeypatch.setattr(runner.app, "executar", gravar_e_morrer)
+
+    with pytest.raises(ZeroDivisionError):
+        runner.executar_no_save(ctx)
+
+    assert len(ctx.checkpoints) == 1
+    assert ctx.artefatos == []
+    assert ctx.saidas == []
+
+
+def test_o_anexo_original_nao_entra_no_que_e_publicado(tmp_path, _sem_execucao_real):
+    caminho = _planilha(tmp_path)
+    antes = caminho.read_bytes()
+    ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
+
+    runner.executar_no_save(ctx)
+
+    assert caminho.read_bytes() == antes, "o anexo continua intocado"

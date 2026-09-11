@@ -92,7 +92,8 @@ class _Execucao:
 
     def __init__(self, sessao_planilha: SessaoPlanilha, caminho: str,
                  config_captcha: ConfigCaptcha, emitir: Emissor,
-                 provedor: ProvedorDeCertificados | None = None) -> None:
+                 provedor: ProvedorDeCertificados | None = None,
+                 diretorio_da_execucao: str | None = None) -> None:
         self.planilha = sessao_planilha
         self.caminho = caminho
         self.config_captcha = config_captcha
@@ -104,6 +105,10 @@ class _Execucao:
         # continuam construindo a execucao como sempre construiram. No dia em que
         # o runner da plataforma passar o provedor dele, o padrao some.
         self.provedor = provedor or certificados_windows.CertificadosDoWindows()
+        # O CHAO desta execucao, opaco para a aplicacao: ela nao abre, nao
+        # deriva caminho e nao sabe o que a fiacao guarda ali. `None` = nao ha
+        # chao proprio, e a fiacao decide como sempre decidiu.
+        self.diretorio_da_execucao = diretorio_da_execucao
         self.certificado_atual: str | None = None
         self.policy_confiavel = True
         # O guardiao da policy que ESTA execucao mandou escrever, ou None.
@@ -138,6 +143,11 @@ class _Execucao:
                         tipo_da_falha=type(erro).__name__)
             return
         self.planilha.marcar_gravado()
+        # O arquivo esta consistente AGORA, e so agora. Quem publica progresso
+        # para fora depende deste instante: publicar por relogio significaria
+        # ler o arquivo no meio de uma gravacao, e um arquivo lido pela metade
+        # nao levanta erro — ele sai corrompido e ninguem percebe.
+        self.emitir(eventos.PLANILHA_GRAVADA)
 
     def liberar_policy(self) -> None:
         """Remove a policy do Chrome, se esta execucao a escreveu.
@@ -380,6 +390,7 @@ class _Execucao:
             self.provedor.certificado(chave),
             self.policy_confiavel,
             self.config_captcha.api_key,
+            self.diretorio_da_execucao,
         )
         if not resultado.autenticado:
             self.emitir(eventos.LOGIN_FALHOU, posicao=item.posicao)
@@ -620,6 +631,7 @@ def executar(
     config_captcha: ConfigCaptcha,
     emitir_evento: Emissor = None,
     provedor_de_certificados: ProvedorDeCertificados | None = None,
+    diretorio_da_execucao: str | None = None,
 ) -> None:
     """Processa a planilha inteira.
 
@@ -637,7 +649,8 @@ def executar(
     """
     sessao_planilha = SessaoPlanilha()
     execucao = _Execucao(sessao_planilha, entrada.planilha, config_captcha,
-                         emitir_evento, provedor_de_certificados)
+                         emitir_evento, provedor_de_certificados,
+                         diretorio_da_execucao)
 
     try:
         try:

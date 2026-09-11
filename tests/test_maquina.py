@@ -70,7 +70,8 @@ def test_a_chave_tambem_chega_ao_login_por_parametro(monkeypatch):
         recebidas.update(kwargs)
         return None
 
-    monkeypatch.setattr(maquina, "preparar_ambiente_do_certificado", lambda cn: None)
+    monkeypatch.setattr(maquina, "preparar_ambiente_do_certificado",
+                        lambda cn, diretorio=None: None)
     monkeypatch.setitem(
         __import__("sys").modules, "servicos_rf_login",
         type("M", (), {"fazer_login": staticmethod(espiao)}),
@@ -138,10 +139,15 @@ def test_a_automacao_nao_escreve_mais_o_segredo_em_disco(monkeypatch, tmp_path):
 
 
 def test_a_funcao_nem_recebe_mais_o_segredo():
-    """A costura foi separada: preparar o certificado nao e assunto de chave."""
+    """A costura foi separada: preparar o certificado nao e assunto de chave.
+
+    `diretorio` entrou na D7 e nao e segredo: e ONDE escrever. Sem ele, uma
+    execucao da plataforma escreveria na raiz do repositorio, que e chao
+    compartilhado entre execucoes.
+    """
     parametros = list(inspect.signature(maquina.preparar_ambiente_do_certificado).parameters)
 
-    assert parametros == ["cert_subject_cn"]
+    assert parametros == ["cert_subject_cn", "diretorio"]
 
 
 def test_o_cert_subject_cn_vai_para_os_DOIS_lugares(monkeypatch, tmp_path):
@@ -278,8 +284,12 @@ def test_as_regras_continuam_onde_estavam():
 def test_o_profile_e_derivado_na_fiacao_e_nao_decidido_pelo_app():
     fonte_app = (RAIZ / "automation" / "app.py").read_text(encoding="utf-8")
 
+    # A aplicacao pode CARREGAR o chao da execucao, opaco; o que ela nao pode e
+    # derivar perfil nenhum dele. Quem transforma um diretorio em perfil de
+    # navegador continua sendo a fiacao, e e so isso que este teste guarda.
     assert "diretorio_perfil" not in fonte_app
-    assert "diretorio_de_perfil" not in fonte_app
+    assert "diretorio_de_perfil(" not in fonte_app
+    assert "profile" not in fonte_app.lower()
     assert isinstance(maquina.diretorio_de_perfil(), str)
 
 
@@ -483,7 +493,7 @@ def test_bug_de_teardown_no_retry_nao_aborta_a_execucao(monkeypatch):
 
     monkeypatch.setattr(navegador, "encerrar_no_portal", logout)
     monkeypatch.setattr(app.maquina, "abrir_sessao",
-                        lambda c, a, k: ResultadoDoLogin(AUTENTICADO, SessaoFalsa()))
+                        lambda c, a, k, chao=None: ResultadoDoLogin(AUTENTICADO, SessaoFalsa()))
     monkeypatch.setattr(app, "_processar_item",
                         lambda ex, it: (_ for _ in ()).throw(
                             navegador.FalhaDoNavegador("falha do navegador")))
@@ -508,7 +518,7 @@ def test_o_teardown_falho_nao_conta_como_falha_do_cnpj(monkeypatch):
     monkeypatch.setattr(navegador, "encerrar_no_portal",
                         lambda page: (_ for _ in ()).throw(TypeError("bug")))
     monkeypatch.setattr(app.maquina, "abrir_sessao",
-                        lambda c, a, k: ResultadoDoLogin(AUTENTICADO, SessaoFalsa()))
+                        lambda c, a, k, chao=None: ResultadoDoLogin(AUTENTICADO, SessaoFalsa()))
     monkeypatch.setattr(app, "_processar_item",
                         lambda ex, it: (_ for _ in ()).throw(
                             navegador.FalhaDoNavegador("falha do navegador")))

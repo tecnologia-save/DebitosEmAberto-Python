@@ -152,7 +152,8 @@ def test_o_certificado_da_linha_chega_ao_login(monkeypatch):
     monkeypatch.setattr(app, "maquina", type("M", (), {
         "estado_do_guardiao": staticmethod(lambda c: None),
         "abrir_sessao": staticmethod(
-            lambda cert, auto, chave: recebidos.append(cert) or _login_ok(SessaoFalsa())),
+            lambda cert, auto, chave, chao=None:
+            recebidos.append(cert) or _login_ok(SessaoFalsa())),
     }))
     monkeypatch.setattr(app._Execucao, "exigir_responsavel_pela_policy",
                         lambda self: None)

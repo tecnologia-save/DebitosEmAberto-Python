@@ -119,7 +119,7 @@ def diario(monkeypatch):
     reg = Registro()
     sessoes = []
 
-    def abrir_sessao(certificado, auto_select, api_key):
+    def abrir_sessao(certificado, auto_select, api_key, chao=None):
         reg.anotar("login", certificado.subject_cn, auto_select)
         sessao = SessaoFalsa(f"s{len(sessoes) + 1}", registro=reg)
         sessoes.append(sessao)
@@ -216,7 +216,7 @@ def test_i_policy_indisponivel_ainda_tenta_o_login(diario, monkeypatch):
 def test_e_login_que_nao_autentica_pula_o_cnpj_sem_fechar_sessao(diario, monkeypatch):
     monkeypatch.setattr(
         app.maquina, "abrir_sessao",
-        lambda cert, auto, chave: diario.anotar("login", cert.subject_cn, auto)
+        lambda cert, auto, chave, chao=None: diario.anotar("login", cert.subject_cn, auto)
         or ResultadoDoLogin(NAO_AUTENTICADO),
     )
 
@@ -418,7 +418,7 @@ def test_r_o_cleanup_final_fecha_a_sessao_que_sobrou(diario):
 
 def test_r_sem_sessao_aberta_nao_ha_cleanup(diario, monkeypatch):
     monkeypatch.setattr(
-        app.maquina, "abrir_sessao", lambda c, a, k: ResultadoDoLogin(NAO_AUTENTICADO)
+        app.maquina, "abrir_sessao", lambda c, a, k, chao=None: ResultadoDoLogin(NAO_AUTENTICADO)
     )
 
     executar(planilha_com((CNPJ_1, "CERT ALFA")), CERTS)

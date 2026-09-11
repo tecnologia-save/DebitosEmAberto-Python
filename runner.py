@@ -33,6 +33,7 @@ from automation import (
     app,
     apresentacao_eventos,
     espaco_de_trabalho,
+    eventos,
     exclusividade_host,
     planilha,
 )
@@ -53,6 +54,12 @@ from certificados_do_cofre import CertificadosDoCofre
 # primeira execucao, que e onde tem de aparecer.
 ALIAS_DO_GEMINI = "gemini_api_key"
 
+# O nome com que a planilha aparece na aba de Artefatos da execucao. Estavel de
+# proposito: o checkpoint faz upsert POR NOME, entao um nome que mudasse a cada
+# publicacao encheria a aba de copias em vez de atualizar uma.
+NOME_DA_SAIDA = "debitos-em-aberto.xlsx"
+TIPO_DA_SAIDA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
 
 def _config_do_ambiente() -> ConfigCaptcha:
     """O segredo vem do ambiente do processo que a plataforma preparou.
@@ -70,7 +77,8 @@ def _config_do_ambiente() -> ConfigCaptcha:
 
 
 def executar(params: dict, emitir_evento=None, provedor_de_certificados=None,
-             config: ConfigCaptcha | None = None) -> dict:
+             config: ConfigCaptcha | None = None,
+             diretorio_da_execucao: str | None = None) -> dict:
     """Traduz o disparo, roda a automação e devolve o contrato externo.
 
     Testável sem plataforma: recebe um dicionário comum. É esta função que
@@ -85,9 +93,10 @@ def executar(params: dict, emitir_evento=None, provedor_de_certificados=None,
     precisão. Ele diz uma coisa só, observada pelo apresentador: a execução
     chegou ao fim, ou abortou por falta de certificado utilizável.
 
-    `provedor_de_certificados` e `config` atravessam sem ser interpretados.
-    Omitidos, valem o provedor do desktop e a chave do ambiente do processo — que
-    é o que mantém este arquivo utilizável fora da plataforma.
+    `provedor_de_certificados`, `config` e `diretorio_da_execucao` atravessam sem
+    ser interpretados. Omitidos, valem o provedor do desktop, a chave do ambiente
+    do processo e o diretório de sempre — que é o que mantém este arquivo
+    utilizável fora da plataforma.
     """
     entrada = montar_entrada(params)
     validar_recurso(entrada.planilha)
@@ -107,7 +116,8 @@ def executar(params: dict, emitir_evento=None, provedor_de_certificados=None,
     controle = exclusividade_host.adquirir()
     try:
         app.executar(entrada, config, emitir_evento=emissor,
-                     provedor_de_certificados=provedor_de_certificados)
+                     provedor_de_certificados=provedor_de_certificados,
+                     diretorio_da_execucao=diretorio_da_execucao)
     finally:
         # Fechar ESTE handle não libera o host por si: se o guardião ainda
         # mantiver o dele, o objeto continua existindo. É intencional.
@@ -138,10 +148,13 @@ def executar_no_save(ctx, emitir_evento=None) -> dict:
     aplicação é a `ConfigCaptcha` que ela já consumia; ela não sabe de onde a
     chave veio, e o campo não entra no `repr`.
 
-    O QUE AINDA NÃO ESTÁ AQUI, e é deliberado: não há checkpoint, artefato nem
-    `ctx.output`, e o perfil do Chrome continua sendo o da máquina — duas
-    execuções no mesmo host ainda o dividiriam. São de fases próprias, e
-    antecipá-las faria este arquivo parecer pronto sem estar.
+    O QUE SAI DAQUI para a plataforma: um checkpoint da planilha a cada linha
+    gravada, o artefato final e um resultado estruturado pequeno. Nenhum deles
+    carrega segredo — a planilha é a mesma que o operador enviou, com as colunas
+    de progresso preenchidas.
+
+    O QUE AINDA NÃO ESTÁ AQUI: nenhuma task registrada. Publicar é de outra
+    fase, e um decorator escrito antes da hora seria uma declaração falsa.
     """
     config = ConfigCaptcha(api_key=ctx.secrets.get(ALIAS_DO_GEMINI).reveal())
     config.validar()
@@ -158,8 +171,33 @@ def executar_no_save(ctx, emitir_evento=None) -> dict:
             ctx.secrets.cert,
             espaco.raiz / "certificados",
         )
-        return executar({"planilha": de_trabalho}, emitir_evento=emitir_evento,
-                        provedor_de_certificados=provedor, config=config)
+        def publicar(evento):
+            if emitir_evento is not None:
+                emitir_evento(evento)
+            # O CHECKPOINT SAI AQUI, e nao por relogio. `planilha_gravada` e o
+            # instante em que o arquivo acabou de ficar consistente em disco;
+            # publicar em intervalos significaria le-lo no meio de uma gravacao,
+            # e um arquivo lido pela metade nao levanta erro — ele sobe
+            # corrompido. Sem thread, sem concorrencia, sem hash para descobrir
+            # se mudou: este evento so acontece quando algo FOI gravado.
+            if evento.codigo == eventos.PLANILHA_GRAVADA:
+                ctx.checkpoint(NOME_DA_SAIDA, espaco.planilha.read_bytes(),
+                               mime=TIPO_DA_SAIDA, kind="spreadsheet")
+
+        resultado = executar({"planilha": de_trabalho}, emitir_evento=publicar,
+                             provedor_de_certificados=provedor, config=config,
+                             # O chao desta execucao. O perfil do navegador
+                             # nasce dentro dele, e morre com ele.
+                             diretorio_da_execucao=str(espaco.raiz))
+
+        # A entrega final, ainda DENTRO do espaco: depois do `with` o arquivo
+        # nao existe mais. Se a execucao tivesse falhado, nao chegariamos aqui —
+        # e o ultimo checkpoint ja estaria publicado, que e justamente para isso
+        # que ele serve.
+        ctx.artifact(NOME_DA_SAIDA, espaco.planilha.read_bytes(),
+                     mime=TIPO_DA_SAIDA, kind="spreadsheet")
+        ctx.output(resultado)
+        return resultado
 
 
 __all__ = [

@@ -350,7 +350,7 @@ class _Controle:
 def execucao(monkeypatch, vida=None, propria=True):
     aberturas = []
 
-    def abrir(certificado, auto_select, api_key):
+    def abrir(certificado, auto_select, api_key, chao=None):
         aberturas.append(certificado.subject_cn)
         return types.SimpleNamespace(autenticado=True, sessao=object())
 
@@ -557,7 +557,7 @@ class ObjetoNomeado:
         self.handles += 1
         return object(), exclusividade_host.ERROR_ALREADY_EXISTS if ja_existia else 0
 
-    def abrir(self, nome):
+    def abrir(self, nome, chao=None):
         if not self.handles:
             return 0
         self.handles += 1

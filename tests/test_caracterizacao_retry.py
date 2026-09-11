@@ -72,7 +72,8 @@ def percorrer(monkeypatch, falha, itens=1):
     monkeypatch.setattr(app.navegador, "encerrar_no_portal", lambda page: None)
     monkeypatch.setattr(
         app.maquina, "abrir_sessao",
-        lambda c, a, k: sessoes.append(1) or ResultadoDoLogin(AUTENTICADO, SessaoFalsa()),
+        lambda c, a, k, chao=None:
+        sessoes.append(1) or ResultadoDoLogin(AUTENTICADO, SessaoFalsa()),
     )
 
     emitidos = []
@@ -131,7 +132,8 @@ def test_o_desfecho_nao_representado_chega_ao_retry_pelo_caminho_real(monkeypatc
     monkeypatch.setattr(app.navegador, "encerrar_no_portal", lambda page: None)
     monkeypatch.setattr(
         app.maquina, "abrir_sessao",
-        lambda c, a, k: sessoes.append(1) or ResultadoDoLogin(AUTENTICADO, SessaoFalsa()),
+        lambda c, a, k, chao=None:
+        sessoes.append(1) or ResultadoDoLogin(AUTENTICADO, SessaoFalsa()),
     )
     monkeypatch.setattr(app.representacao, "representar",
                         lambda *a, **k: ResultadoDaRepresentacao(ANTI_BOT_ESGOTADO))
@@ -176,7 +178,7 @@ def test_bug_nosso_nao_gasta_uma_segunda_tentativa(monkeypatch, bug):
     monkeypatch.setattr(app, "_processar_item", processar)
     monkeypatch.setattr(app.navegador, "encerrar_no_portal", lambda page: None)
     monkeypatch.setattr(app.maquina, "abrir_sessao",
-                        lambda c, a, k: ResultadoDoLogin(AUTENTICADO, SessaoFalsa()))
+                        lambda c, a, k, chao=None: ResultadoDoLogin(AUTENTICADO, SessaoFalsa()))
 
     execucao = app._Execucao(PlanilhaInerte(), "p.xlsx", CONFIG, None)
     execucao.provedor = provedor_de(CERTS)
@@ -198,7 +200,7 @@ def test_bug_nosso_nao_emite_evento_enganoso(monkeypatch):
     monkeypatch.setattr(app, "_processar_item", processar)
     monkeypatch.setattr(app.navegador, "encerrar_no_portal", lambda page: None)
     monkeypatch.setattr(app.maquina, "abrir_sessao",
-                        lambda c, a, k: ResultadoDoLogin(AUTENTICADO, SessaoFalsa()))
+                        lambda c, a, k, chao=None: ResultadoDoLogin(AUTENTICADO, SessaoFalsa()))
 
     execucao = app._Execucao(PlanilhaInerte(), "p.xlsx", CONFIG, emitidos.append)
     execucao.provedor = provedor_de(CERTS)
@@ -241,7 +243,8 @@ def test_falha_do_adapter_de_eventos_nao_retenta(monkeypatch):
     monkeypatch.setattr(app.navegador, "encerrar_no_portal", lambda page: None)
     monkeypatch.setattr(
         app.maquina, "abrir_sessao",
-        lambda c, a, k: sessoes.append(1) or ResultadoDoLogin(AUTENTICADO, SessaoFalsa()),
+        lambda c, a, k, chao=None:
+        sessoes.append(1) or ResultadoDoLogin(AUTENTICADO, SessaoFalsa()),
     )
 
     execucao = app._Execucao(PlanilhaInerte(), "p.xlsx", CONFIG, emissor)
@@ -315,7 +318,7 @@ def test_bug_nosso_nao_impede_o_cleanup_final(monkeypatch, tmp_path):
                             "automation.policy_certificado", fromlist=["x"]
                         ).ResultadoDaPolicy("ativada", tem_guardiao=True))
     monkeypatch.setattr(app.maquina, "abrir_sessao",
-                        lambda c, a, k: ResultadoDoLogin(AUTENTICADO, Sessao()))
+                        lambda c, a, k, chao=None: ResultadoDoLogin(AUTENTICADO, Sessao()))
     monkeypatch.setattr(app.navegador, "encerrar_no_portal", lambda page: None)
     monkeypatch.setattr(app, "_processar_item",
                         lambda ex, it: (_ for _ in ()).throw(TypeError("bug nosso")))

@@ -125,7 +125,8 @@ def capacidades(monkeypatch):
     monkeypatch.setattr(app.maquina, "garantir_policy_do_windows",
                         lambda cn, nossa=False: ResultadoDaPolicy(ATIVADA, tem_guardiao=True))
     monkeypatch.setattr(app.maquina, "abrir_sessao",
-                        lambda cert, auto, chave: ResultadoDoLogin(AUTENTICADO, SessaoFalsa()))
+                        lambda cert, auto, chave, chao=None:
+                        ResultadoDoLogin(AUTENTICADO, SessaoFalsa()))
     monkeypatch.setattr(app.navegador, "encerrar_no_portal", lambda page: None)
     monkeypatch.setattr(app.representacao, "representar",
                         lambda *a, **k: ResultadoDaRepresentacao(REPRESENTADO))
@@ -308,8 +309,15 @@ def test_h_o_ruido_de_navegacao_nao_virou_evento():
 
 def test_h_o_conjunto_de_codigos_e_fechado_e_pequeno():
     """Nao ha um codigo por print: prints equivalentes foram agrupados no mesmo
-    fato, e o ruido ficou de fora."""
-    assert len(eventos.CODIGOS) < 35, "menos codigos do que prints migrados"
+    fato, e o ruido ficou de fora.
+
+    O teto subiu UM na D7, e o codigo que o ocupou nao veio de print nenhum:
+    `planilha_gravada` e um fato que nao existia — o instante em que o arquivo
+    fica consistente em disco. Ele nasceu porque apareceu um consumidor real
+    (publicar progresso para fora sem ler o arquivo no meio de uma gravacao), e
+    nao por simetria com os outros.
+    """
+    assert len(eventos.CODIGOS) <= 35, "o vocabulario nao cresce por acrescimo"
 
 
 # ── I · J · RESUMABILITY dentro da propria execucao ───────────────────────────
@@ -501,17 +509,25 @@ def test_a_assinatura_publica_nao_recebe_capacidades():
     """Nada de `garantir_policy=`, `autenticar=`, `representar=`. Os testes
     substituem os NOSSOS modulos; a API publica nao carrega seam de teste.
 
-    `provedor_de_certificados` e a EXCECAO, e ela e de outra natureza: nao existe
-    para teste nenhum. De onde vem o certificado muda de verdade entre desktop
-    (Certificate Store) e plataforma (cofre), e essa e uma decisao de quem chama
-    — nao uma capacidade nossa substituida por conveniencia. A lista continua
-    exata: um seam de teste a mais reprova aqui do mesmo jeito."""
+    Duas EXCECOES, e as duas sao de outra natureza: nao existem para teste
+    nenhum. De onde vem o certificado muda de verdade entre desktop (Certificate
+    Store) e plataforma (cofre); e ter ou nao um chao proprio para a execucao
+    muda do mesmo jeito. Sao decisoes de quem chama, e nao capacidades nossas
+    substituidas por conveniencia.
+
+    `diretorio_da_execucao` e OPACO para a aplicacao: ela nao abre, nao deriva
+    caminho e nao sabe o que guardam ali. Quem decide o que fica dentro dele
+    continua sendo a fiacao — e `test_o_profile_e_derivado_na_fiacao...` guarda
+    exatamente isso.
+
+    A lista continua exata: um seam de teste a mais reprova aqui do mesmo
+    jeito."""
     import inspect
 
     parametros = list(inspect.signature(app.executar).parameters)
 
     assert parametros == ["entrada", "config_captcha", "emitir_evento",
-                          "provedor_de_certificados"]
+                          "provedor_de_certificados", "diretorio_da_execucao"]
     assert inspect.signature(app.executar).return_annotation == "None"
 
 

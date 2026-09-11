@@ -37,7 +37,7 @@ def app_espiao(monkeypatch):
     chamadas = []
 
     def executar(entrada, config_captcha, emitir_evento=None,
-                 provedor_de_certificados=None):
+                 provedor_de_certificados=None, diretorio_da_execucao=None):
         chamadas.append({"entrada": entrada, "config": config_captcha,
                          "emissor": emitir_evento})
 
@@ -105,7 +105,7 @@ def test_runner_reporta_aborto_por_certificado(planilha, monkeypatch, capsys):
     monkeypatch.setenv("GEMINI_API_KEY", CHAVE)
 
     def executar(entrada, config, emitir_evento=None,
-                 provedor_de_certificados=None):
+                 provedor_de_certificados=None, diretorio_da_execucao=None):
         emitir_evento(EventoOperacional(eventos.CERTIFICADOS_INDISPONIVEIS))
 
     monkeypatch.setattr(runner.app, "executar", executar)
@@ -118,7 +118,7 @@ def test_runner_apresenta_eventos_em_tempo_real(planilha, monkeypatch, capsys):
     monkeypatch.setenv("GEMINI_API_KEY", CHAVE)
 
     def executar(entrada, config, emitir_evento=None,
-                 provedor_de_certificados=None):
+                 provedor_de_certificados=None, diretorio_da_execucao=None):
         emitir_evento(EventoOperacional(eventos.ITEM_INICIADO, posicao=0, total=3))
         assert "1/3" in capsys.readouterr().out, "saiu ANTES do fim da execução"
 
