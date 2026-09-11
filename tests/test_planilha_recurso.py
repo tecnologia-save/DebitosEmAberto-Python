@@ -147,3 +147,29 @@ def test_o_erro_de_recurso_e_de_entrada_e_nao_falha_tecnica():
     Não é bug nosso e não deve virar traceback."""
     assert issubclass(PlanilhaIndisponivel, Exception)
     assert not issubclass(PlanilhaIndisponivel, (OSError, KeyError, ValueError))
+
+
+def test_a_recusa_nao_deixa_o_ARQUIVO_PRESO(tmp_path):
+    """Windows não deixa apagar arquivo aberto, e o openpyxl levanta com o zip
+    ainda aberto lá dentro.
+
+    `raise ... from None` suprime a EXIBIÇÃO do contexto, não a referência: a
+    exceção original continua pendurada em `__context__`, e com ela os frames
+    que seguram o arquivo. Enquanto a `PlanilhaIndisponivel` sobe, o handle
+    segue vivo — e quem tentar limpar o diretório da execução leva "arquivo em
+    uso por outro processo", longe daqui e sem explicação.
+
+    Por isso o arquivo é aberto por nós e fechado por `with`.
+    """
+    arquivo = tmp_path / "pacote.xlsx"
+    with zipfile.ZipFile(arquivo, "w") as zf:
+        zf.writestr("leiame.txt", "zip valido, mas nao e xlsx")
+
+    try:
+        validar_recurso(str(arquivo))
+    except PlanilhaIndisponivel:
+        # Apagar DE DENTRO do except: é aqui que a exceção ainda está em voo,
+        # que é exatamente a situação em que o defeito aparecia.
+        arquivo.unlink()
+
+    assert not arquivo.exists()

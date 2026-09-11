@@ -721,13 +721,29 @@ def validar_recurso(caminho: str) -> None:
     #   BadZipFile        arquivo que nao e zip (texto, vazio, truncado);
     #   KeyError          zip valido sem as partes do OOXML;
     #   InvalidFileException  extensao que o openpyxl recusa de saida.
+    #
+    # O ARQUIVO E ABERTO AQUI, e nao entregue por caminho, porque o handle
+    # precisa ser NOSSO. Quando o openpyxl recusa, ele levanta com o zip ja
+    # aberto la dentro; `raise ... from None` suprime a EXIBICAO do contexto,
+    # mas nao a referencia — a excecao original continua pendurada em
+    # `__context__`, e com ela os frames que seguram o arquivo. No Windows isso
+    # se manifesta longe daqui: quem tentar apagar o arquivo enquanto a excecao
+    # ainda sobe leva "arquivo em uso por outro processo". Com o `with`, o
+    # handle fecha de forma deterministica e nao depende de quem coleta o quê.
     try:
-        wb = openpyxl.load_workbook(caminho, read_only=True)
-    except (zipfile.BadZipFile, KeyError, InvalidFileException):
-        # `from None` corta o encadeamento: a mensagem do openpyxl traz o caminho.
-        raise PlanilhaIndisponivel("O arquivo não é uma planilha .xlsx válida.") from None
+        fluxo = arquivo.open("rb")
+    except OSError:
+        raise PlanilhaIndisponivel("Não foi possível abrir a planilha.") from None
 
-    try:
-        validar_schema(wb)
-    finally:
-        wb.close()
+    with fluxo:
+        try:
+            wb = openpyxl.load_workbook(fluxo, read_only=True)
+        except (zipfile.BadZipFile, KeyError, InvalidFileException):
+            # `from None`: a mensagem do openpyxl traz o caminho.
+            raise PlanilhaIndisponivel(
+                "O arquivo não é uma planilha .xlsx válida."
+            ) from None
+        try:
+            validar_schema(wb)
+        finally:
+            wb.close()
