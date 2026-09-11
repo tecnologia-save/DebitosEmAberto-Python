@@ -38,11 +38,10 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from automation import (
+    certificados,
     certificados_windows,
     consulta_fiscal,
-    domain,
     eventos,
-    login,
     maquina,
     navegador,
     planilha,
@@ -52,6 +51,7 @@ from automation import (
 )
 from automation.boundary import EntradaDebitosEmAberto
 from automation.captcha import ConfigCaptcha
+from automation.certificados import ProvedorDeCertificados
 from automation.eventos import EventoOperacional
 from automation.planilha import SessaoPlanilha
 from automation.policy_certificado import ConfiguracaoDeHostIncompativel
@@ -91,12 +91,19 @@ class _Execucao:
     """
 
     def __init__(self, sessao_planilha: SessaoPlanilha, caminho: str,
-                 config_captcha: ConfigCaptcha, emitir: Emissor) -> None:
+                 config_captcha: ConfigCaptcha, emitir: Emissor,
+                 provedor: ProvedorDeCertificados | None = None) -> None:
         self.planilha = sessao_planilha
         self.caminho = caminho
         self.config_captcha = config_captcha
         self._emitir = emitir
-        self.certificados: dict[str, dict] = {}
+        # De ONDE vem o certificado de cada linha. No desktop, do Certificate
+        # Store; na plataforma sera outro provedor. A aplicacao nao sabe qual.
+        #
+        # O PADRAO e o desktop, e existe para a transicao: `main.py` e `local.py`
+        # continuam construindo a execucao como sempre construiram. No dia em que
+        # o runner da plataforma passar o provedor dele, o padrao some.
+        self.provedor = provedor or certificados_windows.CertificadosDoWindows()
         self.certificado_atual: str | None = None
         self.policy_confiavel = True
         # O guardiao da policy que ESTA execucao mandou escrever, ou None.
@@ -263,18 +270,10 @@ class _Execucao:
                 return
 
     def buscar_certificado(self, nome: str):
-        return domain.buscar_certificado(
-            nome, certificados_windows.identidades(self.certificados)
-        )
+        return self.provedor.resolver(nome)
 
     def chave_do_certificado(self, nome: str) -> str | None:
         return self.buscar_certificado(nome).chave
-
-    def subject_cn(self, chave: str) -> str:
-        return str(self.certificados[chave].get("subject_cn") or "").strip()
-
-    def serial(self, chave: str) -> str:
-        return str(self.certificados[chave].get("serial") or "").strip()
 
     def trocar_certificado(self, item) -> bool:
         """Prepara a maquina para o certificado do item. False se ele nao existe.
@@ -319,7 +318,8 @@ class _Execucao:
                 policy_certificado.POLICY_ANTERIOR_NAO_REMOVIDA
             )
 
-        resultado = maquina.garantir_policy_do_windows(self.subject_cn(chave))
+        resultado = maquina.garantir_policy_do_windows(
+            self.provedor.certificado(chave).subject_cn)
         self.policy_confiavel = resultado.confiavel
         if resultado.controle is not None:
             self.controle_da_policy = resultado.controle
@@ -377,7 +377,7 @@ class _Execucao:
             return False
 
         resultado = maquina.abrir_sessao(
-            login.Certificado(subject_cn=self.subject_cn(chave), serial=self.serial(chave)),
+            self.provedor.certificado(chave),
             self.policy_confiavel,
             self.config_captcha.api_key,
         )
@@ -619,6 +619,7 @@ def executar(
     entrada: EntradaDebitosEmAberto,
     config_captcha: ConfigCaptcha,
     emitir_evento: Emissor = None,
+    provedor_de_certificados: ProvedorDeCertificados | None = None,
 ) -> None:
     """Processa a planilha inteira.
 
@@ -635,12 +636,13 @@ def executar(
     removido depois dela.
     """
     sessao_planilha = SessaoPlanilha()
-    execucao = _Execucao(sessao_planilha, entrada.planilha, config_captcha, emitir_evento)
+    execucao = _Execucao(sessao_planilha, entrada.planilha, config_captcha,
+                         emitir_evento, provedor_de_certificados)
 
     try:
         try:
-            certificados, _ = certificados_windows.descobrir()
-        except certificados_windows.FalhaAoLerCertificados:
+            quantos = execucao.provedor.carregar()
+        except certificados.FalhaAoLerCertificados:
             # Falha externa CONHECIDA. A fatia 5A separou de proposito "nao deu
             # para ler" de "nao ha certificado instalado": antes as duas
             # produziam a mesma saida, e o operador era mandado instalar um
@@ -648,8 +650,7 @@ def executar(
             execucao.emitir(eventos.LEITURA_DE_CERTIFICADOS_FALHOU)
             return
 
-        execucao.certificados = certificados
-        if not certificados:
+        if not quantos:
             execucao.emitir(eventos.CERTIFICADOS_INDISPONIVEIS)
             return
 

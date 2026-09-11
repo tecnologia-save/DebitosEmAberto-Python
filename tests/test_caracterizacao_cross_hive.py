@@ -21,6 +21,7 @@ import inspect
 import json
 
 import pytest
+from casos_certificado import provedor_de
 from registro_falso import RegistroFalso
 
 import cert_windows
@@ -388,7 +389,7 @@ def _execucao(monkeypatch, aberturas):
     monkeypatch.setattr(app.maquina, "abrir_sessao",
                         lambda *a, **k: aberturas.append(a))
     ex = app._Execucao(_PlanilhaInerte(), "p.xlsx", ConfigCaptcha(api_key="x"), None)
-    ex.certificados = {CN_NOSSO: {"subject_cn": CN_NOSSO, "serial": "0A01"}}
+    ex.provedor = provedor_de({CN_NOSSO: {"subject_cn": CN_NOSSO, "serial": "0A01"}})
     return ex
 
 

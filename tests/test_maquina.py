@@ -15,6 +15,7 @@ import inspect
 import pathlib
 
 import pytest
+from casos_certificado import provedor_de
 
 from automation import app, captcha, eventos, login, maquina, navegador
 from automation.captcha import ConfigCaptcha
@@ -489,7 +490,7 @@ def test_bug_de_teardown_no_retry_nao_aborta_a_execucao(monkeypatch):
 
     codigos = []
     ex = app._Execucao(PlanilhaInerte(), "p.xlsx", CONFIG, lambda e: codigos.append(e.codigo))
-    ex.certificados = {"cert": {"subject_cn": "ALFA:11111111000191", "serial": "0A01"}}
+    ex.provedor = provedor_de({"cert": {"subject_cn": "ALFA:11111111000191", "serial": "0A01"}})
     ex.certificado_atual = "CERT"
 
     app._percorrer(ex, [ItemPendente(0, CNPJ, "CERT", 2)])
@@ -514,7 +515,7 @@ def test_o_teardown_falho_nao_conta_como_falha_do_cnpj(monkeypatch):
 
     eventos_vistos = []
     ex = app._Execucao(PlanilhaInerte(), "p.xlsx", CONFIG, eventos_vistos.append)
-    ex.certificados = {"cert": {"subject_cn": "ALFA:11111111000191", "serial": "0A01"}}
+    ex.provedor = provedor_de({"cert": {"subject_cn": "ALFA:11111111000191", "serial": "0A01"}})
     ex.certificado_atual = "CERT"
 
     app._percorrer(ex, [ItemPendente(0, CNPJ, "CERT", 2)])

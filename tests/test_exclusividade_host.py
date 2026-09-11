@@ -398,7 +398,7 @@ def test_o_app_continua_chamavel_direto_pelos_testes():
     from automation import app
 
     assert list(inspect.signature(app.executar).parameters) == [
-        "entrada", "config_captcha", "emitir_evento"
+        "entrada", "config_captcha", "emitir_evento", "provedor_de_certificados"
     ]
 
 

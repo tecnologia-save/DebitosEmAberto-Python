@@ -15,6 +15,7 @@ import inspect
 import pathlib
 
 import pytest
+from casos_certificado import provedor_de
 
 from automation import app, maquina
 from automation.captcha import ConfigCaptcha
@@ -472,7 +473,7 @@ def test_7_policy_emprestada_nao_e_liberada(monkeypatch):
     from automation.planilha import ItemPendente
 
     ex = app._Execucao(_PlanilhaInerte(), "p.xlsx", CONFIG, None)
-    ex.certificados = {"c": {"subject_cn": CN_A, "serial": "0A01"}}
+    ex.provedor = provedor_de({"c": {"subject_cn": CN_A, "serial": "0A01"}})
     ex.trocar_certificado(ItemPendente(0, "11111111000191", CN_A, 2))
     ex.liberar_policy()
 
@@ -504,8 +505,8 @@ def test_8_a_troca_de_certificado_nao_acumula_guardioes(monkeypatch):
     monkeypatch.setattr(maquina, "liberar_policy_do_windows", liberar_um)
 
     ex = app._Execucao(_PlanilhaInerte(), "p.xlsx", CONFIG, None)
-    ex.certificados = {"a": {"subject_cn": CN_A, "serial": "0A01"},
-                       "b": {"subject_cn": CN_B, "serial": "0B02"}}
+    ex.provedor = provedor_de({"a": {"subject_cn": CN_A, "serial": "0A01"},
+                       "b": {"subject_cn": CN_B, "serial": "0B02"}})
 
     ex.trocar_certificado(ItemPendente(0, "11111111000191", CN_A, 2))
     assert len(vivos) == 1

@@ -11,6 +11,7 @@ import ast
 import pathlib
 
 import pytest
+from casos_certificado import provedor_de
 
 from automation import app, apresentacao_eventos, eventos, planilha
 from automation.boundary import EntradaDebitosEmAberto
@@ -112,7 +113,7 @@ def item(posicao=0, cnpj=CNPJ, certificado=CERT):
 
 def execucao_com(sessao_planilha=None, emissor=None, sessao=None):
     ex = app._Execucao(sessao_planilha or PlanilhaFalsa(), "p.xlsx", CONFIG, emissor)
-    ex.certificados = CERTS
+    ex.provedor = provedor_de(CERTS)
     ex.certificado_atual = CERT
     ex.sessao = sessao if sessao is not None else SessaoFalsa()
     return ex
@@ -394,7 +395,7 @@ def test_j_o_laco_retenta_o_mesmo_item_e_a_retomada_acompanha(capacidades):
     )
     codigos = []
     execucao = app._Execucao(sessao_planilha, "p.xlsx", CONFIG, lambda e: codigos.append(e))
-    execucao.certificados = CERTS
+    execucao.provedor = provedor_de(CERTS)
 
     app._percorrer(execucao, [item()])
 
@@ -439,7 +440,7 @@ def test_a_a_falha_de_save_nao_muda_o_fluxo(capacidades):
     codigos = []
     execucao = app._Execucao(PlanilhaTravada(), "p.xlsx", CONFIG,
                              lambda e: codigos.append(e.codigo))
-    execucao.certificados = CERTS
+    execucao.provedor = provedor_de(CERTS)
 
     app._percorrer(execucao, [item(0), item(1, cnpj="22222222000172")])
 
@@ -498,12 +499,19 @@ def test_o_app_nao_importa_as_exceptions_legadas():
 
 def test_a_assinatura_publica_nao_recebe_capacidades():
     """Nada de `garantir_policy=`, `autenticar=`, `representar=`. Os testes
-    substituem os NOSSOS modulos; a API publica nao carrega seam de teste."""
+    substituem os NOSSOS modulos; a API publica nao carrega seam de teste.
+
+    `provedor_de_certificados` e a EXCECAO, e ela e de outra natureza: nao existe
+    para teste nenhum. De onde vem o certificado muda de verdade entre desktop
+    (Certificate Store) e plataforma (cofre), e essa e uma decisao de quem chama
+    — nao uma capacidade nossa substituida por conveniencia. A lista continua
+    exata: um seam de teste a mais reprova aqui do mesmo jeito."""
     import inspect
 
     parametros = list(inspect.signature(app.executar).parameters)
 
-    assert parametros == ["entrada", "config_captcha", "emitir_evento"]
+    assert parametros == ["entrada", "config_captcha", "emitir_evento",
+                          "provedor_de_certificados"]
     assert inspect.signature(app.executar).return_annotation == "None"
 
 

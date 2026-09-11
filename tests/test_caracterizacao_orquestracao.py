@@ -10,6 +10,7 @@ CNPJs, empresas e certificados ficticios.
 """
 import pandas as pd
 import pytest
+from casos_certificado import provedor_de
 
 from automation import app, eventos, navegador, planilha
 from automation.captcha import ConfigCaptcha
@@ -108,7 +109,7 @@ class PlanilhaInerte:
 def executar(df, certs, caminho="planilha.xlsx", emissor=None):
     """Roda o laco sobre os itens do DataFrame, como `main.processar` fazia."""
     execucao = app._Execucao(PlanilhaInerte(), caminho, CONFIG, emissor)
-    execucao.certificados = certs
+    execucao.provedor = provedor_de(certs)
     app._percorrer(execucao, planilha.itens_pendentes(df))
 
 

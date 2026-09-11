@@ -31,7 +31,9 @@ import re
 import subprocess  # a fronteira externa desta integração é um processo, e só ela
 from collections.abc import Callable
 
-from .domain import remover_acentos
+from automation import certificados
+from automation.domain import ResultadoDaBusca, buscar_certificado, remover_acentos
+from automation.login import Certificado
 
 STORE = r"Cert:\CurrentUser\My"
 TIMEOUT_S = 30
@@ -71,18 +73,11 @@ COMANDO_POWERSHELL = (
 _RE_CN_ICP = re.compile(r":\s*\d{11}(?:\d{3})?\s*$")
 
 
-class FalhaAoLerCertificados(Exception):
-    """Nao foi possivel ler o repositorio de certificados desta maquina.
+# A excecao mora no seam (`automation.certificados`): quem quer que forneca
+# certificados precisa poder dizer "nao deu para ler". O nome continua
+# exportado aqui, e e o MESMO objeto — nenhum `except` existente muda.
+FalhaAoLerCertificados = certificados.FalhaAoLerCertificados
 
-    Falha externa CONHECIDA — PowerShell ausente, tempo esgotado, saida
-    ilegivel. Erro tecnico nosso e seguro: a mensagem e constante e nunca
-    carrega comando, saida bruta, CN ou serial.
-
-    O que NAO passa por aqui: bug nosso. Ele sobe.
-    """
-
-
-# ── A unica fronteira externa ─────────────────────────────────────────────────
 
 def _sem_janela() -> dict:
     """Esconde o console do PowerShell — a automacao ja tem o proprio."""
@@ -224,3 +219,38 @@ def descobrir(
     ponto em que esta fatia se afasta do original de proposito.
     """
     return indexar(interpretar_saida(executar(COMANDO_POWERSHELL)))
+
+
+# ── O adapter do desktop ──────────────────────────────────────────────────────
+
+class CertificadosDoWindows:
+    """O provedor que o desktop sempre usou, agora atras do seam.
+
+    Ele nao reimplementa nada: `descobrir`, `identidades` e
+    `domain.buscar_certificado` continuam sendo exatamente as mesmas funcoes, na
+    mesma ordem. O que muda e so quem as chama — antes era a aplicacao, que por
+    isso precisava conhecer o formato do Windows.
+
+    O catalogo fica AQUI, e nao na aplicacao. Ele e detalhe de um provedor: o
+    provedor da plataforma nao tera dicionario de Store nenhum.
+    """
+
+    def __init__(self, descobrir_certificados=None) -> None:
+        # Parametro para a suite nao precisar de PowerShell — a fronteira
+        # externa inteira deste adapter cabe num callable, como em `descobrir`.
+        self._descobrir = descobrir_certificados or descobrir
+        self._catalogo: dict[str, dict] = {}
+
+    def carregar(self) -> int:
+        self._catalogo, _ = self._descobrir()
+        return len(self._catalogo)
+
+    def resolver(self, nome: str) -> ResultadoDaBusca:
+        return buscar_certificado(nome, identidades(self._catalogo))
+
+    def certificado(self, chave: str) -> Certificado:
+        dados = self._catalogo.get(chave) or {}
+        return Certificado(
+            subject_cn=str(dados.get("subject_cn") or "").strip(),
+            serial=str(dados.get("serial") or "").strip(),
+        )

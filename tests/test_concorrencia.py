@@ -279,10 +279,13 @@ def test_o_intervalo_nao_influencia_qual_certificado_e_usado():
 def test_o_primeiro_efeito_compartilhado_e_a_policy():
     """§13: se um dia houver exclusividade, ela precisa existir ANTES disto.
 
-    A ordem em `executar` e: descobrir certificados (leitura), abrir a planilha
-    (arquivo de entrada), montar os itens — e so entao `_percorrer`, cuja
-    primeira acao por certificado e garantir a policy. A policy e a primeira
-    MUTACAO de estado compartilhado do host.
+    A ordem em `executar` e: carregar o catalogo de certificados (leitura),
+    abrir a planilha (arquivo de entrada), montar os itens — e so entao
+    `_percorrer`, cuja primeira acao por certificado e garantir a policy. A
+    policy e a primeira MUTACAO de estado compartilhado do host.
+
+    Quem le o catalogo passou a ser o provedor, e a ordem nao mudou: `carregar()`
+    continua antes de `_percorrer`, e continua sendo leitura.
     """
     import inspect
 
@@ -292,8 +295,9 @@ def test_o_primeiro_efeito_compartilhado_e_a_policy():
         __import__("automation.app", fromlist=["x"])._Execucao.trocar_certificado
     )
 
-    assert "descobrir()" in fonte
-    assert fonte.index("descobrir()") < fonte.index("_percorrer(execucao, itens)")
+    assert "provedor.carregar()" in fonte
+    assert (fonte.index("provedor.carregar()")
+            < fonte.index("_percorrer(execucao, itens)"))
     assert "trocar_certificado" in percorrer
     assert "garantir_policy_do_windows" in trocar
     assert trocar.index("garantir_policy_do_windows") < len(trocar)

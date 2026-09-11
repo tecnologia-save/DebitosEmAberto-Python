@@ -17,6 +17,7 @@ import inspect
 import pathlib
 
 import pytest
+from casos_certificado import provedor_de
 
 from automation import app, policy_certificado
 from automation.captcha import ConfigCaptcha
@@ -523,7 +524,7 @@ def test_o_ownership_nasce_do_tem_guardiao(monkeypatch):
             ),
         )
         ex = execucao()
-        ex.certificados = {"c": {"subject_cn": CN_A, "serial": "0A01"}}
+        ex.provedor = provedor_de({"c": {"subject_cn": CN_A, "serial": "0A01"}})
         ex.trocar_certificado(
             __import__("automation.planilha", fromlist=["x"]).ItemPendente(
                 posicao=0, cnpj="11111111000191", certificado=CN_A, linha=2
@@ -548,7 +549,7 @@ def test_o_ownership_sobrevive_a_troca_de_certificado(monkeypatch):
     from automation.planilha import ItemPendente
 
     ex = execucao()
-    ex.certificados = {"c": {"subject_cn": CN_A, "serial": "0A01"}}
+    ex.provedor = provedor_de({"c": {"subject_cn": CN_A, "serial": "0A01"}})
     ex.trocar_certificado(ItemPendente(0, "11111111000191", CN_A, 2))
     assert ex.controle_da_policy is not None, "a de ATIVADA e nossa"
 

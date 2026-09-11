@@ -22,6 +22,7 @@ import inspect
 import pathlib
 
 import pytest
+from casos_certificado import provedor_de
 
 from automation import app, eventos, maquina
 from automation.captcha import ConfigCaptcha
@@ -275,7 +276,7 @@ def test_ja_ativa_e_estado_EMPRESTADO_e_nao_proprio(monkeypatch):
     monkeypatch.setattr(maquina, "garantir_policy_do_windows",
                         lambda cn, nossa=False: ResultadoDaPolicy(JA_ATIVA, tem_guardiao=False))
     ex = app._Execucao(PlanilhaInerte(), "p.xlsx", CONFIG, None)
-    ex.certificados = {"c": {"subject_cn": CN_A, "serial": "0A01"}}
+    ex.provedor = provedor_de({"c": {"subject_cn": CN_A, "serial": "0A01"}})
 
     ex.trocar_certificado(ItemPendente(0, "11111111000191", CN_A, 2))
 

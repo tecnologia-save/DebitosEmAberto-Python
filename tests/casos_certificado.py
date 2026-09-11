@@ -47,3 +47,17 @@ CERTS = _indexar(ALVORADA, BERNARDO, XYZ, GAMA, DES, DSR)
 # Um unico certificado, indexado sob tres chaves — serve para provar que a
 # deduplicacao por identidade nao transforma isso em empate.
 CERTS_UM_SO = _indexar(BERNARDO)
+
+
+def provedor_de(catalogo):
+    """Provedor com um catálogo já carregado, no formato do Windows.
+
+    É o adapter REAL do desktop com a descoberta injetada — não uma imitação.
+    Um dublê aqui provaria menos: os testes que usam isto exercitam o mesmo
+    caminho que o desktop exercita.
+    """
+    from automation.certificados_windows import CertificadosDoWindows
+
+    provedor = CertificadosDoWindows(descobrir_certificados=lambda: (dict(catalogo), 0))
+    provedor.carregar()
+    return provedor

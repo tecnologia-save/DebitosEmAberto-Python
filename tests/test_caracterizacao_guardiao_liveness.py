@@ -32,6 +32,7 @@ import pathlib
 import types
 
 import pytest
+from casos_certificado import provedor_de
 
 import cert_windows
 from automation import app, exclusividade_host, planilha, policy_certificado
@@ -357,7 +358,7 @@ def execucao(monkeypatch, vida=None, propria=True):
     monkeypatch.setattr(app.maquina, "estado_do_guardiao",
                         lambda _c: vida or policy_certificado.GUARDIAO_VIVO)
     ex = app._Execucao(PlanilhaInerte(), "p.xlsx", CONFIG, None)
-    ex.certificados = CERTS
+    ex.provedor = provedor_de(CERTS)
     ex.certificado_atual = CERT
     ex.controle_da_policy = _Controle(CN_A) if propria else None
     return ex, aberturas
@@ -532,7 +533,7 @@ def test_17_e_por_isso_a_troca_de_certificado_para(monkeypatch):
     monkeypatch.setattr(app.maquina, "garantir_policy_do_windows",
                         lambda cn: lancados.append(cn))
     ex = app._Execucao(PlanilhaInerte(), "p.xlsx", CONFIG, None)
-    ex.certificados = CERTS
+    ex.provedor = provedor_de(CERTS)
     ex.controle_da_policy = _Controle(CN_A)
 
     with pytest.raises(policy_certificado.ConfiguracaoDeHostIncompativel) as erro:

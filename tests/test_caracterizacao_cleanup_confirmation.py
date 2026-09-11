@@ -18,6 +18,7 @@ Chrome. Todos os CNs sao ficticios.
 import json
 
 import pytest
+from casos_certificado import provedor_de
 from registro_falso import RegistroFalso
 
 import cert_windows
@@ -319,10 +320,10 @@ def execucao(monkeypatch):
     ex = app._Execucao(_PlanilhaInerte(), "p.xlsx", ConfigCaptcha(api_key="x"), None)
     # As chaves sao os nomes como a planilha os escreve: e por elas que
     # `buscar_certificado` resolve, e a identidade e o subject_cn.
-    ex.certificados = {
+    ex.provedor = provedor_de({
         CN_A: {"subject_cn": CN_A, "serial": "0A01"},
         CN_B: {"subject_cn": CN_B, "serial": "0B02"},
-    }
+    })
     return ex
 
 

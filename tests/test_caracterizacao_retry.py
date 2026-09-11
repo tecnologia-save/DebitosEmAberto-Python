@@ -22,6 +22,7 @@ import ast
 import pathlib
 
 import pytest
+from casos_certificado import provedor_de
 
 from automation import app, eventos, navegador
 from automation.captcha import ConfigCaptcha, ConfiguracaoInvalida
@@ -76,7 +77,7 @@ def percorrer(monkeypatch, falha, itens=1):
 
     emitidos = []
     execucao = app._Execucao(PlanilhaInerte(), "p.xlsx", CONFIG, emitidos.append)
-    execucao.certificados = CERTS
+    execucao.provedor = provedor_de(CERTS)
     execucao.certificado_atual = "CERT"
 
     app._percorrer(execucao, [
@@ -137,7 +138,7 @@ def test_o_desfecho_nao_representado_chega_ao_retry_pelo_caminho_real(monkeypatc
 
     emitidos = []
     execucao = app._Execucao(Planilha(), "p.xlsx", CONFIG, emitidos.append)
-    execucao.certificados = CERTS
+    execucao.provedor = provedor_de(CERTS)
     execucao.certificado_atual = "CERT"
 
     app._percorrer(execucao, [ItemPendente(posicao=0, cnpj=CNPJ, certificado="CERT", linha=2)])
@@ -178,7 +179,7 @@ def test_bug_nosso_nao_gasta_uma_segunda_tentativa(monkeypatch, bug):
                         lambda c, a, k: ResultadoDoLogin(AUTENTICADO, SessaoFalsa()))
 
     execucao = app._Execucao(PlanilhaInerte(), "p.xlsx", CONFIG, None)
-    execucao.certificados = CERTS
+    execucao.provedor = provedor_de(CERTS)
     execucao.certificado_atual = "CERT"
 
     with pytest.raises(type(bug)):
@@ -200,7 +201,7 @@ def test_bug_nosso_nao_emite_evento_enganoso(monkeypatch):
                         lambda c, a, k: ResultadoDoLogin(AUTENTICADO, SessaoFalsa()))
 
     execucao = app._Execucao(PlanilhaInerte(), "p.xlsx", CONFIG, emitidos.append)
-    execucao.certificados = CERTS
+    execucao.provedor = provedor_de(CERTS)
     execucao.certificado_atual = "CERT"
 
     with pytest.raises(TypeError):
@@ -244,7 +245,7 @@ def test_falha_do_adapter_de_eventos_nao_retenta(monkeypatch):
     )
 
     execucao = app._Execucao(PlanilhaInerte(), "p.xlsx", CONFIG, emissor)
-    execucao.certificados = CERTS
+    execucao.provedor = provedor_de(CERTS)
     execucao.certificado_atual = "CERT"
 
     with pytest.raises(AttributeError, match="bug no adapter"):
