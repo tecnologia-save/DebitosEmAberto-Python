@@ -45,6 +45,14 @@ from automation.exclusividade_host import (
 from automation.planilha import PlanilhaIndisponivel, validar_recurso
 from certificados_do_cofre import CertificadosDoCofre
 
+# O alias da credencial do Gemini no cofre. CANONICO, e nao o que uma
+# automacao irma esta usando hoje: la existe um `Gemini_KEY` que e sonda de uma
+# regressao do resolver da plataforma (ele casa por NOME da credencial em vez de
+# por ALIAS do vinculo), e copiar isso para ca propagaria o defeito em vez de
+# expo-lo. Se o resolver recusar este alias, o problema e la — e aparece na
+# primeira execucao, que e onde tem de aparecer.
+ALIAS_DO_GEMINI = "gemini_api_key"
+
 
 def _config_do_ambiente() -> ConfigCaptcha:
     """O segredo vem do ambiente do processo que a plataforma preparou.
@@ -61,7 +69,8 @@ def _config_do_ambiente() -> ConfigCaptcha:
     return config
 
 
-def executar(params: dict, emitir_evento=None, provedor_de_certificados=None) -> dict:
+def executar(params: dict, emitir_evento=None, provedor_de_certificados=None,
+             config: ConfigCaptcha | None = None) -> dict:
     """Traduz o disparo, roda a automação e devolve o contrato externo.
 
     Testável sem plataforma: recebe um dicionário comum. É esta função que
@@ -76,13 +85,14 @@ def executar(params: dict, emitir_evento=None, provedor_de_certificados=None) ->
     precisão. Ele diz uma coisa só, observada pelo apresentador: a execução
     chegou ao fim, ou abortou por falta de certificado utilizável.
 
-    `provedor_de_certificados` atravessa sem ser interpretado. Omitido, a
-    aplicação usa o provedor do desktop — que é o que mantém este arquivo
-    utilizável fora da plataforma.
+    `provedor_de_certificados` e `config` atravessam sem ser interpretados.
+    Omitidos, valem o provedor do desktop e a chave do ambiente do processo — que
+    é o que mantém este arquivo utilizável fora da plataforma.
     """
     entrada = montar_entrada(params)
     validar_recurso(entrada.planilha)
-    config = _config_do_ambiente()
+    if config is None:
+        config = _config_do_ambiente()
 
     apresentador = apresentacao_eventos.Apresentador()
 
@@ -123,11 +133,19 @@ def executar_no_save(ctx, emitir_evento=None) -> dict:
     não exista um segundo entendimento de qual coluna guarda o certificado aqui
     na borda.
 
-    O QUE AINDA NÃO ESTÁ AQUI, e é deliberado: a chave do Gemini continua vindo
-    do ambiente do processo, e não do cofre; e não há checkpoint, artefato nem
-    `ctx.output`. As duas coisas são de fases próprias, e antecipá-las faria
-    este arquivo parecer pronto sem estar.
+    A CHAVE DO GEMINI vem do cofre e é revelada AQUI, no ponto de uso — que é o
+    que o SDK pede, e o que deixa a revelação greppável. O que atravessa para a
+    aplicação é a `ConfigCaptcha` que ela já consumia; ela não sabe de onde a
+    chave veio, e o campo não entra no `repr`.
+
+    O QUE AINDA NÃO ESTÁ AQUI, e é deliberado: não há checkpoint, artefato nem
+    `ctx.output`, e o perfil do Chrome continua sendo o da máquina — duas
+    execuções no mesmo host ainda o dividiriam. São de fases próprias, e
+    antecipá-las faria este arquivo parecer pronto sem estar.
     """
+    config = ConfigCaptcha(api_key=ctx.secrets.get(ALIAS_DO_GEMINI).reveal())
+    config.validar()
+
     anexo = ctx.input_file("planilha")
 
     with espaco_de_trabalho.abrir(anexo) as espaco:
@@ -141,10 +159,11 @@ def executar_no_save(ctx, emitir_evento=None) -> dict:
             espaco.raiz / "certificados",
         )
         return executar({"planilha": de_trabalho}, emitir_evento=emitir_evento,
-                        provedor_de_certificados=provedor)
+                        provedor_de_certificados=provedor, config=config)
 
 
 __all__ = [
+    "ALIAS_DO_GEMINI",
     "ConfiguracaoInvalida",
     "EntradaInvalida",
     "ExecucaoJaAtivaNoHost",

@@ -28,10 +28,26 @@ class CredencialFalsa:
         self.password = password
 
 
+class SegredoFalso:
+    """Como o SDK: o valor so sai por `.reveal()`, e o `repr` nunca o mostra."""
+
+    def __init__(self, nome, valor):
+        self._nome = nome
+        self._valor = valor
+
+    def reveal(self):
+        return self._valor
+
+    def __repr__(self):
+        return f"<Secret {self._nome}>"
+
+
 class SecretsFalso:
-    def __init__(self, cofre):
+    def __init__(self, cofre, chave_gemini=CHAVE_FICTICIA):
         self._cofre = cofre
+        self._chave_gemini = chave_gemini
         self.pedidos = []
+        self.segredos_pedidos = []
 
     def cert(self, nome):
         self.pedidos.append(nome)
@@ -39,13 +55,19 @@ class SecretsFalso:
             raise RuntimeError("credencial nao encontrada")
         return CredencialFalsa(self._cofre[nome], SENHA_FICTICIA)
 
+    def get(self, nome):
+        self.segredos_pedidos.append(nome)
+        if self._chave_gemini is None:
+            raise RuntimeError("credencial nao vinculada")
+        return SegredoFalso(nome, self._chave_gemini)
+
 
 class CtxFalso:
     """O pedaco do contexto da plataforma que esta fase usa, e mais nada."""
 
-    def __init__(self, planilha, cofre=None):
+    def __init__(self, planilha, cofre=None, chave_gemini=CHAVE_FICTICIA):
         self._planilha = str(planilha)
-        self.secrets = SecretsFalso(cofre or {})
+        self.secrets = SecretsFalso(cofre or {}, chave_gemini)
         self.entradas_pedidas = []
 
     def input_file(self, nome):
@@ -309,3 +331,134 @@ def test_o_contrato_de_entrada_e_so_a_planilha():
     from automation.boundary import CAMPOS_CONHECIDOS
 
     assert CAMPOS_CONHECIDOS == frozenset({"planilha"})
+
+
+# ── a chave do Gemini vem do cofre ───────────────────────────────────────────
+
+def test_a_chave_do_gemini_vem_do_COFRE_e_nao_do_ambiente(tmp_path, monkeypatch,
+                                                          _sem_execucao_real):
+    """Sem variavel de ambiente nenhuma, o caminho da plataforma continua
+    funcionando — e e assim que ele tem de ser: no runtime remoto nao ha `.env`
+    nem ambiente preparado por ninguem."""
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    caminho = _planilha(tmp_path)
+    ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
+
+    runner.executar_no_save(ctx)
+
+    assert ctx.secrets.segredos_pedidos == [runner.ALIAS_DO_GEMINI]
+    (args, _), = _sem_execucao_real
+    assert args[1].api_key == CHAVE_FICTICIA
+
+
+def test_o_alias_pedido_e_o_CANONICO():
+    """Nao o `Gemini_KEY` da automacao irma: aquilo e sonda de uma regressao do
+    resolver da plataforma, e copiar propagaria o defeito."""
+    assert runner.ALIAS_DO_GEMINI == "gemini_api_key"
+
+
+def test_a_chave_nao_aparece_no_repr_da_config(tmp_path, _sem_execucao_real):
+    caminho = _planilha(tmp_path)
+    ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
+
+    runner.executar_no_save(ctx)
+
+    (args, _), = _sem_execucao_real
+    assert CHAVE_FICTICIA not in repr(args[1])
+
+
+def test_chave_ausente_para_ANTES_de_qualquer_efeito(tmp_path, monkeypatch,
+                                                     _sem_execucao_real):
+    """Configuracao invalida nao se resolve repetindo, e o certificado nem
+    chega a ser baixado."""
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    caminho = _planilha(tmp_path)
+    ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)),
+                   chave_gemini="")
+
+    with pytest.raises(runner.ConfiguracaoInvalida):
+        runner.executar_no_save(ctx)
+
+    assert ctx.entradas_pedidas == [], "nem a planilha foi pedida"
+    assert ctx.secrets.pedidos == [], "nenhum certificado baixado"
+    assert _sem_execucao_real == []
+
+
+def test_o_desktop_continua_lendo_a_chave_do_AMBIENTE(tmp_path, monkeypatch,
+                                                      _sem_execucao_real):
+    """`executar` sem `config` e o caminho de quem roda sem plataforma."""
+    monkeypatch.setenv("GEMINI_API_KEY", "chave-do-ambiente-ficticia")
+    caminho = _planilha(tmp_path)
+
+    runner.executar({"planilha": str(caminho)})
+
+    (args, _), = _sem_execucao_real
+    assert args[1].api_key == "chave-do-ambiente-ficticia"
+
+
+# ── os seams que ja existiam, e que esta fase reusa ──────────────────────────
+
+def test_o_captcha_ja_tem_seam_e_ele_nao_precisa_de_gemini():
+    """`resolver_bruto` e a fronteira externa inteira num callable."""
+    from automation import captcha
+
+    chamadas = []
+    desfecho = captcha.resolver(
+        "pagina-falsa",
+        captcha.ConfigCaptcha(api_key=CHAVE_FICTICIA),
+        tentativas=1,
+        resolver_bruto=lambda alvo: chamadas.append(alvo) or True,
+    )
+
+    assert desfecho == captcha.RESOLVIDO_OU_AUSENTE
+    assert chamadas == ["pagina-falsa"]
+
+
+def test_o_login_ja_tem_seam_e_ele_nao_precisa_de_navegador():
+    """`fazer_login` entra por parametro: o login inteiro roda sem Chromium."""
+    from automation.login import AUTENTICADO, Certificado, ConfigLogin, autenticar
+
+    recebido = {}
+
+    def fork(**kwargs):
+        recebido.update(kwargs)
+        return ("playwright-falso", "contexto-falso", "pagina-falsa")
+
+    resultado = autenticar(
+        Certificado(subject_cn="", pfx_path="0.pfx", pfx_senha="senha-ficticia"),
+        ConfigLogin(diretorio_perfil="perfil-falso", gemini_api_key=CHAVE_FICTICIA),
+        True, fork)
+
+    assert resultado.situacao == AUTENTICADO
+    assert recebido["cert_pfx_path"] == "0.pfx"
+    assert recebido["cert_subject_cn"] == "", "sem Store no caminho do arquivo"
+
+
+def test_o_certificado_do_cofre_NUNCA_cai_no_windows_store(tmp_path,
+                                                           _sem_execucao_real):
+    """O fork decide usar o Store por `bool(cert_subject_cn)`. Se o provedor do
+    cofre preenchesse esse campo, a maquina escolheria um certificado instalado
+    — e autenticaria na empresa errada sem erro nenhum."""
+    caminho = _planilha(tmp_path)
+    aliases = _certificados_da_planilha(caminho)
+    ctx = CtxFalso(caminho, _cofre(tmp_path, aliases))
+    vistos = []
+
+    def espiar(entrada, config, **kwargs):
+        provedor = kwargs["provedor_de_certificados"]
+        provedor.carregar()
+        vistos.extend(provedor.certificado(a) for a in aliases)
+
+    runner.app.executar = espiar
+    runner.executar_no_save(ctx)
+
+    assert vistos
+    for certificado in vistos:
+        assert certificado.subject_cn == ""
+        assert certificado.pfx_path
+
+
+def test_o_dominio_nao_conhece_navegador_nem_gemini():
+    proibidos = {"patchright", "playwright", "google", "resolvedor_captcha",
+                 "autohub_sdk", "autohub"}
+    assert not (_importados(RAIZ / "automation" / "domain.py") & proibidos)
