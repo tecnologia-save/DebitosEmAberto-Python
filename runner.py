@@ -29,7 +29,13 @@ from __future__ import annotations
 
 import os
 
-from automation import app, apresentacao_eventos, exclusividade_host
+from automation import (
+    app,
+    apresentacao_eventos,
+    espaco_de_trabalho,
+    exclusividade_host,
+    planilha,
+)
 from automation.boundary import EntradaInvalida, montar_entrada
 from automation.captcha import ConfigCaptcha, ConfiguracaoInvalida
 from automation.exclusividade_host import (
@@ -37,6 +43,7 @@ from automation.exclusividade_host import (
     FalhaAoVerificarExclusividade,
 )
 from automation.planilha import PlanilhaIndisponivel, validar_recurso
+from certificados_do_cofre import CertificadosDoCofre
 
 
 def _config_do_ambiente() -> ConfigCaptcha:
@@ -54,7 +61,7 @@ def _config_do_ambiente() -> ConfigCaptcha:
     return config
 
 
-def executar(params: dict, emitir_evento=None) -> dict:
+def executar(params: dict, emitir_evento=None, provedor_de_certificados=None) -> dict:
     """Traduz o disparo, roda a automação e devolve o contrato externo.
 
     Testável sem plataforma: recebe um dicionário comum. É esta função que
@@ -68,6 +75,10 @@ def executar(params: dict, emitir_evento=None) -> dict:
     propósito, e inventar métricas para preencher um retorno seria fabricar
     precisão. Ele diz uma coisa só, observada pelo apresentador: a execução
     chegou ao fim, ou abortou por falta de certificado utilizável.
+
+    `provedor_de_certificados` atravessa sem ser interpretado. Omitido, a
+    aplicação usa o provedor do desktop — que é o que mantém este arquivo
+    utilizável fora da plataforma.
     """
     entrada = montar_entrada(params)
     validar_recurso(entrada.planilha)
@@ -85,13 +96,52 @@ def executar(params: dict, emitir_evento=None) -> dict:
     # primeiro efeito global — a policy do Chrome — acontece lá dentro.
     controle = exclusividade_host.adquirir()
     try:
-        app.executar(entrada, config, emitir_evento=emissor)
+        app.executar(entrada, config, emitir_evento=emissor,
+                     provedor_de_certificados=provedor_de_certificados)
     finally:
         # Fechar ESTE handle não libera o host por si: se o guardião ainda
         # mantiver o dele, o objeto continua existindo. É intencional.
         exclusividade_host.liberar(controle)
 
     return {"ok": not apresentador.abortou}
+
+
+def executar_no_save(ctx, emitir_evento=None) -> dict:
+    """A composição da plataforma — e o único lugar onde `ctx` existe.
+
+        ctx.input_file → espaço da execução → ctx.secrets.cert → provedor → app
+
+    O `ctx` MORRE AQUI. A aplicação recebe um caminho de arquivo e um objeto que
+    responde três perguntas sobre certificados; ela não sabe que existe uma
+    plataforma, e é isso que a deixa rodar pelo `local.py` e ser testada sem
+    nada instalado.
+
+    POR QUE A PLANILHA É LIDA DUAS VEZES. O cofre não é enumerável: não dá para
+    perguntar "quais certificados existem", só "me dê o chamado X". Então os
+    aliases precisam sair da planilha antes de a execução começar — e saem pela
+    mesma porta que a execução usa, `planilha.aliases_de_certificado`, para que
+    não exista um segundo entendimento de qual coluna guarda o certificado aqui
+    na borda.
+
+    O QUE AINDA NÃO ESTÁ AQUI, e é deliberado: a chave do Gemini continua vindo
+    do ambiente do processo, e não do cofre; e não há checkpoint, artefato nem
+    `ctx.output`. As duas coisas são de fases próprias, e antecipá-las faria
+    este arquivo parecer pronto sem estar.
+    """
+    anexo = ctx.input_file("planilha")
+
+    with espaco_de_trabalho.abrir(anexo) as espaco:
+        # A CÓPIA é o que a execução processa. O anexo que a plataforma montou
+        # não é nosso para sobrescrever, e a aplicação grava na planilha o tempo
+        # todo — é assim que ela retoma de onde parou.
+        de_trabalho = str(espaco.planilha)
+        provedor = CertificadosDoCofre(
+            planilha.aliases_de_certificado(de_trabalho),
+            ctx.secrets.cert,
+            espaco.raiz / "certificados",
+        )
+        return executar({"planilha": de_trabalho}, emitir_evento=emitir_evento,
+                        provedor_de_certificados=provedor)
 
 
 __all__ = [
@@ -101,4 +151,5 @@ __all__ = [
     "FalhaAoVerificarExclusividade",
     "PlanilhaIndisponivel",
     "executar",
+    "executar_no_save",
 ]

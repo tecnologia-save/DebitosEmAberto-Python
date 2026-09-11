@@ -313,6 +313,27 @@ def certificados_dos_itens(itens: list[ItemPendente]) -> list[tuple[str, int]]:
     return list(contagem.items())
 
 
+def aliases_de_certificado(caminho: str) -> tuple[str, ...]:
+    """Os nomes de certificado que ESTA planilha pede, sem repetir.
+
+    Existe para quem precisa BUSCAR os certificados antes de a execucao comecar.
+    Um repositorio de certificados pode nao ser enumeravel — nao da para
+    perguntar "quais existem", so "me de o chamado X" —, e entao a lista precisa
+    sair da planilha.
+
+    Le pela MESMA porta que a execucao usa, `ler_e_ordenar` + `itens_pendentes`.
+    Sem isso, quem chama precisaria saber que o certificado mora na coluna C, e
+    passaria a existir um segundo entendimento do formato da planilha fora daqui.
+
+    Linhas sem CNPJ utilizavel ficam de fora: elas nao chegam a pedir
+    certificado nenhum.
+    """
+    df, _ = ler_e_ordenar(caminho)
+    itens = [item for item in itens_pendentes(df) if item.utilizavel]
+    return tuple(nome for nome, _ in certificados_dos_itens(itens)
+                 if nome and nome.strip() and nome.strip().lower() != "nan")
+
+
 # ── O recurso stateful ────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)

@@ -36,7 +36,8 @@ def app_espiao(monkeypatch):
     """Captura o que chegou a `app.executar`, sem executar nada."""
     chamadas = []
 
-    def executar(entrada, config_captcha, emitir_evento=None):
+    def executar(entrada, config_captcha, emitir_evento=None,
+                 provedor_de_certificados=None):
         chamadas.append({"entrada": entrada, "config": config_captcha,
                          "emissor": emitir_evento})
 
@@ -103,7 +104,8 @@ def test_runner_reporta_aborto_por_certificado(planilha, monkeypatch, capsys):
     OBSERVOU passar pelo seam, e nao de um resumo inventado."""
     monkeypatch.setenv("GEMINI_API_KEY", CHAVE)
 
-    def executar(entrada, config, emitir_evento=None):
+    def executar(entrada, config, emitir_evento=None,
+                 provedor_de_certificados=None):
         emitir_evento(EventoOperacional(eventos.CERTIFICADOS_INDISPONIVEIS))
 
     monkeypatch.setattr(runner.app, "executar", executar)
@@ -115,7 +117,8 @@ def test_runner_reporta_aborto_por_certificado(planilha, monkeypatch, capsys):
 def test_runner_apresenta_eventos_em_tempo_real(planilha, monkeypatch, capsys):
     monkeypatch.setenv("GEMINI_API_KEY", CHAVE)
 
-    def executar(entrada, config, emitir_evento=None):
+    def executar(entrada, config, emitir_evento=None,
+                 provedor_de_certificados=None):
         emitir_evento(EventoOperacional(eventos.ITEM_INICIADO, posicao=0, total=3))
         assert "1/3" in capsys.readouterr().out, "saiu ANTES do fim da execução"
 
@@ -378,10 +381,18 @@ def test_o_local_nao_importa_tecnologia(proibido):
 
 @pytest.mark.parametrize("arquivo", ["runner.py", "local.py"])
 def test_os_adapters_nao_contem_regra(arquivo):
-    """Nem laco de CNPJ, nem seletor, nem retry, nem coluna de planilha."""
+    """Nem laco de CNPJ, nem seletor, nem retry, nem coluna de planilha.
+
+    `certificado` saiu da lista, e a razao e precisa: COMPOR o provedor de
+    certificados e trabalho de adapter — e a unica coisa que muda entre rodar na
+    plataforma e rodar no desktop. O que continua proibido e DECIDIR sobre
+    certificado, e isso e o que as outras palavras guardam: `policy` barra a
+    configuracao do Windows, e `cnpj` barra a selecao por linha. Nenhuma regra
+    de certificado cabe num adapter sem tropecar nelas.
+    """
     codigo = _codigo_sem_docstrings(RAIZ / arquivo).lower()
 
-    for regra in ("xpath", "locator", "cnpj", "certificado", "policy", "retry",
+    for regra in ("xpath", "locator", "cnpj", "policy", "retry",
                   "retentativa", "col_", "aba_", "iterrows", "while "):
         assert regra not in codigo, f"{arquivo} contém '{regra}'"
 
