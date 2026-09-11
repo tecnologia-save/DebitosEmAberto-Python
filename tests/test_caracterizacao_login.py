@@ -67,7 +67,17 @@ def test_a_os_parametros_e_seus_defaults():
 
 def test_b_debitosemaberto_usa_somente_o_modo_windows_store():
     """LEGACY_LIBRARY_CAPABILITY: cert_name, cert_pfx_path e cert_pfx_passphrase
-    existem para o modo .pfx, e main.py nunca os informa."""
+    existem para o modo .pfx, e main.py nunca os informa.
+
+    O FATO MUDOU NA D4, E DE PROPOSITO. O modo .pfx deixou de ser capacidade
+    dormente: a plataforma nao tem Certificate Store, e o certificado chega do
+    cofre como arquivo. `cert_pfx_path`/`cert_pfx_passphrase` passam a ser
+    informados — e continuam chegando VAZIOS pelo caminho do desktop, que e o
+    que este teste ainda guarda.
+
+    `cert_name` continua sem nunca ser informado: e a busca do fork em
+    `C:\Certificados`, que nenhum dos dois caminhos usa.
+    """
     import ast
     import pathlib
 
@@ -100,8 +110,10 @@ def test_b_debitosemaberto_usa_somente_o_modo_windows_store():
     )
     nomeados = {kw.arg for kw in chamada.keywords}
     assert nomeados == {
-        "cert_subject_cn", "cert_serial", "policy_ok", "project_dir", "gemini_api_key"
+        "cert_subject_cn", "cert_serial", "cert_pfx_path", "cert_pfx_passphrase",
+        "policy_ok", "project_dir", "gemini_api_key"
     }
+    assert "cert_name" not in nomeados, "a busca em C:/Certificados segue dormente"
     assert not chamada.args, "tudo por nome"
 
 

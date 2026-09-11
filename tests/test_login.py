@@ -90,6 +90,11 @@ def test_o_certificado_e_config_chegam_ao_fork():
     assert fork.recebido == {
         "cert_subject_cn": CN,
         "cert_serial": SERIAL,
+        # Certificado instalado na maquina: nao ha arquivo a apresentar, e o
+        # fork decide usar o Windows Store justamente por `cert_subject_cn`
+        # estar preenchido.
+        "cert_pfx_path": None,
+        "cert_pfx_passphrase": None,
         "policy_ok": True,
         "project_dir": PERFIL,
         "gemini_api_key": CHAVE,
@@ -114,7 +119,8 @@ def test_aa_o_login_so_recebe_se_pode_confiar_no_auto_select():
 
     assert fork.recebido["policy_ok"] is False
     assert set(fork.recebido) == {
-        "cert_subject_cn", "cert_serial", "policy_ok", "project_dir", "gemini_api_key"
+        "cert_subject_cn", "cert_serial", "cert_pfx_path", "cert_pfx_passphrase",
+        "policy_ok", "project_dir", "gemini_api_key"
     }
 
 
@@ -235,3 +241,31 @@ def test_retorno_com_forma_errada_nao_e_disfarcado():
     """Se o fork devolver algo que nao e o trio, isso e bug — e sobe."""
     with pytest.raises((TypeError, ValueError)):
         autenticar(CERT, CONFIG, True, login_que_devolve(("so", "dois")))
+
+
+def test_certificado_de_ARQUIVO_chega_ao_fork_sem_subject_cn():
+    """A outra procedencia: o certificado veio como arquivo, e nao instalado.
+
+    `cert_subject_cn` vazio e o que faz o fork NAO procurar no Windows Store —
+    ele decide por `bool(cert_subject_cn)`. Com os dois preenchidos, a maquina
+    escolheria um certificado instalado em vez do arquivo que recebemos.
+    """
+    fork = login_que_devolve(trio())
+    do_arquivo = Certificado(subject_cn="", serial="",
+                             pfx_path="C:/chao-da-execucao/0.pfx",
+                             pfx_senha="senha-ficticia")
+
+    autenticar(do_arquivo, CONFIG, True, fork)
+
+    assert fork.recebido["cert_subject_cn"] == ""
+    assert fork.recebido["cert_pfx_path"] == "C:/chao-da-execucao/0.pfx"
+    assert fork.recebido["cert_pfx_passphrase"] == "senha-ficticia"
+
+
+def test_a_senha_do_certificado_nao_aparece_no_repr():
+    """Defesa ADICIONAL, e nao garantia: quem imprimir o campo direto continua
+    imprimindo. A garantia e nao haver ponto que o imprima."""
+    certificado = Certificado(subject_cn="", pfx_path="x.pfx",
+                              pfx_senha="senha-ficticia-de-teste")
+
+    assert "senha-ficticia-de-teste" not in repr(certificado)

@@ -70,10 +70,31 @@ class Certificado:
 
     Muda a cada troca de certificado dentro da mesma execução, então não pertence
     a `ConfigLogin`.
+
+    DUAS PROCEDÊNCIAS, E ELAS SE EXCLUEM
+    ------------------------------------
+    `subject_cn` identifica um certificado INSTALADO na máquina: o Chrome o
+    escolhe sozinho, via policy, e o material nunca passa por nós. É o caminho
+    do desktop.
+
+    `pfx_path`/`pfx_senha` apontam para um arquivo que alguém nos entregou — o
+    cofre da plataforma, por exemplo — e que o navegador recebe como
+    `client_certificates`. É o caminho da plataforma, onde não há Certificate
+    Store para consultar.
+
+    Um certificado do cofre precisa de `subject_cn` VAZIO: o fork decide usar o
+    Windows Store por `bool(cert_subject_cn)`, e preencher os dois faria a
+    máquina escolher um certificado instalado em vez do que veio no arquivo.
+
+    A senha não entra no `repr`. Isso é DEFESA ADICIONAL, e não garantia: quem
+    imprimir o campo direto continua imprimindo. A garantia é não haver ponto
+    que o imprima.
     """
 
     subject_cn: str
     serial: str = ""
+    pfx_path: str = ""
+    pfx_senha: str = field(default="", repr=False)
 
 
 @dataclass
@@ -153,6 +174,12 @@ def autenticar(
     recursos = fazer_login(
         cert_subject_cn=certificado.subject_cn,
         cert_serial=certificado.serial,
+        # `None`, e não string vazia: o fork trata ausência por falsidade, e
+        # mandar `""` significa a mesma coisa — mas `None` é o que ele declara.
+        # Com `subject_cn` preenchido (desktop) estes dois chegam vazios e o
+        # ramo do Windows Store é o mesmo de sempre.
+        cert_pfx_path=certificado.pfx_path or None,
+        cert_pfx_passphrase=certificado.pfx_senha or None,
         policy_ok=auto_select_disponivel,
         project_dir=config.diretorio_perfil,
         gemini_api_key=config.gemini_api_key,
