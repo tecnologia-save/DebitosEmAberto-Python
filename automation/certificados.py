@@ -25,7 +25,7 @@ teste roda em qualquer sistema operacional.
 """
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from automation.domain import ResultadoDaBusca
 from automation.login import Certificado
@@ -43,8 +43,13 @@ class FalhaAoLerCertificados(Exception):
     """
 
 
+@runtime_checkable
 class ProvedorDeCertificados(Protocol):
     """O contrato minimo que a aplicacao consome.
+
+    `runtime_checkable` para que um adapter possa PROVAR conformidade num teste.
+    Ele confere a presenca dos metodos, e nao as assinaturas — e isso basta: o
+    que quebraria de verdade e um provedor sem `resolver`.
 
     Tres metodos porque sao tres perguntas distintas, e nenhuma delas cabe nas
     outras: preparar o catalogo custa (PowerShell, ou cofre) e acontece uma vez;
