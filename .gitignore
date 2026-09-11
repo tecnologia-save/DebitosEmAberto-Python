@@ -54,6 +54,14 @@ desktop.ini
 .env.*
 !.env.example
 
+# Planilhas de execução na RAIZ: a planilha que o operador processa tem CNPJ e
+# razão social de cliente dentro, e ela vive aqui durante o uso. A regra é só da
+# raiz, e não recursiva, para não bloquear fixtures de teste.
+/*.xlsx
+/*.xlsm
+/*.xls
+!/PLANILHA MODELO.xlsx
+
 # Log e diagnostico do guardiao da policy de certificado (runtime)
 _guard_log.txt
 _wincert_erro.log
