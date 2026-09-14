@@ -14,20 +14,19 @@ Irmão de `local.py`: os dois chamam `automation.app.executar` e nenhum importa 
 outro. Se o local dependesse do adapter da plataforma, rodar na sua máquina
 passaria a depender da plataforma.
 
-PUBLICAÇÃO. A plataforma descobre a automação por um decorator do SDK, aplicado
-a `main`. Ele NÃO vem escrito aqui de propósito: cada automação declara os
-próprios parâmetros, e um decorator herdado sem querer seria uma declaração
-falsa — que não se vê. Ao publicar, descomente e preencha:
-
-    # import autohub
-    #
-    # @autohub.task(id="AUT-XXXX", params=[...], inputs=[...])
-    # def main(ctx):
-    #     return executar(ctx.params)
+PUBLICAÇÃO. A plataforma descobre a task pelo decorator do SDK aplicado a
+`main`. O contrato não é template: é o do runner histórico desta automação e o
+da documentação do próprio SDK instalado no agente. `id` e `retries` são
+literais porque o describe estático do SDK lê o decorator como árvore, sem
+importar nada, e descarta o que for computado. Nenhum `params` e nenhum
+`inputs` são declarados: o único contrato comprovado da entrada é
+`ctx.input_file("planilha")`, lido em `executar_no_save`.
 """
 from __future__ import annotations
 
 import os
+
+import autohub_sdk as autohub
 
 from automation import (
     app,
@@ -82,7 +81,8 @@ def executar(params: dict, emitir_evento=None, provedor_de_certificados=None,
     """Traduz o disparo, roda a automação e devolve o contrato externo.
 
     Testável sem plataforma: recebe um dicionário comum. É esta função que
-    `main` chama depois de extrair `ctx.params`, e é ela que os testes exercem.
+    `executar_no_save` chama com a cópia de trabalho, e é ela que os testes
+    exercem.
 
     `emitir_evento` existe para os testes observarem o que atravessou o seam sem
     capturar stdout. Omitido, a apresentação padrão escreve no stdout — que é o
@@ -153,8 +153,8 @@ def executar_no_save(ctx, emitir_evento=None) -> dict:
     carrega segredo — a planilha é a mesma que o operador enviou, com as colunas
     de progresso preenchidas.
 
-    O QUE AINDA NÃO ESTÁ AQUI: nenhuma task registrada. Publicar é de outra
-    fase, e um decorator escrito antes da hora seria uma declaração falsa.
+    QUEM CHAMA é `main`, a task registrada logo abaixo, e ela não acrescenta
+    nada: o que a execução faz na plataforma está inteiro aqui.
     """
     config = ConfigCaptcha(api_key=ctx.secrets.get(ALIAS_DO_GEMINI).reveal())
     config.validar()
@@ -200,6 +200,26 @@ def executar_no_save(ctx, emitir_evento=None) -> dict:
         return resultado
 
 
+@autohub.task(id="AUT-DEBITOS-ABERTO", retries=0)
+def main(ctx) -> dict:
+    """A task. Entrega o `ctx` à boundary, e nada além disso.
+
+    `AUT-DEBITOS-ABERTO` é o id da TASK, o mesmo do runner histórico desta
+    automação. `AUT-0071` é o id da AUTOMAÇÃO na plataforma — os dois não são
+    intercambiáveis.
+
+    `retries=0` escrito, e não herdado do default do SDK: a execução autentica
+    no portal e grava a planilha, e nada prova que repeti-la inteira seja
+    inofensivo. Uma retransmissão automática refaria efeitos externos sem
+    ninguém pedir.
+
+    O retorno é o mesmo objeto que `executar_no_save` entrega a `ctx.output`. O
+    SDK prefere o output e usa o retorno só na falta dele; os dois dizem a mesma
+    coisa, e nenhum é reinterpretado aqui.
+    """
+    return executar_no_save(ctx)
+
+
 __all__ = [
     "ALIAS_DO_GEMINI",
     "ConfiguracaoInvalida",
@@ -209,4 +229,11 @@ __all__ = [
     "PlanilhaIndisponivel",
     "executar",
     "executar_no_save",
+    "main",
 ]
+
+
+# O agente executa este arquivo como script. `autohub.run` monta o resultado da
+# execução — sucesso ou erro — e o emite para a plataforma; nada aqui repete isso.
+if __name__ == "__main__":
+    autohub.run(main)

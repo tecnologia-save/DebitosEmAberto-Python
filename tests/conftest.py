@@ -15,8 +15,39 @@ dado; a suite ficou parada esperando alguem responder.
 
 O duble ficou no lugar certo. Esta guarda existe para que o proximo caso desses
 falhe como TESTE, e nao como janela.
+
+O SDK DA PLATAFORMA E O DE VERDADE
+----------------------------------
+`runner.py` importa `autohub_sdk`, e o SDK nao e dependencia de `pip`: o agente
+o injeta em runtime, com `PYTHONPATH` apontando para o diretorio onde o
+instalador o colocou. A suite faz o mesmo, e so isso — nao ha copia do SDK, nao
+ha duble com o nome dele e nao ha versao fixada aqui.
+
+`AUTOHUB_SDK_DIR` aponta para outro diretorio quando o agente nao esta no lugar
+padrao. Sem SDK nenhum, `import runner` falha, e deve falhar: o entrypoint da
+plataforma nao existe sem ele, e um duble esconderia exatamente isso.
 """
+import os
+import sys
+from pathlib import Path
+
 import pytest
+
+
+def _diretorio_do_sdk() -> Path | None:
+    explicito = os.environ.get("AUTOHUB_SDK_DIR")
+    if explicito:
+        return Path(explicito)
+    # O `$Dir` padrao do instalador do agente.
+    base = os.environ.get("LOCALAPPDATA")
+    return Path(base) / "autohub-edge" if base else None
+
+
+_SDK = _diretorio_do_sdk()
+if _SDK is not None and (_SDK / "autohub_sdk" / "__init__.py").is_file():
+    # No FIM do caminho: nada do diretorio do agente encobre um modulo do
+    # projeto ou da biblioteca padrao.
+    sys.path.append(str(_SDK))
 
 
 class ElevacaoRealNaSuite(AssertionError):

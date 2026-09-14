@@ -469,15 +469,13 @@ def test_a_automacao_roda_fora_da_plataforma():
     assert "if __name__" in (RAIZ / "local.py").read_text(encoding="utf-8")
 
 
-def test_o_sdk_da_plataforma_nao_esta_escrito_em_lugar_nenhum():
-    """O decorator vem comentado de propósito: um decorator herdado sem querer
-    seria uma declaração falsa de parâmetros — e não se vê."""
-    fonte = (RAIZ / "runner.py").read_text(encoding="utf-8")
-    arvore = ast.parse(fonte)
-
-    assert "autohub" not in _importados(RAIZ / "runner.py")
-    assert not [n for n in ast.walk(arvore)
-                if isinstance(n, ast.FunctionDef) and n.decorator_list]
+def test_so_o_runner_conhece_o_sdk_da_plataforma():
+    """O decorator saiu do comentario quando o contrato da task foi comprovado
+    (D8.1-A) — e saiu so no runner. O `local.py` roda numa maquina sem
+    plataforma nenhuma: se importasse o SDK, deixaria de rodar ali. O contrato
+    da task em si e conferido em `test_entrypoint_save.py`."""
+    assert "autohub_sdk" in _importados(RAIZ / "runner.py")
+    assert not ({"autohub_sdk", "autohub"} & _importados(RAIZ / "local.py"))
 
 
 def test_o_manifest_de_runtime_existe():

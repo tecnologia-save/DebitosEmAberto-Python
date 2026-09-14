@@ -636,3 +636,29 @@ def test_o_anexo_original_nao_entra_no_que_e_publicado(tmp_path, _sem_execucao_r
     runner.executar_no_save(ctx)
 
     assert caminho.read_bytes() == antes, "o anexo continua intocado"
+
+
+# ── a task da plataforma ─────────────────────────────────────────────────────
+
+def test_a_task_chega_a_boundary_sem_pedir_nada_a_ninguem(tmp_path, monkeypatch,
+                                                          _sem_execucao_real):
+    """`main` e o que o agente chama. Pelo caminho inteiro ate a aplicacao nada
+    pergunta nada: a execucao roda sem ninguem diante dela, e um `input()`
+    ficaria esperando quem nao existe.
+
+    A mesma chamada prova que a aplicacao roda UMA vez e recebe o provedor do
+    cofre, e nao o do Certificate Store."""
+    def ninguem_responde(*_a, **_k):
+        raise AssertionError("o caminho da plataforma pediu interacao manual")
+
+    monkeypatch.setattr("builtins.input", ninguem_responde)
+    caminho = _planilha(tmp_path)
+    ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
+
+    resultado = runner.main(ctx)
+
+    (_, kwargs), = _sem_execucao_real
+    assert isinstance(kwargs["provedor_de_certificados"], CertificadosDoCofre)
+    assert ctx.entradas_pedidas == ["planilha"]
+    assert ctx.saidas == [resultado]
+    assert len(ctx.artefatos) == 1
