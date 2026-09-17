@@ -626,6 +626,22 @@ def _percorrer(execucao: _Execucao, itens: list) -> None:
 
 # ── A fronteira publica ───────────────────────────────────────────────────────
 
+def aliases_necessarios(caminho: str) -> tuple[str, ...]:
+    """Os certificados que UMA execucao desta planilha vai pedir.
+
+    Existe para quem monta a execucao de fora: na plataforma os certificados
+    precisam ser buscados no cofre ANTES de comecar, porque o cofre nao e
+    enumeravel — ele so responde "me de o chamado X".
+
+    Mora aqui, e nao na borda, por um motivo so: a resposta depende de QUAIS
+    LINHAS serao processadas, e quem sabe isso e a aplicacao. Se a borda
+    escolhesse a regra de status por conta propria, existiriam duas respostas
+    para a mesma pergunta — e no dia em que divergissem o cofre entregaria o
+    conjunto errado, sem ninguem perceber.
+    """
+    return planilha.aliases_de_certificado(caminho, status_portal.status_encerra_linha)
+
+
 def executar(
     entrada: EntradaDebitosEmAberto,
     config_captcha: ConfigCaptcha,

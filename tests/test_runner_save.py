@@ -11,16 +11,31 @@ import pathlib
 import pytest
 from planilhas_sinteticas import criar_planilha
 
-import runner
 from automation import espaco_de_trabalho
 from automation.eventos import EventoOperacional
 from certificados_do_cofre import CertificadosDoCofre
+
+# O entrypoint da plataforma importa `autohub_sdk`, que o agente injeta em
+# runtime (ver `tests/conftest.py`). Sem o agente instalado esse import falha, e
+# deixar a COLETA falhar levaria junto as guardas de arquitetura deste
+# arquivo. Nada e fingido: quem precisa do runtime do Save se declara
+# PULADO, com motivo visivel.
+try:
+    import runner
+except ModuleNotFoundError:  # pragma: no cover — so acontece sem o agente
+    runner = None
+
+precisa_do_sdk = pytest.mark.skipif(
+    runner is None,
+    reason="autohub_sdk ausente: o SDK e injetado pelo agente em runtime",
+)
+
 
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
 
 # A aplicacao de verdade, guardada ANTES de a suite substitui-la: os testes de
 # zero-efeito precisam do comportamento real com uma planilha sem item pendente.
-APP_EXECUTAR_REAL = runner.app.executar
+APP_EXECUTAR_REAL = runner.app.executar if runner is not None else None
 CNPJ_FICTICIO = "11111111000191"
 STATUS_CONCLUIDO = "Concluído"
 STATUS_SEM_PROCESSOS = "Sem Processos"
@@ -105,6 +120,10 @@ def _sem_execucao_real(monkeypatch):
     abriria navegador e falaria com o portal.
     """
     chamadas = []
+    if runner is None:
+        # Sem SDK so rodam as guardas estruturais deste arquivo, e elas nao
+        # executam a aplicacao. As demais estao marcadas com `precisa_do_sdk`.
+        return chamadas
     monkeypatch.setattr(runner.app, "executar",
                         lambda *a, **k: chamadas.append((a, k)))
     monkeypatch.setattr(runner.exclusividade_host, "adquirir", lambda: "lease-falso")
@@ -133,14 +152,14 @@ def _planilha(tmp_path, linhas=None):
 
 
 def _certificados_da_planilha(caminho):
-    from automation.planilha import aliases_de_certificado
-    from automation.status_portal import status_encerra_linha
+    from automation.app import aliases_necessarios
 
-    return aliases_de_certificado(str(caminho), status_encerra_linha)
+    return aliases_necessarios(str(caminho))
 
 
 # ── a entrada vem da plataforma ──────────────────────────────────────────────
 
+@precisa_do_sdk
 def test_a_planilha_e_pedida_por_input_file(tmp_path, _sem_execucao_real):
     caminho = _planilha(tmp_path)
     ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
@@ -150,6 +169,7 @@ def test_a_planilha_e_pedida_por_input_file(tmp_path, _sem_execucao_real):
     assert ctx.entradas_pedidas == ["planilha"]
 
 
+@precisa_do_sdk
 def test_o_anexo_recebido_NAO_e_modificado(tmp_path, _sem_execucao_real):
     caminho = _planilha(tmp_path)
     antes = caminho.read_bytes()
@@ -160,6 +180,7 @@ def test_o_anexo_recebido_NAO_e_modificado(tmp_path, _sem_execucao_real):
     assert caminho.read_bytes() == antes
 
 
+@precisa_do_sdk
 def test_a_aplicacao_recebe_a_COPIA_de_trabalho(tmp_path, _sem_execucao_real):
     caminho = _planilha(tmp_path)
     ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
@@ -172,6 +193,7 @@ def test_a_aplicacao_recebe_a_COPIA_de_trabalho(tmp_path, _sem_execucao_real):
     assert pathlib.Path(entrada.planilha) != caminho
 
 
+@precisa_do_sdk
 def test_o_chao_da_execucao_some_no_fim(tmp_path, _sem_execucao_real):
     caminho = _planilha(tmp_path)
     ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
@@ -182,6 +204,7 @@ def test_o_chao_da_execucao_some_no_fim(tmp_path, _sem_execucao_real):
     assert not pathlib.Path(args[0].planilha).exists()
 
 
+@precisa_do_sdk
 def test_o_chao_some_TAMBEM_quando_a_execucao_morre(tmp_path, monkeypatch):
     caminho = _planilha(tmp_path)
     ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
@@ -201,6 +224,7 @@ def test_o_chao_some_TAMBEM_quando_a_execucao_morre(tmp_path, monkeypatch):
 
 # ── o provedor do cofre e composto aqui ──────────────────────────────────────
 
+@precisa_do_sdk
 def test_a_aplicacao_recebe_o_PROVEDOR_do_cofre(tmp_path, _sem_execucao_real):
     caminho = _planilha(tmp_path)
     ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
@@ -211,6 +235,7 @@ def test_a_aplicacao_recebe_o_PROVEDOR_do_cofre(tmp_path, _sem_execucao_real):
     assert isinstance(kwargs["provedor_de_certificados"], CertificadosDoCofre)
 
 
+@precisa_do_sdk
 def test_o_resolvedor_do_provedor_e_o_ctx_secrets_cert(tmp_path, _sem_execucao_real):
     caminho = _planilha(tmp_path)
     aliases = _certificados_da_planilha(caminho)
@@ -223,6 +248,7 @@ def test_o_resolvedor_do_provedor_e_o_ctx_secrets_cert(tmp_path, _sem_execucao_r
     assert sorted(set(ctx.secrets.pedidos)) == sorted(set(aliases))
 
 
+@precisa_do_sdk
 def test_o_ctx_NAO_chega_a_aplicacao(tmp_path, _sem_execucao_real):
     """Se `ctx` atravessasse, a aplicacao passaria a depender da plataforma —
     e o `local.py` deixaria de conseguir roda-la."""
@@ -237,6 +263,7 @@ def test_o_ctx_NAO_chega_a_aplicacao(tmp_path, _sem_execucao_real):
     assert not any(isinstance(v, CtxFalso) for v in (*args, *kwargs.values()))
 
 
+@precisa_do_sdk
 def test_o_pfx_vai_para_o_chao_da_execucao(tmp_path, _sem_execucao_real):
     caminho = _planilha(tmp_path)
     aliases = _certificados_da_planilha(caminho)
@@ -259,6 +286,7 @@ def test_o_pfx_vai_para_o_chao_da_execucao(tmp_path, _sem_execucao_real):
 
 # ── o certificado continua sendo por linha ───────────────────────────────────
 
+@precisa_do_sdk
 def test_aliases_diferentes_produzem_certificados_diferentes(tmp_path, _sem_execucao_real):
     from planilhas_sinteticas import ALFA, BETA
 
@@ -282,6 +310,7 @@ def test_aliases_diferentes_produzem_certificados_diferentes(tmp_path, _sem_exec
     assert len(set(vistos.values())) == len(aliases)
 
 
+@precisa_do_sdk
 def test_o_alias_repetido_e_baixado_uma_vez(tmp_path, _sem_execucao_real):
     from planilhas_sinteticas import ALFA
 
@@ -358,6 +387,7 @@ def test_o_contrato_de_entrada_e_so_a_planilha():
 
 # ── a chave do Gemini vem do cofre ───────────────────────────────────────────
 
+@precisa_do_sdk
 def test_a_chave_do_gemini_vem_do_COFRE_e_nao_do_ambiente(tmp_path, monkeypatch,
                                                           _sem_execucao_real):
     """Sem variavel de ambiente nenhuma, o caminho da plataforma continua
@@ -374,12 +404,14 @@ def test_a_chave_do_gemini_vem_do_COFRE_e_nao_do_ambiente(tmp_path, monkeypatch,
     assert args[1].api_key == CHAVE_FICTICIA
 
 
+@precisa_do_sdk
 def test_o_alias_pedido_e_o_CANONICO():
     """Nao o `Gemini_KEY` da automacao irma: aquilo e sonda de uma regressao do
     resolver da plataforma, e copiar propagaria o defeito."""
     assert runner.ALIAS_DO_GEMINI == "gemini_api_key"
 
 
+@precisa_do_sdk
 def test_a_chave_nao_aparece_no_repr_da_config(tmp_path, _sem_execucao_real):
     caminho = _planilha(tmp_path)
     ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
@@ -390,6 +422,7 @@ def test_a_chave_nao_aparece_no_repr_da_config(tmp_path, _sem_execucao_real):
     assert CHAVE_FICTICIA not in repr(args[1])
 
 
+@precisa_do_sdk
 def test_chave_ausente_para_ANTES_de_qualquer_efeito(tmp_path, monkeypatch,
                                                      _sem_execucao_real):
     """Configuracao invalida nao se resolve repetindo, e o certificado nem
@@ -407,6 +440,7 @@ def test_chave_ausente_para_ANTES_de_qualquer_efeito(tmp_path, monkeypatch,
     assert _sem_execucao_real == []
 
 
+@precisa_do_sdk
 def test_o_desktop_continua_lendo_a_chave_do_AMBIENTE(tmp_path, monkeypatch,
                                                       _sem_execucao_real):
     """`executar` sem `config` e o caminho de quem roda sem plataforma."""
@@ -457,6 +491,7 @@ def test_o_login_ja_tem_seam_e_ele_nao_precisa_de_navegador():
     assert recebido["cert_subject_cn"] == "", "sem Store no caminho do arquivo"
 
 
+@precisa_do_sdk
 def test_o_certificado_do_cofre_NUNCA_cai_no_windows_store(tmp_path,
                                                            _sem_execucao_real):
     """O fork decide usar o Store por `bool(cert_subject_cn)`. Se o provedor do
@@ -489,6 +524,7 @@ def test_o_dominio_nao_conhece_navegador_nem_gemini():
 
 # ── perfil do navegador por execucao ─────────────────────────────────────────
 
+@precisa_do_sdk
 def test_o_chao_da_execucao_chega_a_aplicacao(tmp_path, _sem_execucao_real):
     """Dele nasce o perfil do navegador — e a aplicação não sabe disso."""
     caminho = _planilha(tmp_path)
@@ -502,6 +538,7 @@ def test_o_chao_da_execucao_chega_a_aplicacao(tmp_path, _sem_execucao_real):
     assert chao != RAIZ, "nunca a raiz do repositorio"
 
 
+@precisa_do_sdk
 def test_duas_execucoes_recebem_CHAOS_DIFERENTES(tmp_path, _sem_execucao_real):
     caminho = _planilha(tmp_path)
     aliases = _certificados_da_planilha(caminho)
@@ -513,6 +550,7 @@ def test_duas_execucoes_recebem_CHAOS_DIFERENTES(tmp_path, _sem_execucao_real):
     assert a["diretorio_da_execucao"] != b["diretorio_da_execucao"]
 
 
+@precisa_do_sdk
 def test_o_chao_e_o_perfil_somem_com_a_execucao(tmp_path, _sem_execucao_real):
     caminho = _planilha(tmp_path)
     ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
@@ -523,6 +561,7 @@ def test_o_chao_e_o_perfil_somem_com_a_execucao(tmp_path, _sem_execucao_real):
     assert not pathlib.Path(kwargs["diretorio_da_execucao"]).exists()
 
 
+@precisa_do_sdk
 def test_o_desktop_continua_com_o_diretorio_de_sempre(tmp_path, _sem_execucao_real,
                                                       monkeypatch):
     """`executar` sem chão é o caminho de quem roda sem plataforma."""
@@ -548,6 +587,7 @@ def test_a_fiacao_deriva_o_perfil_do_chao_recebido():
 
 # ── checkpoint, artefato e output ────────────────────────────────────────────
 
+@precisa_do_sdk
 def test_cada_gravacao_da_planilha_vira_um_CHECKPOINT(tmp_path, _sem_execucao_real):
     """Sem thread e sem relógio: o checkpoint sai no instante em que o arquivo
     ficou consistente, que é o único em que lê-lo é seguro."""
@@ -572,6 +612,7 @@ def test_cada_gravacao_da_planilha_vira_um_CHECKPOINT(tmp_path, _sem_execucao_re
     assert kind == "spreadsheet"
 
 
+@precisa_do_sdk
 def test_evento_QUALQUER_nao_vira_checkpoint(tmp_path, _sem_execucao_real):
     from automation import eventos
 
@@ -587,6 +628,7 @@ def test_evento_QUALQUER_nao_vira_checkpoint(tmp_path, _sem_execucao_real):
     assert ctx.checkpoints == []
 
 
+@precisa_do_sdk
 def test_o_artefato_final_e_a_planilha(tmp_path, _sem_execucao_real):
     caminho = _planilha(tmp_path)
     ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
@@ -600,6 +642,7 @@ def test_o_artefato_final_e_a_planilha(tmp_path, _sem_execucao_real):
     assert conteudo.startswith(b"PK")
 
 
+@precisa_do_sdk
 def test_o_output_e_pequeno_e_sem_segredo(tmp_path, _sem_execucao_real):
     caminho = _planilha(tmp_path)
     ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
@@ -613,6 +656,7 @@ def test_o_output_e_pequeno_e_sem_segredo(tmp_path, _sem_execucao_real):
         assert segredo not in texto
 
 
+@precisa_do_sdk
 def test_execucao_que_morre_NAO_publica_artefato_mas_mantem_o_checkpoint(tmp_path,
                                                                          monkeypatch):
     """O checkpoint existe justamente para sobreviver ao que o artefato não
@@ -636,6 +680,7 @@ def test_execucao_que_morre_NAO_publica_artefato_mas_mantem_o_checkpoint(tmp_pat
     assert ctx.saidas == []
 
 
+@precisa_do_sdk
 def test_o_anexo_original_nao_entra_no_que_e_publicado(tmp_path, _sem_execucao_real):
     caminho = _planilha(tmp_path)
     antes = caminho.read_bytes()
@@ -648,6 +693,7 @@ def test_o_anexo_original_nao_entra_no_que_e_publicado(tmp_path, _sem_execucao_r
 
 # ── a task da plataforma ─────────────────────────────────────────────────────
 
+@precisa_do_sdk
 def test_a_task_chega_a_boundary_sem_pedir_nada_a_ninguem(tmp_path, monkeypatch,
                                                           _sem_execucao_real):
     """`main` e o que o agente chama. Pelo caminho inteiro ate a aplicacao nada
@@ -674,6 +720,7 @@ def test_a_task_chega_a_boundary_sem_pedir_nada_a_ninguem(tmp_path, monkeypatch,
 
 # ── zero item pendente: a borda nao pede nada ao cofre ───────────────────────
 
+@precisa_do_sdk
 def test_planilha_sem_item_pendente_nao_pede_certificado_ao_cofre(tmp_path, monkeypatch):
     """O desfecho legitimo da D8.1-B, pela borda inteira e com a aplicacao REAL.
 
@@ -695,6 +742,7 @@ def test_planilha_sem_item_pendente_nao_pede_certificado_ao_cofre(tmp_path, monk
     assert len(ctx.artefatos) == 1, "a planilha final continua sendo publicada"
 
 
+@precisa_do_sdk
 def test_linha_ja_concluida_nao_faz_o_cofre_entregar_o_pfx(tmp_path, monkeypatch):
     """ANTES: o alias saia de toda linha utilizavel, e o `.pfx` da linha
     concluida era baixado para o disco da execucao sem nada para processar."""

@@ -14,12 +14,27 @@ import pytest
 from planilhas_sinteticas import criar_planilha
 
 import local
-import runner
 from automation import app, apresentacao_eventos, eventos
 from automation.boundary import EntradaInvalida
 from automation.captcha import ConfiguracaoInvalida
 from automation.eventos import EventoOperacional
 from automation.planilha import PlanilhaIndisponivel
+
+# O entrypoint da plataforma importa `autohub_sdk`, que o agente injeta em
+# runtime (ver `tests/conftest.py`). Sem o agente instalado esse import falha, e
+# deixar a COLETA falhar levaria junto os testes do desktop e do dominio
+# deste arquivo. Nada e fingido: quem precisa do runtime do Save se declara
+# PULADO, com motivo visivel.
+try:
+    import runner
+except ModuleNotFoundError:  # pragma: no cover — so acontece sem o agente
+    runner = None
+
+precisa_do_sdk = pytest.mark.skipif(
+    runner is None,
+    reason="autohub_sdk ausente: o SDK e injetado pelo agente em runtime",
+)
+
 
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
 CHAVE = "AIzaSy-SENTINELA-FICTICIA-0000"
@@ -42,13 +57,19 @@ def app_espiao(monkeypatch):
                          "emissor": emitir_evento})
 
     monkeypatch.setattr(app, "executar", executar)
-    monkeypatch.setattr(runner.app, "executar", executar)
+    if runner is not None:
+        # `runner.app` e `local.app` sao o MESMO modulo de `app`: os tres patches
+        # sao redundantes de proposito. O do runner so existe quando o entrypoint
+        # da plataforma pode ser importado — senao os testes do `local.py`, que
+        # nao tem nada a ver com o Save, quebrariam por causa dele.
+        monkeypatch.setattr(runner.app, "executar", executar)
     monkeypatch.setattr(local.app, "executar", executar)
     return chamadas
 
 
 # ── §30 · runner ──────────────────────────────────────────────────────────────
 
+@precisa_do_sdk
 def test_runner_traduz_o_disparo_em_entrada_e_config(app_espiao, planilha, monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", CHAVE)
 
@@ -60,6 +81,7 @@ def test_runner_traduz_o_disparo_em_entrada_e_config(app_espiao, planilha, monke
     assert resultado == {"ok": True}
 
 
+@precisa_do_sdk
 def test_runner_rejeita_parametro_desconhecido(app_espiao, planilha, monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", CHAVE)
 
@@ -69,6 +91,7 @@ def test_runner_rejeita_parametro_desconhecido(app_espiao, planilha, monkeypatch
     assert app_espiao == [], "nada foi executado"
 
 
+@precisa_do_sdk
 def test_runner_rejeita_planilha_inexistente(app_espiao, monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", CHAVE)
 
@@ -78,6 +101,7 @@ def test_runner_rejeita_planilha_inexistente(app_espiao, monkeypatch):
     assert app_espiao == []
 
 
+@precisa_do_sdk
 def test_runner_sem_segredo_recusa_antes_de_executar(app_espiao, planilha, monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
@@ -88,6 +112,7 @@ def test_runner_sem_segredo_recusa_antes_de_executar(app_espiao, planilha, monke
     assert "SENTINELA" not in str(erro.value)
 
 
+@precisa_do_sdk
 def test_runner_nao_transforma_falha_fatal_em_sucesso(planilha, monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", CHAVE)
     monkeypatch.setattr(
@@ -99,6 +124,7 @@ def test_runner_nao_transforma_falha_fatal_em_sucesso(planilha, monkeypatch):
         runner.executar({"planilha": planilha})
 
 
+@precisa_do_sdk
 def test_runner_reporta_aborto_por_certificado(planilha, monkeypatch, capsys):
     """`executar` devolve None de proposito. O `ok` vem do que o apresentador
     OBSERVOU passar pelo seam, e nao de um resumo inventado."""
@@ -114,6 +140,7 @@ def test_runner_reporta_aborto_por_certificado(planilha, monkeypatch, capsys):
     assert "certificado" in capsys.readouterr().out.lower()
 
 
+@precisa_do_sdk
 def test_runner_apresenta_eventos_em_tempo_real(planilha, monkeypatch, capsys):
     monkeypatch.setenv("GEMINI_API_KEY", CHAVE)
 
@@ -404,6 +431,7 @@ def test_ambos_chamam_o_app_diretamente(arquivo):
     assert "app.executar(" in fonte
 
 
+@precisa_do_sdk
 def test_os_dois_adapters_chegam_ao_mesmo_app(app_espiao, planilha, monkeypatch):
     """§32: mesma entrada e mesma config produzem a MESMA chamada. A diferenca
     esta so na origem dos parametros e na apresentacao."""

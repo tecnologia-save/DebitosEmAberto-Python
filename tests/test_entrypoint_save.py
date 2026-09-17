@@ -19,13 +19,27 @@ import runpy
 import subprocess
 import sys
 
-import autohub_sdk
+import pytest
 
-import runner
+# O SDK e injetado pelo agente em runtime (ver `tests/conftest.py`). Sem ele, os
+# testes de ARVORE continuam valendo — o contrato da task esta ESCRITO no
+# arquivo, e e assim que o publish o le — e so os que importam o runner ou falam
+# com o SDK de verdade sao pulados.
+try:
+    import autohub_sdk
+
+    import runner
+except ModuleNotFoundError:  # pragma: no cover — so acontece sem o agente
+    autohub_sdk = runner = None
+
+precisa_do_sdk = pytest.mark.skipif(
+    autohub_sdk is None,
+    reason="autohub_sdk ausente: o SDK e injetado pelo agente em runtime",
+)
 
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
 RUNNER = RAIZ / "runner.py"
-SDK = pathlib.Path(autohub_sdk.__file__).resolve().parent
+SDK = pathlib.Path(autohub_sdk.__file__).resolve().parent if autohub_sdk else None
 
 ID_DA_TASK = "AUT-DEBITOS-ABERTO"
 DESCRICAO = {"t": "describe", "id": ID_DA_TASK, "retries": 0, "params": [], "inputs": []}
@@ -157,12 +171,14 @@ def test_a_task_e_main_com_o_id_historico_e_sem_retransmissao():
     assert type(argumentos["retries"]) is int, "`False` tambem e igual a 0"
 
 
+@precisa_do_sdk
 def test_o_sdk_real_guarda_os_mesmos_metadados():
     assert runner.main.__autohub__ == {
         "id": ID_DA_TASK, "retries": 0, "params": [], "inputs": [],
     }
 
 
+@precisa_do_sdk
 def test_o_describe_estatico_do_sdk_le_o_contrato():
     """O describe que o proprio SDK documenta para o edge: le `runner.py` como
     arvore, sem importar a automacao nem as dependencias dela."""
@@ -193,6 +209,7 @@ def test_o_corpo_de_main_e_UMA_delegacao():
     assert chamada.keywords == []
 
 
+@precisa_do_sdk
 def test_main_chama_a_boundary_UMA_vez_e_devolve_o_que_ela_devolve(monkeypatch):
     chamadas = []
     resultado = {"ok": True}
@@ -212,8 +229,8 @@ def test_main_chama_a_boundary_UMA_vez_e_devolve_o_que_ela_devolve(monkeypatch):
     monkeypatch.setattr(runner, "CertificadosDoCofre", proibido("CertificadosDoCofre"))
     monkeypatch.setattr(runner.app, "executar", proibido("app.executar"))
     monkeypatch.setattr(runner.espaco_de_trabalho, "abrir", proibido("abrir"))
-    monkeypatch.setattr(runner.planilha, "aliases_de_certificado",
-                        proibido("aliases_de_certificado"))
+    monkeypatch.setattr(runner.app, "aliases_necessarios",
+                        proibido("app.aliases_necessarios"))
 
     # Um `ctx` que nao responde a nada: se `main` pedisse planilha, segredo ou
     # certificado por conta propria, isto levantaria.
@@ -264,6 +281,7 @@ def test_nada_executa_ao_IMPORTAR_o_runner():
     assert soltas == []
 
 
+@precisa_do_sdk
 def test_como_script_o_sdk_recebe_main_UMA_vez(monkeypatch):
     recebidas = []
     monkeypatch.setattr(autohub_sdk, "run", recebidas.append)
@@ -276,6 +294,7 @@ def test_como_script_o_sdk_recebe_main_UMA_vez(monkeypatch):
     assert tarefa.__autohub__["id"] == ID_DA_TASK
 
 
+@precisa_do_sdk
 def test_importado_como_modulo_o_sdk_nao_e_acionado(monkeypatch):
     recebidas = []
     monkeypatch.setattr(autohub_sdk, "run", recebidas.append)
@@ -285,6 +304,7 @@ def test_importado_como_modulo_o_sdk_nao_e_acionado(monkeypatch):
     assert recebidas == []
 
 
+@precisa_do_sdk
 def test_disparado_como_o_agente_dispara_o_sdk_real_descreve_e_nao_roda_nada():
     """`python -u runner.py` na raiz, com o SDK por `PYTHONPATH`.
 

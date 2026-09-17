@@ -125,8 +125,8 @@ def _executar(caminho, provedor):
 
 
 def _aliases(caminho):
-    return planilha.aliases_de_certificado(str(caminho),
-                                           status_portal.status_encerra_linha)
+    """Pela mesma porta da borda: quem escolhe a regra e a aplicacao."""
+    return app.aliases_necessarios(str(caminho))
 
 
 # ── a planilha vazia atravessa o fluxo inteiro ───────────────────────────────
@@ -266,16 +266,25 @@ def test_o_workbook_lido_para_os_aliases_sai_fechado(tmp_path):
 
 # ── uma regra de status so ───────────────────────────────────────────────────
 
-def test_a_borda_usa_a_MESMA_regra_de_status_que_a_aplicacao():
-    """Duas regras diferentes fariam o cofre receber pedidos que a execucao nao
-    faz — ou faltar o certificado de uma linha que ela vai processar."""
-    arvore = ast.parse((RAIZ / "runner.py").read_text(encoding="utf-8"))
-    chamadas = [n for n in ast.walk(arvore)
-                if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-                and n.func.attr == "aliases_de_certificado"]
+def test_a_borda_PERGUNTA_e_nao_escolhe_a_regra_de_status():
+    """Qual status encerra uma linha e assunto da aplicacao.
 
+    A borda so pergunta quais certificados a execucao precisa. Se ela escolhesse
+    a regra, existiriam duas respostas para a mesma pergunta, e o cofre atenderia
+    a errada no dia em que divergissem.
+    """
+    fonte = (RAIZ / "runner.py").read_text(encoding="utf-8")
+
+    assert "status_encerra_linha" not in fonte
+    assert "status_portal" not in fonte
+
+    chamadas = [n for n in ast.walk(ast.parse(fonte))
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "aliases_necessarios"]
     chamada, = chamadas
-    regra = chamada.args[1]
-    assert isinstance(regra, ast.Attribute) and regra.attr == "status_encerra_linha"
-    assert isinstance(regra.value, ast.Name) and regra.value.id == "status_portal"
-    assert "status_portal.status_encerra_linha" in inspect.getsource(app.executar)
+    assert isinstance(chamada.func.value, ast.Name) and chamada.func.value.id == "app"
+    assert len(chamada.args) == 1, "so o caminho da planilha atravessa"
+
+    # E a regra continua escolhida num lugar so: dentro da aplicacao.
+    escolhas = inspect.getsource(app.aliases_necessarios) + inspect.getsource(app.executar)
+    assert escolhas.count("status_portal.status_encerra_linha") == 2

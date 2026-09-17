@@ -24,8 +24,9 @@ instalador o colocou. A suite faz o mesmo, e so isso — nao ha copia do SDK, na
 ha duble com o nome dele e nao ha versao fixada aqui.
 
 `AUTOHUB_SDK_DIR` aponta para outro diretorio quando o agente nao esta no lugar
-padrao. Sem SDK nenhum, `import runner` falha, e deve falhar: o entrypoint da
-plataforma nao existe sem ele, e um duble esconderia exatamente isso.
+padrao. Sem SDK nenhum nada e fingido aqui: os testes que precisam do runtime do
+Save se declaram PULADOS, com motivo visivel, e o resto da suite — dominio,
+desktop e as guardas de arquitetura — continua rodando.
 """
 import os
 import sys
