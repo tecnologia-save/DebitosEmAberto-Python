@@ -241,7 +241,13 @@ def linhas_pendentes(df: pd.DataFrame, mapa: dict, encerra_linha) -> tuple[pd.Da
             return False
         return not (val_d and val_e)
 
-    mask = pd.Series(df.index.map(_pendente), index=df.index)
+    # `dtype=bool` NAO e detalhe: numa planilha so com cabecalho, `df.index.map`
+    # devolve um Index VAZIO de dtype object, e `df[serie_object]` seleciona
+    # COLUNAS, nao linhas. O DataFrame voltava sem coluna nenhuma, e quem
+    # chamasse `itens_pendentes` em seguida pedia `df.columns[0]` e levantava
+    # IndexError. Com o dtype fixado, planilha vazia devolve zero linhas e as
+    # colunas intactas.
+    mask = pd.Series(df.index.map(_pendente), index=df.index, dtype=bool)
     return df[mask], int((~mask).sum())
 
 
@@ -313,7 +319,7 @@ def certificados_dos_itens(itens: list[ItemPendente]) -> list[tuple[str, int]]:
     return list(contagem.items())
 
 
-def aliases_de_certificado(caminho: str) -> tuple[str, ...]:
+def aliases_de_certificado(caminho: str, encerra_linha) -> tuple[str, ...]:
     """Os nomes de certificado que ESTA planilha pede, sem repetir.
 
     Existe para quem precisa BUSCAR os certificados antes de a execucao comecar.
@@ -321,14 +327,35 @@ def aliases_de_certificado(caminho: str) -> tuple[str, ...]:
     perguntar "quais existem", so "me de o chamado X" —, e entao a lista precisa
     sair da planilha.
 
-    Le pela MESMA porta que a execucao usa, `ler_e_ordenar` + `itens_pendentes`.
-    Sem isso, quem chama precisaria saber que o certificado mora na coluna C, e
-    passaria a existir um segundo entendimento do formato da planilha fora daqui.
+    Le pela MESMA porta que a execucao usa: `ler_e_ordenar`, `linhas_pendentes` e
+    `itens_pendentes`, nesta ordem. Sem isso, quem chama precisaria saber que o
+    certificado mora na coluna C, e passaria a existir um segundo entendimento do
+    formato da planilha fora daqui.
 
-    Linhas sem CNPJ utilizavel ficam de fora: elas nao chegam a pedir
+    LINHA JA CONCLUIDA NAO PEDE CERTIFICADO. Ela nao vai ser processada, e
+    incluir o nome dela aqui faria o repositorio entregar material de uma empresa
+    que ninguem vai acessar — num cofre remoto, um arquivo baixado para o disco
+    desta execucao sem motivo nenhum.
+
+    `encerra_linha` chega como parametro pelo mesmo motivo de `linhas_pendentes`:
+    quais status terminam uma linha e regra do portal, e nao da planilha. Quem
+    chama passa a MESMA regra que a execucao vai aplicar; duas regras diferentes
+    fariam esta lista divergir do que sera processado.
+
+    Linhas sem CNPJ utilizavel tambem ficam de fora: elas nao chegam a pedir
     certificado nenhum.
     """
     df, _ = ler_e_ordenar(caminho)
+
+    sessao = SessaoPlanilha()
+    sessao.abrir(caminho)
+    try:
+        df, _ = linhas_pendentes(df, sessao.mapa_status(caminho), encerra_linha)
+    finally:
+        # O workbook sai daqui FECHADO. No Windows um arquivo aberto nao pode ser
+        # apagado, e o espaco desta execucao e apagado no fim dela.
+        sessao.descartar()
+
     itens = [item for item in itens_pendentes(df) if item.utilizavel]
     return tuple(nome for nome, _ in certificados_dos_itens(itens)
                  if nome and nome.strip() and nome.strip().lower() != "nan")

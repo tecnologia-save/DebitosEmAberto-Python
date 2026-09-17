@@ -35,6 +35,7 @@ from automation import (
     eventos,
     exclusividade_host,
     planilha,
+    status_portal,
 )
 from automation.boundary import EntradaInvalida, montar_entrada
 from automation.captcha import ConfigCaptcha, ConfiguracaoInvalida
@@ -141,7 +142,10 @@ def executar_no_save(ctx, emitir_evento=None) -> dict:
     aliases precisam sair da planilha antes de a execução começar — e saem pela
     mesma porta que a execução usa, `planilha.aliases_de_certificado`, para que
     não exista um segundo entendimento de qual coluna guarda o certificado aqui
-    na borda.
+    na borda. Só as linhas PENDENTES pedem certificado, e a regra de quais status
+    encerram uma linha viaja daqui para lá: é a mesma que a aplicação aplica
+    depois, e uma segunda cópia dela faria o cofre receber pedidos que a execução
+    não faz.
 
     A CHAVE DO GEMINI vem do cofre e é revelada AQUI, no ponto de uso — que é o
     que o SDK pede, e o que deixa a revelação greppável. O que atravessa para a
@@ -167,7 +171,8 @@ def executar_no_save(ctx, emitir_evento=None) -> dict:
         # todo — é assim que ela retoma de onde parou.
         de_trabalho = str(espaco.planilha)
         provedor = CertificadosDoCofre(
-            planilha.aliases_de_certificado(de_trabalho),
+            planilha.aliases_de_certificado(de_trabalho,
+                                            status_portal.status_encerra_linha),
             ctx.secrets.cert,
             espaco.raiz / "certificados",
         )

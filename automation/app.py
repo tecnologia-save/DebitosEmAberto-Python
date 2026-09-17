@@ -653,6 +653,23 @@ def executar(
                          diretorio_da_execucao)
 
     try:
+        sessao_planilha.abrir(entrada.planilha)
+        df, _ = planilha.ler_e_ordenar(entrada.planilha)
+        df, _ = planilha.linhas_pendentes(
+            df,
+            sessao_planilha.mapa_status(entrada.planilha),
+            status_portal.status_encerra_linha,
+        )
+        itens = planilha.itens_pendentes(df)
+        if not itens:
+            # NADA A FAZER NAO E FALHA, e quem sabe disso e a planilha — por isso
+            # ela vem antes do catalogo. Sem item pendente nenhum certificado e
+            # necessario: pedi-los assim mesmo custa um PowerShell no desktop e um
+            # arquivo baixado por alias no cofre, para entao nao processar linha
+            # nenhuma. E um catalogo vazio ainda seria relatado como certificado
+            # indisponivel — um erro de operador que nao existe.
+            return
+
         try:
             quantos = execucao.provedor.carregar()
         except certificados.FalhaAoLerCertificados:
@@ -665,17 +682,6 @@ def executar(
 
         if not quantos:
             execucao.emitir(eventos.CERTIFICADOS_INDISPONIVEIS)
-            return
-
-        sessao_planilha.abrir(entrada.planilha)
-        df, _ = planilha.ler_e_ordenar(entrada.planilha)
-        df, _ = planilha.linhas_pendentes(
-            df,
-            sessao_planilha.mapa_status(entrada.planilha),
-            status_portal.status_encerra_linha,
-        )
-        itens = planilha.itens_pendentes(df)
-        if not itens:
             return
 
         _percorrer(execucao, itens)

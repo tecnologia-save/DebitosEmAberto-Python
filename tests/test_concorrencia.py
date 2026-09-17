@@ -279,13 +279,14 @@ def test_o_intervalo_nao_influencia_qual_certificado_e_usado():
 def test_o_primeiro_efeito_compartilhado_e_a_policy():
     """§13: se um dia houver exclusividade, ela precisa existir ANTES disto.
 
-    A ordem em `executar` e: carregar o catalogo de certificados (leitura),
-    abrir a planilha (arquivo de entrada), montar os itens — e so entao
+    A ordem em `executar` e: abrir a planilha (arquivo de entrada), montar os
+    itens pendentes, carregar o catalogo de certificados (leitura) — e so entao
     `_percorrer`, cuja primeira acao por certificado e garantir a policy. A
     policy e a primeira MUTACAO de estado compartilhado do host.
 
-    Quem le o catalogo passou a ser o provedor, e a ordem nao mudou: `carregar()`
-    continua antes de `_percorrer`, e continua sendo leitura.
+    A D8.1-B moveu o catalogo para DEPOIS da descoberta dos itens: sem item
+    pendente, nenhum certificado e necessario. O que esta fixado aqui continua
+    valendo — `carregar()` e leitura, e acontece antes de `_percorrer`.
     """
     import inspect
 

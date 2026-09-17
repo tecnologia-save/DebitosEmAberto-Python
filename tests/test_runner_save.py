@@ -18,6 +18,13 @@ from certificados_do_cofre import CertificadosDoCofre
 
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
 
+# A aplicacao de verdade, guardada ANTES de a suite substitui-la: os testes de
+# zero-efeito precisam do comportamento real com uma planilha sem item pendente.
+APP_EXECUTAR_REAL = runner.app.executar
+CNPJ_FICTICIO = "11111111000191"
+STATUS_CONCLUIDO = "Concluído"
+STATUS_SEM_PROCESSOS = "Sem Processos"
+
 BYTES_SINTETICOS = b"nao-e-um-certificado-de-verdade"
 SENHA_FICTICIA = "senha-ficticia-de-teste"
 CHAVE_FICTICIA = "chave-ficticia-de-teste"
@@ -127,8 +134,9 @@ def _planilha(tmp_path, linhas=None):
 
 def _certificados_da_planilha(caminho):
     from automation.planilha import aliases_de_certificado
+    from automation.status_portal import status_encerra_linha
 
-    return aliases_de_certificado(str(caminho))
+    return aliases_de_certificado(str(caminho), status_encerra_linha)
 
 
 # ── a entrada vem da plataforma ──────────────────────────────────────────────
@@ -662,3 +670,43 @@ def test_a_task_chega_a_boundary_sem_pedir_nada_a_ninguem(tmp_path, monkeypatch,
     assert ctx.entradas_pedidas == ["planilha"]
     assert ctx.saidas == [resultado]
     assert len(ctx.artefatos) == 1
+
+
+# ── zero item pendente: a borda nao pede nada ao cofre ───────────────────────
+
+def test_planilha_sem_item_pendente_nao_pede_certificado_ao_cofre(tmp_path, monkeypatch):
+    """O desfecho legitimo da D8.1-B, pela borda inteira e com a aplicacao REAL.
+
+    `_sem_execucao_real` substitui `app.executar` na suite toda; aqui a original
+    volta de proposito — o que esta em prova e justamente o que a aplicacao faz
+    com uma planilha sem nada a fazer. Ela nao alcanca navegador nem portal: sem
+    item pendente, retorna antes de `_percorrer`.
+    """
+    monkeypatch.setattr(runner.app, "executar", APP_EXECUTAR_REAL)
+    caminho = tmp_path / "recebida.xlsx"
+    criar_planilha(str(caminho), linhas=())
+    ctx = CtxFalso(caminho, cofre={})
+
+    resultado = runner.main(ctx)
+
+    assert resultado == {"ok": True}, "nada a fazer nao e falha"
+    assert ctx.secrets.pedidos == [], "nenhum certificado pedido ao cofre"
+    assert ctx.checkpoints == [], "sem linha gravada, sem checkpoint"
+    assert len(ctx.artefatos) == 1, "a planilha final continua sendo publicada"
+
+
+def test_linha_ja_concluida_nao_faz_o_cofre_entregar_o_pfx(tmp_path, monkeypatch):
+    """ANTES: o alias saia de toda linha utilizavel, e o `.pfx` da linha
+    concluida era baixado para o disco da execucao sem nada para processar."""
+    monkeypatch.setattr(runner.app, "executar", APP_EXECUTAR_REAL)
+    caminho = tmp_path / "recebida.xlsx"
+    criar_planilha(str(caminho),
+                   linhas=((CNPJ_FICTICIO, "ALFA FICTICIA LTDA", "CERT-CONCLUIDO"),),
+                   status={0: (STATUS_CONCLUIDO, STATUS_SEM_PROCESSOS)})
+    ctx = CtxFalso(caminho, _cofre(tmp_path, ("CERT-CONCLUIDO",)))
+
+    resultado = runner.main(ctx)
+
+    assert resultado == {"ok": True}
+    assert ctx.secrets.pedidos == [], "o cofre nao foi consultado, entao nada foi baixado"
+    assert ctx.checkpoints == []
