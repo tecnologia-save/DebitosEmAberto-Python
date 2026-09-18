@@ -476,6 +476,62 @@ _modelo_que_respondeu: str | None = None
 _fora_ate: dict[str, float] = {}
 
 
+# ── Sondagem: quais modelos respondem AGORA ───────────────────────────────────
+#
+# Pedido do operador: em vez de descobrir no meio de cada desafio que um modelo
+# está fora (e perder de 10 s a 1 min por modelo), testar antes. Na PRIMEIRA
+# chamada ao Gemini desta execução, todos os modelos recebem, em paralelo, uma
+# pergunta mínima com prazo curto. Quem responde entra na fila na ordem de
+# GEMINI_MODELS; quem devolve 503/429 (ou estoura o prazo) fica em pausa, como
+# se tivesse falhado num desafio. Depois disso vale a memória de sempre.
+#
+# Na primeira chamada, e não no início da run: uma execução sem captcha nunca
+# fala com o Gemini (resolução sob demanda da chave, D8.3-B).
+SONDA_PRAZO_MS = 10_000
+_sondado = False
+
+
+def _sondar_modelos(client, tag: str) -> None:
+    global _sondado, _modelo_que_respondeu
+    _sondado = True
+    from concurrent.futures import ThreadPoolExecutor
+
+    config = None
+    if _GENAI:
+        config = _gt.GenerateContentConfig(
+            max_output_tokens=8,
+            http_options=_gt.HttpOptions(timeout=SONDA_PRAZO_MS),
+        )
+
+    def sondar(model):
+        inicio = time.time()
+        try:
+            client.models.generate_content(model=model, contents="ok", config=config)
+            return model, None, time.time() - inicio
+        except Exception as e:  # noqa: BLE001 — a sonda classifica, não decide a run
+            return model, e, time.time() - inicio
+
+    with ThreadPoolExecutor(max_workers=len(GEMINI_MODELS)) as pool:
+        resultados = list(pool.map(sondar, GEMINI_MODELS))
+
+    agora = time.time()
+    livres, fora = [], []
+    for model, erro, _dur in resultados:
+        if erro is None:
+            livres.append(model)
+            _fora_ate.pop(model, None)
+            continue
+        codigo = getattr(erro, "code", None)
+        _fora_ate[model] = agora + _CODIGOS_DE_PAUSA.get(codigo, PAUSA_SOBRECARGA_S)
+        fora.append(f"{model} ({codigo or type(erro).__name__})")
+
+    if livres:
+        _modelo_que_respondeu = livres[0]
+    print(f"    [captcha/{tag}] Modelos Gemini disponíveis agora: "
+          f"{', '.join(livres) or 'nenhum'}"
+          + (f" | fora: {', '.join(fora)}" if fora else ""))
+
+
 def _modelos_na_ordem() -> list[str]:
     """GEMINI_MODELS sem os que estão em pausa, com o último que respondeu na frente."""
     agora = time.time()
@@ -498,6 +554,8 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str) -> dict:
     """
     global _modelo_que_respondeu
     client = _get_client(api_key)
+    if not _sondado:
+        _sondar_modelos(client, tag)
     last_exc = None
     for mi, model in enumerate(_modelos_na_ordem()):
         for attempt in range(1, GEMINI_TRIES_PER_MODEL + 1):
@@ -1400,9 +1458,15 @@ def _submit_captcha(page) -> bool:
 # Checkbox widget
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _click_checkbox_widget(page, timeout_ms: int = 10_000) -> bool:
-    """Aguarda o checkbox 'Sou humano' aparecer e clica nele."""
-    print("    [captcha] Aguardando checkbox hCaptcha (até 10 s)...")
+try:
+    CHECKBOX_ESPERA_MS = max(0, int(os.getenv("CAPTCHA_CHECKBOX_ESPERA_MS", "1500") or "1500"))
+except ValueError:
+    CHECKBOX_ESPERA_MS = 1_500
+
+
+def _click_checkbox_widget(page, timeout_ms: int = CHECKBOX_ESPERA_MS) -> bool:
+    """Clica no checkbox 'Sou humano' se ele aparecer dentro de `timeout_ms`."""
+    print(f"    [captcha] Procurando checkbox hCaptcha (até {timeout_ms / 1000:g} s)...")
     try:
         page.locator(CHECKBOX_SEL).first.wait_for(state="visible", timeout=timeout_ms)
     except Exception:
@@ -2129,8 +2193,10 @@ def solve_hcaptcha(page, max_rounds: int = 6, api_key: str | None = None) -> boo
     if not api_key or api_key.startswith("cole-"):
         raise RuntimeError("GEMINI_API_KEY não configurada no ambiente.")
 
-    # Clica checkbox "Sou humano" e aguarda desafio abrir
-    _click_checkbox_widget(page, timeout_ms=10_000)
+    # Clica checkbox "Sou humano" SE ele já estiver na tela. Esperar 10 s por ele
+    # custava 10 s em quase toda chamada: na Receita o desafio vem direto na
+    # grande maioria das vezes, e quando há checkbox ele aparece com a página.
+    _click_checkbox_widget(page, timeout_ms=CHECKBOX_ESPERA_MS)
 
     for rnd in range(1, max_rounds + 1):
         print(f"    [captcha] === Iteração {rnd}/{max_rounds} ===")
@@ -2186,8 +2252,23 @@ except ValueError:
 CONFIRMACOES_DE_SUMICO = 2   # leituras seguidas sem desafio (1 s entre elas)
 
 
+TITULO_AVISO = "Captcha — ação necessária"
+TEXTO_AVISO = (
+    "A automação não conseguiu resolver o captcha sozinha.\n\n"
+    "Resolva o captcha na janela do Chrome.\n\n"
+    "Este aviso fecha sozinho quando o captcha for resolvido."
+)
+
+
 def _aguardar_humano(page, limite_s: int | None = None) -> bool:
-    """Pede ao usuário que resolva o captcha na janela e espera. True se sumiu."""
+    """Pede ao usuário que resolva o captcha e espera. True se o desafio sumiu.
+
+    Chama a atenção como a validação manual das outras automações da
+    plataforma: uma janela `tkinter` SEMPRE NA FRENTE, com som e contagem
+    regressiva, que fecha sozinha quando o desafio some. `tkinter` é stdlib e
+    existe no `pythonw` do agente. Sem janela possível (sem Tk, sem desktop),
+    a espera continua só pelo log — o aviso é um meio, não uma condição.
+    """
     limite_s = ESPERA_HUMANO_S if limite_s is None else limite_s
     if limite_s <= 0:
         return False
@@ -2198,16 +2279,90 @@ def _aguardar_humano(page, limite_s: int | None = None) -> bool:
         page.bring_to_front()
     except Exception:
         pass
+
     fim = time.time() + limite_s
+    try:
+        resolvido = _esperar_com_aviso(page, fim)
+    except Exception as e:  # noqa: BLE001 — sem janela, a espera segue pelo log
+        print(f"    [captcha] Aviso na tela indisponível ({type(e).__name__}); aguardando pelo log.")
+        resolvido = _esperar_sumir(page, fim)
+
+    if resolvido:
+        print("    [captcha] ✓ Captcha resolvido pelo usuário. Continuando...")
+    else:
+        print("    [captcha] Tempo esgotado esperando o usuário resolver o captcha.")
+    return resolvido
+
+
+def _esperar_sumir(page, fim: float) -> bool:
+    """Consulta o desafio a cada 1 s até sumir (CONFIRMACOES_DE_SUMICO seguidas)."""
     seguidas = 0
     while time.time() < fim:
         seguidas = 0 if _challenge_visible(page) else seguidas + 1
         if seguidas >= CONFIRMACOES_DE_SUMICO:
-            print("    [captcha] ✓ Captcha resolvido pelo usuário. Continuando...")
             return True
         time.sleep(1)
-    print("    [captcha] Tempo esgotado esperando o usuário resolver o captcha.")
     return False
+
+
+def _esperar_com_aviso(page, fim: float) -> bool:
+    """A mesma espera de `_esperar_sumir`, com a janela de aviso na frente.
+
+    Tudo roda na thread que chamou — a do Playwright síncrono: o desafio é
+    consultado dentro do `after` do Tk, e não em outra thread.
+    """
+    import tkinter as tk
+
+    janela = tk.Tk()
+    janela.title(TITULO_AVISO)
+    janela.resizable(False, False)
+    janela.attributes("-topmost", True)
+    tk.Label(janela, text=TEXTO_AVISO, justify="left", wraplength=380,
+             padx=16, pady=14).pack()
+    relogio = tk.Label(janela, text="", padx=16)
+    relogio.pack()
+
+    estado = {"resolvido": False, "fechada": False, "agendado": None, "seguidas": 0}
+
+    def fechar(resolvido: bool) -> None:
+        if estado["fechada"]:
+            return
+        estado["fechada"] = True
+        estado["resolvido"] = resolvido
+        if estado["agendado"] is not None:
+            janela.after_cancel(estado["agendado"])
+            estado["agendado"] = None
+        janela.destroy()
+
+    botoes = tk.Frame(janela, padx=16, pady=12)
+    botoes.pack()
+    tk.Button(botoes, text="Parar de esperar", width=18,
+              command=lambda: fechar(False)).pack()
+    # Fechar no X não resolve nada: o aviso volta para a frente, e a espera
+    # continua. Quem quer desistir tem o botão.
+    janela.protocol("WM_DELETE_WINDOW", lambda: (janela.lift(), janela.bell()))
+
+    def conferir() -> None:
+        estado["agendado"] = None
+        if estado["fechada"]:
+            return
+        estado["seguidas"] = 0 if _challenge_visible(page) else estado["seguidas"] + 1
+        if estado["seguidas"] >= CONFIRMACOES_DE_SUMICO:
+            fechar(True)
+            return
+        restante = int(fim - time.time())
+        if restante <= 0:
+            fechar(False)
+            return
+        relogio.config(text=f"Tempo restante: {restante // 60}:{restante % 60:02d}")
+        estado["agendado"] = janela.after(1_000, conferir)
+
+    janela.lift()
+    janela.focus_force()
+    janela.bell()
+    conferir()
+    janela.mainloop()
+    return estado["resolvido"]
 
 
 # Aliases de compatibilidade

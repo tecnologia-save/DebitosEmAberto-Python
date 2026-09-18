@@ -49,6 +49,7 @@ def cliente(monkeypatch):
     monkeypatch.setattr(solver, "GEMINI_MODELS", list(solver.GEMINI_MODELS[:4]))
     monkeypatch.setattr(solver, "_modelo_que_respondeu", None)
     monkeypatch.setattr(solver, "_fora_ate", {})
+    monkeypatch.setattr(solver, "_sondado", True)  # a sonda tem testes proprios
     monkeypatch.setattr(solver, "_make_config", lambda schema, model: None)
     monkeypatch.setattr(solver.time, "sleep", lambda _s: None)
 
@@ -137,3 +138,51 @@ def test_erro_sem_codigo_continua_com_duas_tentativas(cliente):
     assert _chamar() == {"ok": True}
     assert falso.chamadas == [primeiro, primeiro]
     assert solver._fora_ate == {}
+
+
+# ── a sonda: quais modelos respondem AGORA ────────────────────────────────────
+
+@pytest.fixture
+def sonda(cliente, monkeypatch):
+    monkeypatch.setattr(solver, "_sondado", False)
+    return cliente
+
+
+def test_a_primeira_chamada_sonda_e_vai_direto_ao_que_responde(sonda, capsys):
+    flash, flash36, pro = solver.GEMINI_MODELS[:3]
+    falso = sonda({flash: [429], flash36: [503], pro: ["ok"], LITE: ["ok"]})
+
+    assert _chamar() == {"ok": True}
+
+    sondados, desafio = falso.chamadas[:4], falso.chamadas[4:]
+    assert sorted(sondados) == sorted(solver.GEMINI_MODELS), "todos sondados, 1 vez cada"
+    assert desafio == [pro], "o desafio nao gasta nada com quem esta fora"
+    assert set(solver._fora_ate) == {flash, flash36}
+    saida = capsys.readouterr().out
+    assert "disponíveis agora: " + pro + ", " + LITE in saida
+    assert "fora: " in saida and "429" in saida and "503" in saida
+
+
+def test_a_sonda_acontece_uma_vez_por_execucao(sonda):
+    falso = sonda({})
+    _chamar()
+    falso.chamadas.clear()
+
+    _chamar()
+
+    assert falso.chamadas == [solver.GEMINI_MODELS[0]]
+
+
+def test_sonda_sem_ninguem_disponivel_ainda_tenta_todos(sonda):
+    falso = sonda({m: [503] for m in solver.GEMINI_MODELS})
+    with pytest.raises(RuntimeError):
+        _chamar()
+
+    assert falso.chamadas.count(solver.GEMINI_MODELS[0]) == 2, "sonda + tentativa"
+
+
+def test_a_sonda_so_acontece_quando_ha_captcha():
+    """Nada no import nem na construcao: a sonda vive dentro de `_gemini_call`."""
+    import inspect
+    fonte = inspect.getsource(solver._gemini_call)
+    assert "if not _sondado:" in fonte
