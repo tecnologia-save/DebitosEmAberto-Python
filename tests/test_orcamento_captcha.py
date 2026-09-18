@@ -78,15 +78,18 @@ S = 5
 # ── G · chamadas ao Gemini por tentativa de estrategia ────────────────────────
 
 def test_g_cada_tentativa_de_estrategia_faz_uma_chamada():
-    """Uma `_gemini_call` por tentativa — e erro dela vira `continue`, gastando a
-    tentativa sem interromper o laco."""
+    """Uma `_gemini_call` por tentativa. Desde o pedido do operador (D8.4), o
+    erro dela ENCERRA a estrategia (`return False`) em vez de gastar a proxima
+    tentativa: uma falha basta, e a vez passa ao usuario (`_aguardar_humano`).
+    S continua sendo o teto do laco; com erro de Gemini, so a primeira acontece."""
     for helper in ("_gemini_grade(", "_gemini_grade_fused(", "_gemini_grid(",
                    "_gemini_cartao_animal("):
         assert helper in FONTE_SOLVER
 
     trecho = FONTE_SOLVER[FONTE_SOLVER.index("result = _gemini_grade(png, ref_img, api_key)"):]
     trecho = trecho[: trecho.index("valid_tiles = sorted")]
-    assert "except Exception" in trecho and "continue" in trecho
+    assert "except Exception" in trecho and "return False" in trecho
+    assert "continue" not in trecho
 
 
 G = 1

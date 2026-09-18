@@ -1863,8 +1863,7 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5) -> bool:
                 result = _gemini_grade(png, ref_img, api_key)
             except Exception as e:
                 print(f"    [captcha/grade] Gemini erro (tentativa {attempt}): {_limpar_texto(e, 300)}")
-                time.sleep(1)
-                continue
+                return False  # uma falha basta: a vez passa ao usuário (_aguardar_humano)
 
             valid_tiles = sorted({i for i in result.get("matching_tiles", []) if 0 <= i <= 8})
             if result.get("confidence") == "low" or not valid_tiles:
@@ -2000,8 +1999,7 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5) -> bool:
                     result = _gemini_grade(iframe_png, ref_img, api_key)
             except Exception as e:
                 print(f"    [captcha/grade_fused] Gemini erro (tentativa {attempt}): {_limpar_texto(e, 300)}")
-                time.sleep(1)
-                continue
+                return False  # uma falha basta: a vez passa ao usuário (_aguardar_humano)
 
             valid_tiles = sorted({i for i in result.get("matching_tiles", []) if 0 <= i <= 8})
             if result.get("confidence") == "low" or not valid_tiles:
@@ -2071,7 +2069,7 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5) -> bool:
             result = _gemini_grid(png_grid, instrucao, api_key)
         except Exception as e:
             print(f"    [captcha/imagem] Gemini falhou: {_limpar_texto(e, 300)}")
-            continue
+            return False  # uma falha basta: a vez passa ao usuário (_aguardar_humano)
 
         positions  = result.get("click_positions") or []
         confidence = result.get("confidence", "low")
@@ -2154,8 +2152,8 @@ def solve_hcaptcha(page, max_rounds: int = 6, api_key: str | None = None) -> boo
             ok = _solve_imagem(page, api_key)
 
         if not ok:
-            print(f"    [captcha] Iteração {rnd}: solver não resolveu. Próxima tentativa...")
-            continue
+            print(f"    [captcha] Iteração {rnd}: solver não resolveu.")
+            return _aguardar_humano(page)
 
         # Os solvers já fazem _wait_for_resolve (polling) antes de retornar True,
         # então aqui basta uma folga curta antes de reconfirmar.
@@ -2164,9 +2162,51 @@ def solve_hcaptcha(page, max_rounds: int = 6, api_key: str | None = None) -> boo
             print(f"    [captcha] Captcha resolvido na iteração {rnd}!")
             return True
 
-        print(f"    [captcha] Desafio ainda ativo após iteração {rnd}. Continuando...")
+        print(f"    [captcha] Desafio ainda ativo após iteração {rnd}.")
+        return _aguardar_humano(page)
 
     print(f"    [captcha] Limite de {max_rounds} iterações atingido.")
+    return False
+
+
+# ── Quando o Gemini falha: o usuário resolve ──────────────────────────────────
+#
+# Pedido do operador depois de uma execução real: sob pico de demanda do Gemini
+# (503/429) o solver insistia por minutos, o hCaptcha trocava o desafio no meio
+# e quem acabava resolvendo era a pessoa na frente da máquina. Agora UMA falha
+# basta — o Chrome desta execução é visível na máquina do usuário, então a
+# automação traz a janela para a frente, avisa, e espera o desafio sumir.
+#
+# Sem ninguém na máquina, a espera expira e o captcha conta como não resolvido,
+# exatamente como antes. CAPTCHA_ESPERA_HUMANO_S=0 desliga a espera.
+try:
+    ESPERA_HUMANO_S = max(0, int(os.getenv("CAPTCHA_ESPERA_HUMANO_S", "600") or "600"))
+except ValueError:
+    ESPERA_HUMANO_S = 600
+CONFIRMACOES_DE_SUMICO = 2   # leituras seguidas sem desafio (1 s entre elas)
+
+
+def _aguardar_humano(page, limite_s: int | None = None) -> bool:
+    """Pede ao usuário que resolva o captcha na janela e espera. True se sumiu."""
+    limite_s = ESPERA_HUMANO_S if limite_s is None else limite_s
+    if limite_s <= 0:
+        return False
+    print("    [captcha] ⚠ Não consegui resolver o captcha sozinho.")
+    print(f"    [captcha] ⚠ RESOLVA O CAPTCHA NA JANELA DO CHROME — aguardando até "
+          f"{max(1, limite_s // 60)} min...")
+    try:
+        page.bring_to_front()
+    except Exception:
+        pass
+    fim = time.time() + limite_s
+    seguidas = 0
+    while time.time() < fim:
+        seguidas = 0 if _challenge_visible(page) else seguidas + 1
+        if seguidas >= CONFIRMACOES_DE_SUMICO:
+            print("    [captcha] ✓ Captcha resolvido pelo usuário. Continuando...")
+            return True
+        time.sleep(1)
+    print("    [captcha] Tempo esgotado esperando o usuário resolver o captcha.")
     return False
 
 
