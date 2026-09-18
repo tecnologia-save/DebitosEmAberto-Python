@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import cached_property
 
 from patchright.sync_api import Error as ErroDoNavegador
 
@@ -70,27 +71,58 @@ class ConfiguracaoInvalida(Exception):
 
 @dataclass(frozen=True)
 class ConfigCaptcha:
-    """O que a capacidade de captcha precisa para funcionar. Um campo.
+    """O que a capacidade de captcha precisa para funcionar: a chave.
 
     `repr=False` na chave e DEFESA ADICIONAL, nao garantia: `asdict()`, o acesso
     explicito ao atributo e um log manual continuam expondo o valor. O que ele
     resolve e o caso comum — o objeto caindo inteiro num traceback ou num print
     de debug.
+
+    A CHAVE PODE CHEGAR DEPOIS. `sob_demanda` recebe uma funcao que a obtem, e
+    ela so e chamada quando alguem pede `chave()` — na pratica, no primeiro
+    login. Uma execucao sem nada a processar nunca chega la, e por isso nao
+    depende de a credencial existir. Como a chave e obtida e assunto de quem
+    monta a execucao; aqui ela e so uma funcao sem argumentos.
+
+    Obtida, fica guardada: pedi-la de novo a cada login ou captcha seria buscar
+    a mesma coisa varias vezes. Se obter falhar, nada e guardado e a falha sobe
+    como veio — credencial necessaria e ausente nao vira sucesso.
     """
 
     api_key: str = field(repr=False)
+    obter_chave: Callable[[], str] | None = field(default=None, repr=False, compare=False)
+
+    @classmethod
+    def sob_demanda(cls, obter_chave: Callable[[], str]) -> ConfigCaptcha:
+        return cls(api_key="", obter_chave=obter_chave)
+
+    def chave(self) -> str:
+        """A chave a usar. E por aqui — e nao pelo campo — que ela e lida."""
+        if self.obter_chave is None:
+            return self.api_key
+        return self._chave_obtida
+
+    @cached_property
+    def _chave_obtida(self) -> str:
+        chave = self.obter_chave()
+        _conferir(chave)
+        return chave
 
     def validar(self) -> None:
-        chave = (self.api_key or "").strip()
-        if not chave:
-            raise ConfiguracaoInvalida(
-                "A chave da API do Gemini não está configurada; sem ela o captcha "
-                "não pode ser resolvido."
-            )
-        if chave.startswith(_PLACEHOLDER):
-            raise ConfiguracaoInvalida(
-                "A chave da API do Gemini ainda é o texto de exemplo do modelo."
-            )
+        _conferir(self.chave())
+
+
+def _conferir(chave: str | None) -> None:
+    valor = (chave or "").strip()
+    if not valor:
+        raise ConfiguracaoInvalida(
+            "A chave da API do Gemini não está configurada; sem ela o captcha "
+            "não pode ser resolvido."
+        )
+    if valor.startswith(_PLACEHOLDER):
+        raise ConfiguracaoInvalida(
+            "A chave da API do Gemini ainda é o texto de exemplo do modelo."
+        )
 
 
 def resolver(
@@ -130,7 +162,7 @@ def resolver(
         #
         # Fica embutida no callable para nao mudar o contrato
         # `Callable[[object], bool]` da fronteira externa.
-        chave = config.api_key
+        chave = config.chave()
 
         def resolver_bruto(alvo):
             return solve_hcaptcha(alvo, api_key=chave)

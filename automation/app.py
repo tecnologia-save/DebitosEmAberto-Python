@@ -386,10 +386,14 @@ class _Execucao:
         if chave is None:
             return False
 
+        # A chave do Gemini sai de `chave()`, e nao do campo: e aqui que ela e
+        # usada pela primeira vez, e numa execucao montada pela plataforma e
+        # aqui que ela e obtida. Se faltar, a falha sobe antes de o navegador
+        # abrir — `autenticar` fica fora de todo `try` do laco, de proposito.
         resultado = maquina.abrir_sessao(
             self.provedor.certificado(chave),
             self.policy_confiavel,
-            self.config_captcha.api_key,
+            self.config_captcha.chave(),
             self.diretorio_da_execucao,
         )
         if not resultado.autenticado:

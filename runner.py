@@ -145,10 +145,13 @@ def executar_no_save(ctx, emitir_evento=None) -> dict:
     regra que define uma linha encerrada. Uma segunda cópia dessa regra aqui
     faria o cofre receber pedidos que a execução não faz.
 
-    A CHAVE DO GEMINI vem do cofre e é revelada AQUI, no ponto de uso — que é o
-    que o SDK pede, e o que deixa a revelação greppável. O que atravessa para a
-    aplicação é a `ConfigCaptcha` que ela já consumia; ela não sabe de onde a
-    chave veio, e o campo não entra no `repr`.
+    A CHAVE DO GEMINI vem do cofre, e só quando a aplicação a usa — no primeiro
+    login. Uma execução sem nada a processar nunca pede a credencial, e por isso
+    não depende de ela existir; quando ela é necessária e falta, a falha sobe
+    como veio. O que atravessa para a aplicação é a `ConfigCaptcha` que ela já
+    consumia, agora com uma função que obtém a chave: ela não vê `ctx`, nem o
+    cofre, nem de onde a chave veio. A revelação continua aqui, dentro dessa
+    função — greppável, como o SDK pede.
 
     O QUE SAI DAQUI para a plataforma: um checkpoint da planilha a cada linha
     gravada, o artefato final e um resultado estruturado pequeno. Nenhum deles
@@ -158,8 +161,12 @@ def executar_no_save(ctx, emitir_evento=None) -> dict:
     QUEM CHAMA é `main`, a task registrada logo abaixo, e ela não acrescenta
     nada: o que a execução faz na plataforma está inteiro aqui.
     """
-    config = ConfigCaptcha(api_key=ctx.secrets.get(ALIAS_DO_GEMINI).reveal())
-    config.validar()
+    segredos = ctx.secrets
+
+    def chave_do_gemini() -> str:
+        return segredos.get(ALIAS_DO_GEMINI).reveal()
+
+    config = ConfigCaptcha.sob_demanda(chave_do_gemini)
 
     anexo = ctx.input_file("planilha")
 

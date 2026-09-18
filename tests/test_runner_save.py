@@ -392,16 +392,22 @@ def test_a_chave_do_gemini_vem_do_COFRE_e_nao_do_ambiente(tmp_path, monkeypatch,
                                                           _sem_execucao_real):
     """Sem variavel de ambiente nenhuma, o caminho da plataforma continua
     funcionando — e e assim que ele tem de ser: no runtime remoto nao ha `.env`
-    nem ambiente preparado por ninguem."""
+    nem ambiente preparado por ninguem.
+
+    D8.3-B: a borda nao pede a chave; ela entrega a aplicacao o jeito de pedir.
+    O pedido so acontece quando alguem precisa dela — aqui, `chave()` — e sai
+    do cofre pelo alias canonico, uma vez so."""
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     caminho = _planilha(tmp_path)
     ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
 
     runner.executar_no_save(ctx)
 
-    assert ctx.secrets.segredos_pedidos == [runner.ALIAS_DO_GEMINI]
+    assert ctx.secrets.segredos_pedidos == [], "ninguem precisou da chave ainda"
     (args, _), = _sem_execucao_real
-    assert args[1].api_key == CHAVE_FICTICIA
+    assert args[1].chave() == CHAVE_FICTICIA
+    assert args[1].chave() == CHAVE_FICTICIA
+    assert ctx.secrets.segredos_pedidos == [runner.ALIAS_DO_GEMINI], "uma vez so"
 
 
 @precisa_do_sdk
@@ -419,25 +425,32 @@ def test_a_chave_nao_aparece_no_repr_da_config(tmp_path, _sem_execucao_real):
     runner.executar_no_save(ctx)
 
     (args, _), = _sem_execucao_real
-    assert CHAVE_FICTICIA not in repr(args[1])
+    args[1].chave()
+    assert CHAVE_FICTICIA not in repr(args[1]), "nem depois de obtida"
 
 
 @precisa_do_sdk
-def test_chave_ausente_para_ANTES_de_qualquer_efeito(tmp_path, monkeypatch,
-                                                     _sem_execucao_real):
-    """Configuracao invalida nao se resolve repetindo, e o certificado nem
-    chega a ser baixado."""
+def test_chave_invalida_so_falha_quando_o_gemini_e_NECESSARIO(tmp_path, monkeypatch,
+                                                              _sem_execucao_real):
+    """A D8.3-B trocou uma garantia por outra, e de proposito.
+
+    ANTES: chave invalida parava a execucao antes ate de pedir a planilha. O
+    preco era uma execucao sem nada a fazer depender de uma credencial que ela
+    nunca usaria — e, no QA, falhar por isso.
+
+    AGORA: a borda segue, e a chave invalida falha no instante em que alguem
+    precisa dela, com a mesma excecao e sem mostrar o valor."""
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     caminho = _planilha(tmp_path)
     ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)),
-                   chave_gemini="")
+                   chave_gemini="cole-" + CHAVE_FICTICIA)
 
-    with pytest.raises(runner.ConfiguracaoInvalida):
-        runner.executar_no_save(ctx)
+    runner.executar_no_save(ctx)
+    (args, _), = _sem_execucao_real
 
-    assert ctx.entradas_pedidas == [], "nem a planilha foi pedida"
-    assert ctx.secrets.pedidos == [], "nenhum certificado baixado"
-    assert _sem_execucao_real == []
+    with pytest.raises(runner.ConfiguracaoInvalida) as erro:
+        args[1].chave()
+    assert CHAVE_FICTICIA not in str(erro.value)
 
 
 @precisa_do_sdk
@@ -758,3 +771,53 @@ def test_linha_ja_concluida_nao_faz_o_cofre_entregar_o_pfx(tmp_path, monkeypatch
     assert resultado == {"ok": True}
     assert ctx.secrets.pedidos == [], "o cofre nao foi consultado, entao nada foi baixado"
     assert ctx.checkpoints == []
+
+
+# ── o Gemini so e pedido quando e necessario (D8.3-B) ────────────────────────
+
+@precisa_do_sdk
+def test_so_com_cabecalho_o_gemini_NAO_e_pedido_nem_quando_falta(tmp_path, monkeypatch):
+    """O cenario exato do QA: nenhum vinculo `gemini_api_key` na automacao.
+
+    `chave_gemini=None` faz o cofre falso recusar o pedido como o de verdade
+    recusaria. O teste so passa porque ninguem pede."""
+    monkeypatch.setattr(runner.app, "executar", APP_EXECUTAR_REAL)
+    caminho = tmp_path / "recebida.xlsx"
+    criar_planilha(str(caminho), linhas=())
+    ctx = CtxFalso(caminho, cofre={}, chave_gemini=None)
+
+    assert runner.main(ctx) == {"ok": True}
+    assert ctx.secrets.segredos_pedidos == []
+    assert ctx.secrets.pedidos == []
+
+
+@precisa_do_sdk
+def test_linha_concluida_tambem_dispensa_o_gemini(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner.app, "executar", APP_EXECUTAR_REAL)
+    caminho = tmp_path / "recebida.xlsx"
+    criar_planilha(str(caminho),
+                   linhas=((CNPJ_FICTICIO, "ALFA FICTICIA LTDA", "CERT-CONCLUIDO"),),
+                   status={0: (STATUS_CONCLUIDO, STATUS_SEM_PROCESSOS)})
+    ctx = CtxFalso(caminho, cofre={}, chave_gemini=None)
+
+    assert runner.main(ctx) == {"ok": True}
+    assert ctx.secrets.segredos_pedidos == []
+
+
+@precisa_do_sdk
+def test_quando_o_gemini_e_NECESSARIO_e_falta_a_execucao_FALHA(tmp_path, monkeypatch):
+    """Credencial necessaria e ausente nao vira `ok: true`. A aplicacao aqui e um
+    duble que faz so o que a real faz no primeiro login: pede a chave."""
+    def precisa_do_gemini(entrada, config, **_kwargs):
+        config.chave()
+
+    monkeypatch.setattr(runner.app, "executar", precisa_do_gemini)
+    caminho = _planilha(tmp_path)
+    ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)),
+                   chave_gemini=None)
+
+    with pytest.raises(RuntimeError):
+        runner.main(ctx)
+
+    assert ctx.secrets.segredos_pedidos == [runner.ALIAS_DO_GEMINI]
+    assert ctx.saidas == [], "nenhum resultado publicado"
