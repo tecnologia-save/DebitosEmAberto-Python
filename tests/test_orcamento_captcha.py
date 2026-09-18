@@ -97,7 +97,12 @@ G = 1
 def test_m_e_t_sao_modelos_e_tentativas_por_modelo():
     assert len(solver.GEMINI_MODELS) == 4, "lista padrao, sem GEMINI_MODELS no ambiente"
     assert solver.GEMINI_TRIES_PER_MODEL == 2
-    assert "for mi, model in enumerate(GEMINI_MODELS):" in FONTE_SOLVER
+    # A ordem muda entre chamadas (memoria de modelos), o teto nao: a ordem e
+    # sempre um subconjunto de GEMINI_MODELS, sem repeticao.
+    assert "for mi, model in enumerate(_modelos_na_ordem()):" in FONTE_SOLVER
+    ordem = solver._modelos_na_ordem()
+    assert len(ordem) == len(set(ordem)) <= len(solver.GEMINI_MODELS)
+    assert set(ordem) <= set(solver.GEMINI_MODELS)
     assert "for attempt in range(1, GEMINI_TRIES_PER_MODEL + 1):" in FONTE_SOLVER
 
 

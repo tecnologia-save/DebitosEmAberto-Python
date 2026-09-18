@@ -455,16 +455,51 @@ def _is_overloaded_error(e) -> bool:
     ))
 
 
+# ── Memória de modelos entre chamadas (no processo) ───────────────────────────
+#
+# Observado numa execução real: sob pico de demanda, CADA desafio recomeçava a
+# lista do zero — flash-latest 503 duas vezes, 3.6-flash 503 duas vezes,
+# pro-latest 429 (cota da chave esgotada) duas vezes — e só então chegava ao
+# modelo que respondia. Um a três minutos por desafio; o hCaptcha trocava o
+# desafio nesse meio tempo e o login entrava em laço.
+#
+# Duas memórias, ambas do processo (morrem com a execução):
+#   - o modelo que respondeu por último vai para a frente da fila;
+#   - um modelo que respondeu 503 ou 429 fica de fora por um tempo.
+# A classificação usa o CÓDIGO HTTP da exceção (`e.code`, estruturado no SDK
+# google-genai), e não o texto da mensagem.
+# Se TODOS estiverem de fora, tenta todos — pausar não pode virar desistir.
+PAUSA_SOBRECARGA_S = 120   # 503: pico de demanda, costuma passar em minutos
+PAUSA_COTA_S       = 900   # 429: cota/limite da chave, não volta tão cedo
+_CODIGOS_DE_PAUSA  = {503: PAUSA_SOBRECARGA_S, 429: PAUSA_COTA_S}
+_modelo_que_respondeu: str | None = None
+_fora_ate: dict[str, float] = {}
+
+
+def _modelos_na_ordem() -> list[str]:
+    """GEMINI_MODELS sem os que estão em pausa, com o último que respondeu na frente."""
+    agora = time.time()
+    modelos = [m for m in GEMINI_MODELS if _fora_ate.get(m, 0.0) <= agora]
+    if not modelos:
+        modelos = list(GEMINI_MODELS)
+    if _modelo_que_respondeu in modelos:
+        modelos.remove(_modelo_que_respondeu)
+        modelos.insert(0, _modelo_que_respondeu)
+    return modelos
+
+
 def _gemini_call(contents: list, schema: dict, api_key: str, tag: str) -> dict:
     """Chama o Gemini com FALLBACK de modelos quando o principal está sobrecarregado.
 
-    Para cada modelo em GEMINI_MODELS, tenta GEMINI_TRIES_PER_MODEL vezes com backoff
-    curto. Se o modelo estiver indisponível (503/sobrecarga), passa para o próximo da
-    lista. Retorna o JSON já parseado; levanta RuntimeError se todos falharem.
+    Para cada modelo de `_modelos_na_ordem()`, tenta GEMINI_TRIES_PER_MODEL vezes com
+    backoff curto. Um 503/429 tira o modelo da vez na hora (repetir no mesmo segundo
+    devolve o mesmo erro) e o põe em pausa para as próximas chamadas. Retorna o JSON já
+    parseado; levanta RuntimeError se todos falharem.
     """
+    global _modelo_que_respondeu
     client = _get_client(api_key)
     last_exc = None
-    for mi, model in enumerate(GEMINI_MODELS):
+    for mi, model in enumerate(_modelos_na_ordem()):
         for attempt in range(1, GEMINI_TRIES_PER_MODEL + 1):
             try:
                 resp = client.models.generate_content(
@@ -472,12 +507,20 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str) -> dict:
                     contents=contents,
                     config=_make_config(schema, model),
                 )
-                if mi > 0:
+                if model != GEMINI_MODELS[0]:
                     print(f"    [captcha/{tag}] Resolvido com modelo alternativo '{model}'.")
+                _modelo_que_respondeu = model
+                _fora_ate.pop(model, None)
                 return json.loads(resp.text)
             except Exception as e:
                 last_exc = e
                 print(f"    [captcha/{tag}] {model} tentativa {attempt}/{GEMINI_TRIES_PER_MODEL}: {_limpar_texto(e, 300)}")
+                pausa = _CODIGOS_DE_PAUSA.get(getattr(e, "code", None))
+                if pausa is not None:
+                    _fora_ate[model] = time.time() + pausa
+                    if _modelo_que_respondeu == model:
+                        _modelo_que_respondeu = None
+                    break
                 if attempt < GEMINI_TRIES_PER_MODEL:
                     time.sleep(min(2 ** attempt, 8))
         # Esgotou as tentativas neste modelo.
