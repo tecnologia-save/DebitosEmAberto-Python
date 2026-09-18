@@ -25,6 +25,7 @@ importar nada, e descarta o que for computado. Nenhum `params` e nenhum
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import autohub_sdk as autohub
 
@@ -34,6 +35,7 @@ from automation import (
     espaco_de_trabalho,
     eventos,
     exclusividade_host,
+    maquina,
 )
 from automation.boundary import EntradaInvalida, montar_entrada
 from automation.captcha import ConfigCaptcha, ConfiguracaoInvalida
@@ -43,6 +45,7 @@ from automation.exclusividade_host import (
 )
 from automation.planilha import PlanilhaIndisponivel, validar_recurso
 from certificados_do_cofre import CertificadosDoCofre
+from certificados_instalados import CertificadosInstalados
 
 # O alias da credencial do Gemini no cofre. CANONICO, e nao o que uma
 # automacao irma esta usando hoje: la existe um `Gemini_KEY` que e sonda de uma
@@ -118,11 +121,29 @@ def executar(params: dict, emitir_evento=None, provedor_de_certificados=None,
                      provedor_de_certificados=provedor_de_certificados,
                      diretorio_da_execucao=diretorio_da_execucao)
     finally:
+        # O que o provedor pos na maquina sai AINDA SOB o lock: outra execucao
+        # so entra depois de os certificados desta terem ido embora.
+        encerrar = getattr(provedor_de_certificados, "encerrar", None)
+        if encerrar is not None:
+            encerrar()
         # Fechar ESTE handle não libera o host por si: se o guardião ainda
         # mantiver o dele, o objeto continua existindo. É intencional.
         exclusividade_host.liberar(controle)
 
     return {"ok": not apresentador.abortou}
+
+
+def diretorio_persistente() -> Path:
+    """O que esta automacao guarda NESTA maquina entre uma execucao e outra.
+
+    O perfil do navegador e o marcador dos certificados instalados. Fica em
+    `%LOCALAPPDATA%/debitos-em-aberto`, fora de qualquer repositorio e fora do
+    diretorio do agente. `DEBITOS_DIRETORIO_PERSISTENTE` o troca (os testes usam).
+    """
+    explicito = os.environ.get("DEBITOS_DIRETORIO_PERSISTENTE")
+    if explicito:
+        return Path(explicito)
+    return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "debitos-em-aberto"
 
 
 def executar_no_save(ctx, emitir_evento=None) -> dict:
@@ -175,11 +196,25 @@ def executar_no_save(ctx, emitir_evento=None) -> dict:
         # não é nosso para sobrescrever, e a aplicação grava na planilha o tempo
         # todo — é assim que ela retoma de onde parou.
         de_trabalho = str(espaco.planilha)
-        provedor = CertificadosDoCofre(
-            app.aliases_necessarios(de_trabalho),
-            ctx.secrets.cert,
-            espaco.raiz / "certificados",
+        persistente = diretorio_persistente()
+        # Os certificados do cofre sao INSTALADOS no Windows durante a execucao
+        # (e removidos ao fim): assim o proprio Chrome os apresenta ao gov.br,
+        # como no executavel desktop. Entregues como arquivo, eles poem o proxy
+        # do Playwright no meio — e o portal desconfia e pede captcha.
+        provedor = CertificadosInstalados(
+            CertificadosDoCofre(
+                app.aliases_necessarios(de_trabalho),
+                ctx.secrets.cert,
+                espaco.raiz / "certificados",
+            ),
+            persistente / "certificados-instalados.json",
         )
+        # O PERFIL DO NAVEGADOR e o mesmo de uma execucao para a outra, como no
+        # executavel desktop. Um perfil novo a cada run, sem cookie nem
+        # historico, e o retrato de um navegador automatizado — e o portal pede
+        # captcha. Uma execucao por vez neste host e garantida pelo lock.
+        navegador = persistente / "navegador"
+        navegador.mkdir(parents=True, exist_ok=True)
         def publicar(evento):
             if emitir_evento is not None:
                 emitir_evento(evento)
@@ -193,11 +228,14 @@ def executar_no_save(ctx, emitir_evento=None) -> dict:
                 ctx.checkpoint(NOME_DA_SAIDA, espaco.planilha.read_bytes(),
                                mime=TIPO_DA_SAIDA, kind="spreadsheet")
 
-        resultado = executar({"planilha": de_trabalho}, emitir_evento=publicar,
-                             provedor_de_certificados=provedor, config=config,
-                             # O chao desta execucao. O perfil do navegador
-                             # nasce dentro dele, e morre com ele.
-                             diretorio_da_execucao=str(espaco.raiz))
+        try:
+            resultado = executar({"planilha": de_trabalho}, emitir_evento=publicar,
+                                 provedor_de_certificados=provedor, config=config,
+                                 diretorio_da_execucao=str(navegador))
+        finally:
+            # O perfil fica; o CN do ultimo certificado, que a fiacao grava ao
+            # lado dele, nao.
+            maquina.descartar_ambiente_do_certificado(str(navegador))
 
         # A entrega final, ainda DENTRO do espaco: depois do `with` o arquivo
         # nao existe mais. Se a execucao tivesse falhado, nao chegariamos aqui —

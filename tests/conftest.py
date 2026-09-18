@@ -72,3 +72,21 @@ def _sem_elevacao_real(monkeypatch):
 
     monkeypatch.setattr(cert_windows._shell32, "ShellExecuteExW", recusar,
                         raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _sem_diretorio_persistente_real(monkeypatch, tmp_path):
+    """O perfil do navegador e o marcador de certificados que o runner guarda
+    entre execucoes vao para o tmp do teste, nunca para o %LOCALAPPDATA% real."""
+    monkeypatch.setenv("DEBITOS_DIRETORIO_PERSISTENTE", str(tmp_path / "persistente"))
+
+
+@pytest.fixture(autouse=True)
+def _sem_certificado_real_no_windows(monkeypatch):
+    """Nenhum teste instala, inspeciona ou remove certificado do Windows."""
+    import certificados_instalados
+
+    def recusar(*_a, **_k):
+        raise AssertionError("PowerShell de certificado real durante a suite")
+
+    monkeypatch.setattr(certificados_instalados, "_powershell", recusar)

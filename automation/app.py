@@ -340,6 +340,15 @@ class _Execucao:
             self.policy_confiavel = True
             return True
 
+        if not getattr(self.provedor, "pede_policy_do_windows", True):
+            # Certificado INSTALADO pelo provedor so para esta execucao (o cofre,
+            # na plataforma). A policy exige administrador e, no agente, ninguem
+            # responde ao UAC. Sem ela o Chrome abre a janela "Selecione um
+            # certificado", e `policy_confiavel = False` e o que faz o login
+            # resolve-la pelo serial.
+            self.policy_confiavel = False
+            return True
+
         resultado = maquina.garantir_policy_do_windows(certificado.subject_cn)
         self.policy_confiavel = resultado.confiavel
         if resultado.controle is not None:

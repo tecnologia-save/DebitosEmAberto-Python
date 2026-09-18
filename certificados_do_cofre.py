@@ -100,6 +100,10 @@ class CertificadosDoCofre:
     def certificado(self, chave: str) -> Certificado:
         return self._catalogo[chave]
 
+    def itens(self) -> dict[str, Certificado]:
+        """O catálogo carregado, por alias. Cópia: quem recebe não altera este."""
+        return dict(self._catalogo)
+
     # ── o unico ponto que fala com o cofre ───────────────────────────────────
 
     def _obter(self, nome: str, indice: int) -> Certificado | None:

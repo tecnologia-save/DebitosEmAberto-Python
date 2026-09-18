@@ -111,3 +111,23 @@ def test_certificado_do_store_continua_pedindo_a_policy(maquina_espia):
 def test_do_windows_store_segue_a_regra_do_fork(certificado, esperado):
     """O fork decide por `bool(cert_subject_cn and cert_subject_cn.strip())`."""
     assert certificado.do_windows_store is esperado
+
+
+# ── certificado instalado pelo provedor so para a execucao (D8.4) ─────────────
+
+class _ProvedorQueInstala(_Provedor):
+    pede_policy_do_windows = False
+
+
+def test_certificado_instalado_pelo_provedor_nao_pede_policy_e_usa_a_janela(maquina_espia):
+    """Sem UAC no agente: nada de policy, e `auto_select=False` faz o login
+    resolver a janela "Selecione um certificado" pelo serial."""
+    execucao = app._Execucao(_PlanilhaInerte(), "p.xlsx", ConfigCaptcha(api_key=CHAVE),
+                             None, _ProvedorQueInstala(DO_STORE))
+
+    assert execucao.trocar_certificado(_item()) is True
+    assert execucao.autenticar(_item()) is True
+
+    assert maquina_espia["policy"] == []
+    assert maquina_espia["guardiao"] == []
+    assert maquina_espia["sessao"] == [(DO_STORE, False)]

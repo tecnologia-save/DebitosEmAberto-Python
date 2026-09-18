@@ -328,7 +328,8 @@ def test_r_o_fallback_so_existe_quando_a_policy_nao_esta_ativa():
     fonte = pathlib.Path(login_rf.__file__).read_text(encoding="utf-8")
 
     assert "if usar_windows_store and not policy_ok and _CERT_DIALOG_OK:" in fonte
-    assert "kwargs={\"timeout\": 90.0}" in fonte, "90s esperando a janela nativa"
+    assert "kwargs={\"timeout\": 90.0, \"perfil\": user_data_dir}" in fonte, (
+        "90s esperando a janela nativa, escopada ao Chrome desta run")
     assert "daemon=True" in fonte, "thread daemon: ninguém espera por ela"
 
 

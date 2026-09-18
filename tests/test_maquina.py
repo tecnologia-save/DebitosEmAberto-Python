@@ -263,9 +263,12 @@ def test_a_maquina_nao_e_deposito_de_impureza():
     funcoes = [n for n, _ in inspect.getmembers(maquina, inspect.isfunction)
                if not n.startswith("_")]
 
+    # `descartar_ambiente_do_certificado` (D8.4) e o par de
+    # `preparar_ambiente_do_certificado`: apaga o `.env` que ela escreve, para
+    # quem guarda o perfil entre execucoes.
     assert sorted(funcoes) == [
-        "abrir_sessao", "diretorio_de_perfil", "encerrar_controle_do_guardiao",
-        "estado_do_guardiao", "garantir_policy_do_windows",
+        "abrir_sessao", "descartar_ambiente_do_certificado", "diretorio_de_perfil",
+        "encerrar_controle_do_guardiao", "estado_do_guardiao", "garantir_policy_do_windows",
         "liberar_policy_do_windows", "preparar_ambiente_do_certificado",
     ]
 

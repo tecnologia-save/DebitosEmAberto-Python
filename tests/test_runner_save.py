@@ -14,6 +14,7 @@ from planilhas_sinteticas import criar_planilha
 from automation import espaco_de_trabalho
 from automation.eventos import EventoOperacional
 from certificados_do_cofre import CertificadosDoCofre
+from certificados_instalados import CertificadosInstalados
 
 # O entrypoint da plataforma importa `autohub_sdk`, que o agente injeta em
 # runtime (ver `tests/conftest.py`). Sem o agente instalado esse import falha, e
@@ -232,7 +233,10 @@ def test_a_aplicacao_recebe_o_PROVEDOR_do_cofre(tmp_path, _sem_execucao_real):
     runner.executar_no_save(ctx)
 
     (_, kwargs), = _sem_execucao_real
-    assert isinstance(kwargs["provedor_de_certificados"], CertificadosDoCofre)
+    provedor = kwargs["provedor_de_certificados"]
+    assert isinstance(provedor, CertificadosInstalados), "instala no Windows (D8.4)"
+    assert isinstance(provedor._cofre, CertificadosDoCofre), "o material vem do cofre"
+    assert provedor.pede_policy_do_windows is False
 
 
 @precisa_do_sdk
@@ -535,24 +539,35 @@ def test_o_dominio_nao_conhece_navegador_nem_gemini():
     assert not (_importados(RAIZ / "automation" / "domain.py") & proibidos)
 
 
-# ── perfil do navegador por execucao ─────────────────────────────────────────
+def _config_ficticia():
+    from automation.captcha import ConfigCaptcha
+    return ConfigCaptcha(api_key="AIzaSy-SENTINELA-0000")
+
+
+# ── perfil do navegador PERSISTENTE (D8.4) ───────────────────────────────────
+#
+# ANTES: um perfil novo por execucao, apagado com ela. Numa execucao real isso
+# foi um dos motivos de o portal pedir captcha e o executavel desktop nao — um
+# perfil sem cookie nem historico e o retrato de um navegador automatizado. O
+# executavel usa sempre o mesmo perfil; a plataforma agora tambem. Uma execucao
+# por vez no host e garantida pelo lock.
 
 @precisa_do_sdk
-def test_o_chao_da_execucao_chega_a_aplicacao(tmp_path, _sem_execucao_real):
-    """Dele nasce o perfil do navegador — e a aplicação não sabe disso."""
+def test_o_perfil_e_persistente_e_fica_fora_do_repositorio(tmp_path, _sem_execucao_real):
     caminho = _planilha(tmp_path)
     ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
 
     runner.executar_no_save(ctx)
 
     (args, kwargs), = _sem_execucao_real
-    chao = pathlib.Path(kwargs["diretorio_da_execucao"])
-    assert chao == pathlib.Path(args[0].planilha).parent
-    assert chao != RAIZ, "nunca a raiz do repositorio"
+    perfil = pathlib.Path(kwargs["diretorio_da_execucao"])
+    assert perfil == runner.diretorio_persistente() / "navegador"
+    assert perfil != pathlib.Path(args[0].planilha).parent, "nao e o chao da execucao"
+    assert RAIZ not in perfil.parents and perfil != RAIZ
 
 
 @precisa_do_sdk
-def test_duas_execucoes_recebem_CHAOS_DIFERENTES(tmp_path, _sem_execucao_real):
+def test_duas_execucoes_usam_o_MESMO_perfil(tmp_path, _sem_execucao_real):
     caminho = _planilha(tmp_path)
     aliases = _certificados_da_planilha(caminho)
 
@@ -560,18 +575,68 @@ def test_duas_execucoes_recebem_CHAOS_DIFERENTES(tmp_path, _sem_execucao_real):
     runner.executar_no_save(CtxFalso(caminho, _cofre(tmp_path, aliases)))
 
     (_, a), (_, b) = _sem_execucao_real
-    assert a["diretorio_da_execucao"] != b["diretorio_da_execucao"]
+    assert a["diretorio_da_execucao"] == b["diretorio_da_execucao"]
 
 
 @precisa_do_sdk
-def test_o_chao_e_o_perfil_somem_com_a_execucao(tmp_path, _sem_execucao_real):
+def test_o_perfil_sobrevive_mas_o_cn_do_env_nao(tmp_path, _sem_execucao_real, monkeypatch):
     caminho = _planilha(tmp_path)
     ctx = CtxFalso(caminho, _cofre(tmp_path, _certificados_da_planilha(caminho)))
+
+    def executar_e_gravar_env(*_a, **k):
+        _sem_execucao_real.append((_a, k))
+        (pathlib.Path(k["diretorio_da_execucao"]) / ".env").write_text(
+            "CERT_SUBJECT_CN=FICTICIO" + chr(10), encoding="utf-8")
+    monkeypatch.setattr(runner.app, "executar", executar_e_gravar_env)
 
     runner.executar_no_save(ctx)
 
     (_, kwargs), = _sem_execucao_real
-    assert not pathlib.Path(kwargs["diretorio_da_execucao"]).exists()
+    perfil = pathlib.Path(kwargs["diretorio_da_execucao"])
+    assert perfil.is_dir()
+    assert not (perfil / ".env").exists()
+
+
+@precisa_do_sdk
+def test_o_provedor_e_encerrado_AINDA_SOB_o_lock(tmp_path, monkeypatch):
+    """Outra execucao so entra depois de os certificados desta sairem."""
+    ordem = []
+    monkeypatch.setattr(runner.app, "executar", lambda *a, **k: ordem.append("executar"))
+    monkeypatch.setattr(runner.exclusividade_host, "adquirir", lambda: ordem.append("lock"))
+    monkeypatch.setattr(runner.exclusividade_host, "liberar",
+                        lambda c: ordem.append("liberar"))
+
+    class _Provedor:
+        def encerrar(self):
+            ordem.append("encerrar")
+
+    caminho = _planilha(tmp_path)
+    runner.executar({"planilha": str(caminho)}, provedor_de_certificados=_Provedor(),
+                    config=_config_ficticia())
+
+    assert ordem == ["lock", "executar", "encerrar", "liberar"]
+
+
+@precisa_do_sdk
+def test_o_provedor_e_encerrado_mesmo_quando_a_execucao_falha(tmp_path, monkeypatch):
+    ordem = []
+
+    def explode(*_a, **_k):
+        raise RuntimeError("falha ficticia")
+    monkeypatch.setattr(runner.app, "executar", explode)
+    monkeypatch.setattr(runner.exclusividade_host, "adquirir", lambda: "lease")
+    monkeypatch.setattr(runner.exclusividade_host, "liberar", lambda c: ordem.append("liberar"))
+
+    class _Provedor:
+        def encerrar(self):
+            ordem.append("encerrar")
+
+    with pytest.raises(RuntimeError):
+        runner.executar({"planilha": str(_planilha(tmp_path))},
+                        provedor_de_certificados=_Provedor(),
+                        config=_config_ficticia())
+
+    assert ordem == ["encerrar", "liberar"]
 
 
 @precisa_do_sdk
@@ -725,7 +790,7 @@ def test_a_task_chega_a_boundary_sem_pedir_nada_a_ninguem(tmp_path, monkeypatch,
     resultado = runner.main(ctx)
 
     (_, kwargs), = _sem_execucao_real
-    assert isinstance(kwargs["provedor_de_certificados"], CertificadosDoCofre)
+    assert isinstance(kwargs["provedor_de_certificados"]._cofre, CertificadosDoCofre)
     assert ctx.entradas_pedidas == ["planilha"]
     assert ctx.saidas == [resultado]
     assert len(ctx.artefatos) == 1

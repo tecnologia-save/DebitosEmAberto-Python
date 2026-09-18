@@ -97,6 +97,17 @@ def preparar_ambiente_do_certificado(cert_subject_cn: str,
     os.environ["CERT_SUBJECT_CN"] = cert_subject_cn
 
 
+def descartar_ambiente_do_certificado(diretorio: str) -> None:
+    """Apaga o `.env` que `preparar_ambiente_do_certificado` escreveu em `diretorio`.
+
+    Para quem guarda o perfil do navegador entre execucoes (a plataforma, desde
+    a D8.4): o perfil fica, mas o CN do ultimo certificado usado nao precisa
+    ficar em disco. O fork nao le o arquivo durante a sessao no modo Windows
+    Store — ver `preparar_ambiente_do_certificado`.
+    """
+    (Path(diretorio) / ".env").unlink(missing_ok=True)
+
+
 def abrir_sessao(
     certificado: Certificado, auto_select_disponivel: bool, api_key: str,
     diretorio_da_execucao: str | None = None,

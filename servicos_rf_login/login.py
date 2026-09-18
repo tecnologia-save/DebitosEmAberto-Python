@@ -835,7 +835,10 @@ def main(
             threading.Thread(
                 target=_selecionar_cert_dialog,
                 args=(os.getenv("CERT_SUBJECT_CN", "").strip(), cert_serial),
-                kwargs={"timeout": 90.0},
+                # `perfil` escopa a busca ao processo DESTE Chrome. Sem ele a
+                # varredura olha o desktop inteiro, e qualquer janela que mostre
+                # as palavras do dialogo vira candidata.
+                kwargs={"timeout": 90.0, "perfil": user_data_dir},
                 daemon=True,
             ).start()
         elif usar_windows_store and tentativa == 1:
