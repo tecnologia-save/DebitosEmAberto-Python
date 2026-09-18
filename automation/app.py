@@ -328,8 +328,19 @@ class _Execucao:
                 policy_certificado.POLICY_ANTERIOR_NAO_REMOVIDA
             )
 
-        resultado = maquina.garantir_policy_do_windows(
-            self.provedor.certificado(chave).subject_cn)
+        certificado = self.provedor.certificado(chave)
+        if not certificado.do_windows_store:
+            # Certificado em ARQUIVO (o cofre da plataforma): o navegador o recebe
+            # como `client_certificates`, e a policy do Windows — que faz o Chrome
+            # escolher um certificado INSTALADO pelo CN — nao tem o que escolher.
+            # Pedi-la aqui era pedir UAC e guardiao para um CN vazio; num agente
+            # em segundo plano ninguem aceita o UAC, e a execucao parava antes do
+            # login. Sem policy nao ha guardiao, e `exigir_responsavel_pela_policy`
+            # nao tem o que exigir.
+            self.policy_confiavel = True
+            return True
+
+        resultado = maquina.garantir_policy_do_windows(certificado.subject_cn)
         self.policy_confiavel = resultado.confiavel
         if resultado.controle is not None:
             self.controle_da_policy = resultado.controle

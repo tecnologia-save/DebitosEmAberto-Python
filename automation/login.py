@@ -96,6 +96,11 @@ class Certificado:
     pfx_path: str = ""
     pfx_senha: str = field(default="", repr=False)
 
+    @property
+    def do_windows_store(self) -> bool:
+        """A mesma regra do fork: `subject_cn` preenchido e certificado INSTALADO."""
+        return bool(self.subject_cn and self.subject_cn.strip())
+
 
 @dataclass
 class SessaoReceita:
